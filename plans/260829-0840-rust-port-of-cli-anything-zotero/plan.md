@@ -167,6 +167,14 @@ P2 ──┘        └─→ P9 ───────────────�
   P6**. This graph is authoritative. (P8 already shipped before P5–P7 by the same principle.)
 - **⟦P14⟧ is a hard gate.** P6 must not start until its success criteria pass. It also retro-fixes a
   CRITICAL defect in already-landed P4 code — see Zotero 10 section below.
+- **"Phase 5C" (2026-08-29 addition, source-audit finding):** P5's own declared Connector client
+  scope (`getSelectedCollection`, `import`, `saveItems`, `saveAttachment`, `updateSession` —
+  `phase-05...md:67`) remains unimplemented in `crates/`. A source-level audit found this gates
+  **P7's** import/note commands (`add doi`/`import doi`/`import pmid`/`import file`/`import json`/
+  `add url`/`note add` — all P7-owned, not P6-owned, per this table's own row 7), not P6's — P6 has
+  zero Connector-routed commands (see `phase-06` §3.1a/§3.6 for the full audit). The `P5 → ... → P7`
+  edge already visible above covers this ordering; this note exists so the gate is never assumed
+  solved just because the arrow does.
 - **P1 and P2 are independent** and may run concurrently.
 - **P3 blocks everything downstream** — it defines the result contract.
 - **P12 is optional** for reaching P13 only if its commands are formally deprecated instead.

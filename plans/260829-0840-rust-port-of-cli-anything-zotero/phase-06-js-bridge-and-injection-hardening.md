@@ -16,8 +16,16 @@ dependencies: [5, 14]
 > reconstruction; this version is a fresh design, and the red-team pass caught two factual errors in
 > the first draft of this rewrite itself (a fabricated "already landed" Connector API client, and
 > wrong Zotero PATCH-array semantics that would have caused real data loss) — both corrected below.
-> It carries forward only the low-level mechanics independently verified against the Python source
-> (D1's `JSON.parse` fix, D3's probe-caching fix, the AppleScript removal, the XPI fork mechanics).
+> **A second, independent Python-source audit (post-PR #5) found the Connector-routing correction
+> itself was still wrong**: `add doi`/`import doi` are hybrid (JS Bridge translator first, Connector
+> Crossref-BibTeX fallback second), `import pmid`/`note add` are JS-Bridge-only with no Connector
+> involvement, and — most importantly — none of these commands belong to Phase 6 at all; they're
+> Phase 7's ("Ingest, Attachments and PDF Cascade"). This revision removes them from §3.6's matrix,
+> corrects the Overview's surface descriptions with exact `core/{imports,jsbridge,notes,add}.py`
+> citations, and names the still-unimplemented Phase 5 Connector client as an explicit upstream gate
+> (§3.1a, "Phase 5C") rather than assuming or silently absorbing it. It carries forward only the
+> low-level mechanics independently verified against the Python source (D1's `JSON.parse` fix, D3's
+> probe-caching fix, the AppleScript removal, the XPI fork mechanics).
 
 ## Overview
 
@@ -32,32 +40,79 @@ unwired** — `catalog.rs` has zero references to it — because Phase 14 was ex
 out of scope entirely. This phase wires it, for writes.
 
 **Three write-capable surfaces exist, not two — but only one of the three has any client code
-today.** The previous version of this file only considered Local API vs. JS Bridge. Re-reading
-Phase 5's landed code and `plan.md`'s target architecture diagram surfaces a third: the **Connector
-API** (`/connector/*`), used for translator-driven imports and note creation. `compatibility-matrix.md`
-independently confirms this direction: `note add`/`note get` are tagged "Connector-mediated" (row
-78-79), distinct from the generic "Bridge- or HTTP-mediated" tag every other write command in the
-matrix currently carries as a placeholder.
+today, and a second correction (caught by an independent Python-source audit after the first
+red-teamed draft) narrows which commands actually use it.** The previous version of this file only
+considered Local API vs. JS Bridge, then a first correction added the Connector API but
+mischaracterized its role. Re-reading the actual Python reference source
+(`reference/cli-anything-zotero/cli_anything/zotero/core/{imports,jsbridge,notes,add}.py`,
+`utils/zotero_http.py`) instead of inferring from `compatibility-matrix.md`'s placeholder tags shows:
 
-**Correction (caught in red-team review, not true of the merged codebase):** the first draft of this
-plan claimed Phase 5 "already landed" Connector write methods (`saveItems`, `saveAttachment`). It
-did not — `grep -n "pub fn" crates/zotero-cli/src/http.rs` shows only `connector_is_available`,
-`probe_local_api`, `local_api_is_available`, and `local_api_get_json`; no Connector write client
-exists anywhere in `crates/`. Phase 5's own file (`phase-05...md`) still has these Success Criteria
-unchecked and its frontmatter says `status: todo`. **This phase must not assume the Connector write
-client is a settled dependency.** Before Slice 8 routes any command through it, add a smoke check
-that `saveItems`/`saveAttachment` actually exist and pass Phase 5's own Success Criteria — if Phase 5
-ships this thin or incomplete, Phase 6 has no budgeted slack to fix it silently; surface the gap to
-the user instead of absorbing it.
+- **Import/ingest commands are hybrid or Bridge-only, not uniformly Connector-routed, and they are
+  not this phase's commands anyway.** `add doi`/`import doi` (`core/imports.py:880-1067`,
+  `core/add.py:27-58`) try, in order: (1) library dedupe via the JS Bridge
+  (`bridge.find_items_by_doi`), (2) Zotero's built-in DOI translator via the JS Bridge
+  (`bridge.import_from_doi`, `core/jsbridge.py` — generates `Zotero.Translate.Search` JS), (3) only
+  on translator failure, a Crossref-BibTeX-then-Connector fallback
+  (`zotero_http.connector_import_text` against `/connector/import`, then
+  `zotero_http.connector_update_session` against `/connector/updateSession`). Target resolution
+  (`_resolve_target`, `imports.py:75-144`) can call `zotero_http.get_selected_collection` (Connector
+  `/connector/getSelectedCollection`) when no explicit or session target is given. `import pmid`
+  (`import_from_pmid`, `core/jsbridge.py:498`) is **JS Bridge only** — pure `Zotero.Translate.Search`
+  generated JS, no Connector fallback at all; it must not be classified as Connector-routed.
+  `note add` (`core/notes.py:119-159`) is **also JS Bridge only** — it builds a raw `Zotero.Item`
+  creation script and calls `bridge.execute_js` directly, with zero Connector involvement; Phase
+  14/the compatibility matrix's "Connector-mediated" tag on that row does not match the actual
+  Python source and must not be relied on. **None of this is Phase 6's scope regardless of backend:**
+  `plan.md`'s own phase table assigns `add`/`import`/`note` command families to **Phase 7**
+  ("Ingest, Attachments and PDF Cascade"). The routing facts above are recorded here only so Phase
+  7's planning inherits verified evidence instead of re-deriving it — Phase 6 does not implement
+  these commands. See the matrix note below and Unresolved Question 9.
+- **The genuinely Connector-`saveItems`-routed commands are also Phase 7's, not Phase 6's:**
+  `import json` (`imports.py:636-701`, `zotero_http.connector_save_items` against
+  `/connector/saveItems`) and `add url`'s generic-webpage fallback leg (`core/add.py:246-270`, same
+  `connector_save_items` call, used only when the URL is neither an arXiv id nor a DOI). `import
+  file` (`imports.py:547-633`) uses `/connector/import` for BibTeX/RIS/EndNote/XML/CSV file content
+  — **this is what `/connector/import` actually owns; it must not be generalized to "all identifier
+  imports"** (it never serves `import pmid`, and only serves `add doi`/`import doi` on the
+  Crossref-fallback leg, not the preferred translator path). Attachment upload
+  (`zotero_http.connector_save_attachment` against `/connector/saveAttachment`) is used by
+  `_perform_attachment_upload` (`imports.py:361-502`), invoked from `import file`/`import json`'s
+  attachment-manifest workflow — a different code path from `item attach`'s JS Bridge
+  `attach_pdf` (`core/jsbridge.py:320`, confirmed by `zotero_cli.py:1065-1069`) and from Phase 7's
+  own separate PDF-fetch cascade module (`core/pdf_fetch.py`). Keep all three distinct; do not
+  conflate them.
+
+Given the above, **Phase 6 itself has no command whose *own* CRUD logic is Connector-routed** — every
+row in §3.6's matrix is Local-API-or-JS-Bridge. The one place a Connector method could matter to
+Phase 6 is defensive: if a future Phase-6 write command ever grows an implicit "use the selected
+collection" fallback (mirroring `_resolve_target`'s pattern), it would need
+`get_selected_collection`. No currently-specified Phase 6 command has that flag today (§3.8), so this
+is a documented non-dependency, not a live one — but it is exactly the kind of thing that must not be
+assumed to "just work" later, which is why §3.1a below names the gate explicitly rather than leaving
+it implicit.
+
+**Correction (caught in red-team review, not true of the merged codebase, and refined further by the
+Python-source audit above):** the first draft of this plan claimed Phase 5 "already landed" Connector
+write methods. It did not — `grep -n "pub fn" crates/zotero-cli/src/http.rs` shows only
+`connector_is_available`, `probe_local_api`, `local_api_is_available`, and `local_api_get_json`; none
+of Phase 5's own declared Connector client scope (`phase-05...md:67`: "Connector API client: `ping`,
+`getSelectedCollection`, `import`, `saveItems`, `saveAttachment`, `updateSession`") exists in `crates/`
+beyond `ping`'s equivalent (`connector_is_available`). Phase 5's Success Criteria for the other five
+methods are unchecked. **This phase must not assume that client is a settled dependency, and must
+not silently build the missing transport itself either** — see §3.1a's explicit gate.
 
 ```
 Write-capable surfaces (SQLite excluded — see §3.7, no direct SQLite writes)
 ┌──────────────────────┬──────────────────────────┬──────────────────────────────────┐
 │ Surface               │ Available on              │ Owns                              │
 ├──────────────────────┼──────────────────────────┼──────────────────────────────────┤
-│ Connector API         │ all Zotero versions       │ translator-driven import, note    │
-│ (/connector/*)        │ (not gated by server_id)  │ creation — Phase 5's job, NOT yet │
-│                       │                           │ landed (verify before relying)    │
+│ Connector API         │ all Zotero versions       │ Phase 7's ingest commands (file/  │
+│ (/connector/*)        │ (not gated by server_id)  │ JSON import, generic add-url,     │
+│                       │                           │ attachment upload, selected-      │
+│                       │                           │ collection target resolution) —   │
+│                       │                           │ Phase 5's job to build, NOT yet   │
+│                       │                           │ landed (§3.1a gate). Not used by  │
+│                       │                           │ any command Phase 6 itself owns.  │
 │ Local API             │ gated by                  │ CRUD: item/collection field       │
 │ (/api/*)              │ local_api_writes_available│ updates, tag add/remove,          │
 │                       │ (capability flag, NOT     │ create/rename/delete, membership  │
@@ -106,6 +161,42 @@ until the spike's findings are in.**
   where Local API was disabled entirely. **A Zotero 10+ install with Local API disabled in
   preferences has `local_api_writes_available == false`** — every write must key off this flag
   directly, never off a version check, or that machine gets zero working write backend (§3.6).
+
+### 3.1a Phase 5C — Connector client completion (upstream gate, not a Phase 6 slice)
+
+**Added per source-level audit finding: do not silently absorb this transport work into Phase 6.**
+Phase 5's own plan file already declares this scope (`phase-05...md:67`) — five Connector methods
+beyond the already-landed `ping`: `getSelectedCollection`, `import`, `saveItems`, `saveAttachment`,
+`updateSession`. None exist in `crates/zotero-cli/src/http.rs` today. Naming the remaining,
+unimplemented slice of Phase 5's own declared scope **Phase 5C** (not a new numbered phase — a
+checkpoint within Phase 5) makes the gate explicit instead of letting Phase 6 or Phase 7 assume it
+exists:
+
+```
+Phase 5C — Connector client completion (Phase 5's own scope, not yet built)
+  get_selected_collection · connector_import_text · connector_save_items ·
+  connector_save_attachment · connector_update_session
+                    │
+                    ▼
+      Connector-dependent Phase 7 commands (import file/json, add url,
+      add doi's Crossref-fallback leg, attachment-manifest upload)
+```
+
+**Phase 6's actual exposure to this gate, stated precisely (per the Overview's Python-source audit
+above):** zero of Phase 6's own commands are Connector-routed today. The gate is recorded here
+defensively, not because a currently-specified Phase 6 command needs it, but so that (a) nobody
+building Phase 6's write-routing infrastructure mistakes the DOI/PMID/note-import commands for
+in-scope work needing a Connector client, and (b) if a future Phase 6 write command ever grows an
+implicit "use the selected collection" fallback (§3.8), it gates on Phase 5C rather than assuming
+`getSelectedCollection` "just exists." **This phase's own Slice 3 (Local API write client) has no
+dependency on Phase 5C** — Local API and Connector API are different HTTP surfaces with independent
+clients; nothing here blocks Phase 6's Local-API/JS-Bridge work on Phase 5C landing.
+
+**Follow-up flagged, not actioned in this PR:** Phase 5's own plan file (`phase-05...md`) should
+gain a matching explicit "Phase 5C" checkpoint marking these five methods as a distinct,
+trackable sub-scope with their own completion gate, so Phase 7's planning (which genuinely depends
+on all five) can cite it directly instead of a generic "Phase 5's Success Criteria." Left as a
+recommendation rather than made here, since this PR's scope is Phase 6's plan and `plan.md`.
 
 ### 3.2 (§C1) Slice 0 — Disposable write-consent spike (must run first, answers §OQ9/OQ5)
 
@@ -266,16 +357,27 @@ conflated with it), **VERIFY IN SLICE 3** (genuinely unknown, must be live-teste
 | 66 | `item merge` | JS Bridge (Zotero merge logic touches multiple items transactionally) | JS Bridge | Same DOC-VERIFIED-BY-OMISSION correction as row 58 | Post-write check per §3.5's merge sub-rule |
 | 94 | `sync` | JS Bridge (`Zotero.Sync.Runner`) | JS Bridge | Same DOC-VERIFIED-BY-OMISSION correction as row 58 | Privileged, version-independent |
 | 76 | `js` | JS Bridge (by definition) | JS Bridge | N/A | Never a Local/Connector API candidate |
-| 3, 43 | `add doi` / `import doi` | Connector API — **not yet implemented, see Overview correction; verify before relying** | Same | Phase 5's job, unconfirmed | Post-import `--collection`/`--tag` assignment is a separate call into the routing above, not part of the import call |
-| 46 | `import pmid` | Connector API — same caveat | Same | Same | Same |
-| 78 | `note add` | Connector API — same caveat (matrix tags this row "Connector-mediated") | Same | Same | Not a Phase 6 routing decision once the client exists — confirm/finish, don't redesign |
 | 9, 12, 14, 8 | `app install-plugin` / `app plugin-status` / `app uninstall-plugin` / `app enable-local-api` | XPI + local filesystem (this phase builds the `plugin/` module) | Same | This phase owns fully | See §3.12 |
+
+**Removed from this matrix (source-audit correction — these are not Phase 6 commands at all, not
+merely mis-routed):** `add doi` / `import doi` / `import pmid` / `note add` / `import file` /
+`import json` / `add url` all belong to **Phase 7** ("Ingest, Attachments and PDF Cascade" per
+`plan.md`'s phase table), regardless of backend. An earlier draft of this matrix incorrectly listed
+the first three as Phase-6-owned "Connector API" rows. Verified backend facts, recorded here for
+Phase 7's benefit rather than asserted as a Phase 6 routing decision (see Overview for full
+citations): `add doi`/`import doi` are hybrid (JS Bridge dedupe → JS Bridge translator → Connector
+Crossref-BibTeX fallback); `import pmid` and `note add` are JS-Bridge-only with no Connector
+involvement; `import file`/`import json`/`add url`'s generic-webpage leg are the actual
+Connector-`saveItems`/`/connector/import`-routed commands. All of this depends on §3.1a's Phase 5C
+gate, not on anything Phase 6 builds.
 
 **Explicitly out of this phase's scope:** `collection stats`, `item annotations` / `note get`
 (reads, Phase 5/14 territory), `item search-annotations` / `item search-fulltext` (no confirmed
 Local/Connector API equivalent found in any evidence gathered — a genuine open question, not
 silently assumed JS-Bridge, see Unresolved Questions), `item find-pdf` / `item fetch-pdf` /
-`collection find-pdfs` / `collection fetch-pdfs` (Phase 7's territory per `plan.md`'s phase table).
+`collection find-pdfs` / `collection fetch-pdfs` / `add doi` / `import doi` / `import pmid` /
+`import file` / `import json` / `add url` / `note add` (all Phase 7's territory per `plan.md`'s
+phase table).
 
 **Reconciling the "~10 privileged ops" estimate:** `plan.md`'s phase table (line 147) and the
 research doc still say "~10 privileged operations." This matrix's confirmed floor is **4** rows that
@@ -307,10 +409,18 @@ Phase 14 answered Open Question 3: `/connector/getSelectedCollection` requires `
 (`targets: [...]` is plural-*shaped* but always length 1). `session use-selected` / `collection
 use-selected` are Phase 5's commands, **not re-implemented here**.
 
-What Phase 6 owns: any write command that accepts an implicit "use the selected collection/item"
-target must consume the connector response **defensively as a plural shape** — take the single
-element, and treat `targets.len() != 1` as an error rather than silently taking `targets[0]` — costs
-nothing now and avoids a silent wrong-target bug if a future Zotero version reintroduces multi-select.
+**Corrected scope (source audit finding): no currently-specified Phase 6 command actually needs
+this.** Every Phase 6 CRUD command's Python signature takes an explicit collection/item reference
+(`item add-to-collection <ITEM_REF> <COLLECTION_REF>`, `collection rename <COLLECTION_KEY> --name`,
+etc. — none show a `--use-selected` flag in `compatibility-matrix.md`'s command-signature column).
+The implicit "no explicit target → fall back to session → fall back to connector-selected → fall
+back to default library" chain (`_resolve_target`, `imports.py:75-144`) is used only by Phase 7's
+import commands, not by anything Phase 6 owns. This section's guidance is retained as **defensive
+policy for future work, not a current Phase 6 requirement**: if a future Phase 6 write command ever
+does grow an implicit "use the selected collection/item" target, it must consume the connector
+response defensively as a plural shape — take the single element, and treat `targets.len() != 1` as
+an error rather than silently taking `targets[0]` — and it must gate on §3.1a's Phase 5C completing
+first, since `get_selected_collection` doesn't exist in the Rust codebase yet either.
 
 ### 3.8a The ≤9 JS-Bridge CRUD template set (new slice, added in red-team review)
 
@@ -490,8 +600,9 @@ mechanical `match` over this enum plus the §3.5 renderer, not a design exercise
 
 - Create: `crates/zotero-cli/src/bridge/mod.rs`, `bridge/templates.rs`, `bridge/js/*.js`
 - Create: `crates/zotero-cli/src/plugin/mod.rs`, `plugin/assets/{manifest.json,bootstrap.js}`
-- Create: `crates/zotero-cli/src/write_router.rs` (Local API + Connector API write client, the
-  `WriteOutcome` enum from §3.13, and the compatibility renderer)
+- Create: `crates/zotero-cli/src/write_router.rs` (Local API write client — **not** a Connector
+  client, corrected per §3.1a/Overview: Phase 6 has no Connector-routed commands — the `WriteOutcome`
+  enum from §3.13, and the compatibility renderer)
 - Modify: `crates/zotero-cli/src/http.rs` (extend with `PATCH`/`POST`/`DELETE` write methods,
   `If-Unmodified-Since-Version` handling)
 - Modify: `crates/zotero-cli/src/catalog.rs` (item/collection normalizers reused by §3.5's renderer)
@@ -512,6 +623,11 @@ mechanical `match` over this enum plus the §3.5 renderer, not a design exercise
 ## Implementation Slices and Dependencies
 
 ```
+                                                    (Phase 5C — Connector client completion,
+                                                     §3.1a. Outside Phase 6; gates only a
+                                                     hypothetical future §3.8 command, not
+                                                     any currently-specified Phase 6 slice.)
+
 Slice 0 (Agent B, blocking) ──┬─→ Slice 3 (Agent B) ─→ Slice 4 (Agent B) ─→ Slice 5 (Agent B) ─┐
                                │                                                                 │
 Slice 1  (Agent A, parallel) ─┼─→ Slice 2 (Agent A) ────────────────────────────────────────────┤
@@ -525,6 +641,10 @@ Slice 1b (Agent A, parallel) ─┘                                             
 
 The `WriteOutcome` contract (§3.13) is fixed in this document before any slice starts — it is not a
 Slice 6 deliverable, it is a precondition for Slices 3, 7, and 8 to be interface-compatible.
+**None of Slices 0-10 below depend on Phase 5C** — Local API and JS Bridge are independent HTTP
+surfaces from the Connector API, and §3.6's audit found zero Phase-6-owned commands are
+Connector-routed. Phase 5C is tracked in §3.1a purely so it is never silently assumed to exist by
+whoever picks up the deferred §3.8 future-work item, or by Phase 7's planning.
 
 | Slice | Owner | Depends on | Delivers |
 |---|---|---|---|
@@ -532,7 +652,7 @@ Slice 6 deliverable, it is a precondition for Slices 3, 7, and 8 to be interface
 | 1 | Agent A | — | Bridge transport, D1/D3 fixes, JS template extraction infrastructure |
 | 1b | Agent A | 1 | The ≤9 JS-Bridge CRUD template set (§3.8a) — baseline scope, independent of Slice 0's outcome |
 | 2 | Agent A | 1 | XPI packaging/fork changes: create `manifest.json`/`bootstrap.js` from scratch, set `strict_max_version: 10.0.*`, implement §3.12's ownership marker (resolved decision, not single-plugin policy); OQ4 resolved against a real Zotero 10 |
-| 3 | Agent B | 0 | Local API write client (PATCH/POST/DELETE, version header, full-array-replace helper, capability gate); Connector-client existence smoke check (Overview correction) |
+| 3 | Agent B | 0 | Local API write client (PATCH/POST/DELETE, version header, full-array-replace helper, capability gate). **No Connector-client dependency** (corrected — Slice 3 is Local API only; the Connector client is Phase 5C's scope, gated separately per §3.1a, not smoke-checked from within this slice) |
 | 4 | Agent B | 3 | Compatibility renderer / post-write state parity (§3.5), reusing Phase 4/14 normalizers |
 | 5 | Agent B | 0, 3 | 401/403/revocation error handling, `AuthorizationDenied` signal wiring (§3.3) |
 | 6 | Joint (single owner) | 2, 4, 5, resolved §3.6 matrix | Wire final routing into `cli.rs`/`lib.rs` — serialized on purpose, shared files |
@@ -554,10 +674,12 @@ Slice 6 deliverable, it is a precondition for Slices 3, 7, and 8 to be interface
 - **Cross-backend consistency:** for every command §3.6 resolves to "both backends possible," assert
   both paths render identical CLI JSON for the same logical write.
 - **Backend-identity denylist test (new, red-team finding):** a standing test that checks **every**
-  write command's JSON output — including single-backend commands with no dual path to diff against
-  (`js`, `sync`, `item duplicates`, `item merge`, `item attach` if it stays Bridge-only, `note add`,
-  `import doi`/`pmid`) — for a denylist of keys (`backend`, `server_id`, raw Local API `version`).
-  This closes the gap where cross-backend diffing alone would never exercise these commands.
+  write command Phase 6 itself implements — including single-backend commands with no dual path to
+  diff against (`js`, `sync`, `item duplicates`, `item merge`, `item attach` if it stays Bridge-only)
+  — for a denylist of keys (`backend`, `server_id`, raw Local API `version`). This closes the gap
+  where cross-backend diffing alone would never exercise these commands. (Corrected scope: `note
+  add`/`import doi`/`import pmid` removed from this list — they are Phase 7's commands, not Phase
+  6's; Phase 7 should adopt the same denylist pattern for its own write commands when it lands.)
 - **No-SQLite-write regression guard** (§3.7, corrected pattern): matches the unqualified
   `Connection::open`/`.execute(` calls the codebase actually uses, outside `#[cfg(test)]` and
   declared read-only helpers.
@@ -656,6 +778,8 @@ exist and conform to §3.13's `WriteOutcome` contract before the shared `cli.rs`
 | Write-fixture harness state leaks or corrupts under a running Zotero's exclusive lock | Reset via API calls, not file-copy, per the corrected Testing Strategy |
 | Non-idempotent write (`collection create`) duplicated on caller retry after ambiguous consent status | §3.3/Success Criteria requires this resolved (idempotency key or pre-check) before shipping the command |
 | Disposable spike accidentally targets a real production Zotero library | §3.2's corrected method requires positive verification (GET-and-match a scratch marker) before any write, not just an unenforced env var |
+| Phase 7 (or a future Phase 6 iteration) silently assumes the Connector client (`getSelectedCollection`/`import`/`saveItems`/`saveAttachment`/`updateSession`) already exists because it's "just an HTTP call" | §3.1a names this Phase 5C explicitly and states it is unimplemented (`grep -n "pub fn" http.rs` confirms); flagged as a follow-up for Phase 5's own plan file to formalize |
+| A future contributor re-adds `add doi`/`import doi`/`import pmid`/`note add` to Phase 6's matrix, repeating this correction's mistake | §3.6 explicitly documents the removal and cites Phase 7 ownership with source-verified routing facts, not just a routing label, so the reasoning is preserved alongside the decision |
 
 ## Unresolved Questions
 
@@ -681,6 +805,12 @@ exist and conform to §3.13's `WriteOutcome` contract before the shared `cli.rs`
    If Slice 0 finds it does, the §3.3 error message for a 401/403 should reference "Zotero appears
    to have restarted since your last successful write" as a probable cause rather than a generic
    "approve the dialog" message that may not apply if no dialog is actually pending.
-9. **Does Phase 5 actually ship a working `saveItems`/`saveAttachment` Connector client before this
-   phase starts implementing Slice 8's Connector-routed rows** (Overview correction)? If not, this
-   phase needs an explicit scope conversation with the user about who builds it.
+9. ~~Does Phase 5 actually ship a working `saveItems`/`saveAttachment` Connector client before this
+   phase starts implementing Slice 8's Connector-routed rows?~~ — **Superseded by a source-level
+   audit**: Slice 8 has no Connector-routed rows at all — the commands originally listed here
+   (`add doi`/`import doi`/`import pmid`/`note add`) are Phase 7's, not Phase 6's (§3.6, Overview).
+   The real open item is now tracked as **Phase 5C** (§3.1a): Phase 5's own declared Connector
+   client scope (`getSelectedCollection`, `import`, `saveItems`, `saveAttachment`, `updateSession`)
+   is unimplemented, and Phase 7's planning — not Phase 6's — needs this gate before it can build
+   its import commands. Whether Phase 5's own plan file should formally name this checkpoint is
+   flagged as a follow-up recommendation (§3.1a), not resolved in this PR.
