@@ -5,11 +5,6 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
-
 env:
   CARGO_TERM_COLOR: always
 
@@ -17,6 +12,11 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    # Least privilege: this job only compiles third-party crates and
+    # packages archives. Release-writing / attestation permissions belong
+    # only to `publish`, which is the job that actually needs them.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -39,9 +39,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned explicitly to match rust-toolchain.toml — see the same note
+      # in ci.yml. @stable would silently drift from the repo's pin.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.94.1"
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
@@ -93,13 +96,17 @@ jobs:
           tar -C stage -czf "$out" "$(basename "$STAGE")"
           echo "ARCHIVE=$out" >> "$GITHUB_ENV"
 
+      # PowerShell's Compress-Archive ships with every windows-latest
+      # runner; 7-Zip's availability under `shell: bash` (Git Bash) is not
+      # reliable and has been removed from some runner images entirely.
       - name: Archive (zip)
         if: matrix.archive == 'zip'
-        shell: bash
+        shell: pwsh
         run: |
-          out="zotero-cli-${{ github.ref_name }}-${{ matrix.target }}.zip"
-          (cd stage && 7z a "../$out" "$(basename "$STAGE")")
-          echo "ARCHIVE=$out" >> "$GITHUB_ENV"
+          $stageName = "zotero-cli-${{ github.ref_name }}-${{ matrix.target }}"
+          $out = "zotero-cli-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "stage/$stageName" -DestinationPath $out
+          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE=$out"
 
       - name: Upload archive artifact
         uses: actions/upload-artifact@v4
@@ -112,6 +119,10 @@ jobs:
     name: Publish release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 

@@ -30,9 +30,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned explicitly (not @stable) so this matches rust-toolchain.toml
+      # exactly: dtolnay/rust-toolchain does not read that file itself, so
+      # relying on @stable here would silently drift from the repo's pin.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.94.1"
           targets: ${{ matrix.target }}
           components: rustfmt, clippy
 
@@ -63,10 +67,37 @@ jobs:
           "$bin_dir/zotero-cli$ext"
           "$bin_dir/cli-anything-zotero$ext"
 
-      - name: Report binary size
+      - name: Enforce binary size budget (under 15 MB)
         shell: bash
         run: |
+          set -euo pipefail
           bin_dir="target/${{ matrix.target }}/release"
           ext=""
           if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
-          ls -la "$bin_dir/zotero-cli$ext"
+          bin="$bin_dir/zotero-cli$ext"
+          size=$(wc -c < "$bin")
+          limit=$((15 * 1024 * 1024))
+          echo "zotero-cli$ext: $size bytes (limit $limit)"
+          if [[ "$size" -gt "$limit" ]]; then
+            echo "::error::binary exceeds the 15 MB budget"
+            exit 1
+          fi
+
+      - name: Check for unexpected dynamic dependencies
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/zotero-cli"
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            otool -L "$bin"
+            unexpected=$(otool -L "$bin" | tail -n +2 | grep -v -E '/usr/lib/libSystem' || true)
+          else
+            ldd "$bin"
+            unexpected=$(ldd "$bin" | grep -v -E 'linux-vdso|ld-linux|libc\.so|libm\.so|libpthread\.so|libdl\.so|libgcc_s\.so' || true)
+          fi
+          if [[ -n "$unexpected" ]]; then
+            echo "::error::unexpected dynamic dependency:"
+            echo "$unexpected"
+            exit 1
+          fi

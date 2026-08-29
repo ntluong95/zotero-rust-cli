@@ -12,6 +12,16 @@ if ! command -v cargo-license >/dev/null 2>&1; then
   exit 1
 fi
 
+# windows-latest's bash does not always alias python3; fall back to python.
+if command -v python3 >/dev/null 2>&1; then
+  PY=python3
+elif command -v python >/dev/null 2>&1; then
+  PY=python
+else
+  echo "error: no python3/python found on PATH" >&2
+  exit 1
+fi
+
 cd "$repo_root"
 
 {
@@ -25,7 +35,7 @@ cd "$repo_root"
   echo "|---|---|---|---|"
 } > "$out"
 
-cargo license --json --avoid-dev-deps | python3 -c '
+cargo license --json --avoid-dev-deps | "$PY" -c '
 import json, sys
 
 entries = json.load(sys.stdin)

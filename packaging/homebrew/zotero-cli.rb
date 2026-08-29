@@ -25,6 +25,17 @@ class ZoteroCli < Formula
     end
   end
 
+  on_linux do
+    on_arm do
+      url "https://github.com/ntluong95/zotero-rust-cli/releases/download/v#{version}/zotero-cli-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "REPLACE_WITH_AARCH64_UNKNOWN_LINUX_GNU_SHA256"
+    end
+    on_intel do
+      url "https://github.com/ntluong95/zotero-rust-cli/releases/download/v#{version}/zotero-cli-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "REPLACE_WITH_X86_64_UNKNOWN_LINUX_GNU_SHA256"
+    end
+  end
+
   def install
     bin.install "zotero-cli"
     bin.install "cli-anything-zotero"
