@@ -46,13 +46,12 @@ moves to **Migrated** when `compare.py` classifies it **Exact** (or
 | `tag list` | Exact | **Exact** (byte-identical) | `catalog`, `db` | — |
 | `tag items` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Resolves tag name/id then reuses `fetch_items`'s tag filter |
 | `style list` | Exact | **Exact** (byte-identical) | `catalog` | Real namespace-aware `*.csl` XML parse via `quick-xml` (new dependency — see module doc comment for why a regex heuristic was rejected) |
+| `item build-index` | Semantic | **Semantic** | `semantic` | Indexing from `zotero.sqlite`, text chunking (2000 chars), batch commits, D2 fix |
+| `item semantic-search` | Semantic | **Semantic** | `semantic` | Cosine similarity ranking, language filter, min-score threshold, float rounding (4dp), deterministic item_key tie-breaking, D2 fix |
+| `item similar` | Semantic | **Semantic** | `semantic` | Target item lookup, self-exclusion, similarity ranking, float rounding (4dp), deterministic item_key tie-breaking, D2 fix |
 
-**23 of 24 Phase 4 commands now Exact.** Only `session use-selected` remains (needs Phase 5's
-connector HTTP client). See `phase-04-sqlite-read-layer-and-typed-models.md` for the full account of
-this slice, including the `get_collection` signature fix and the three branch-coverage gaps found and
-closed (`resolve_attachment_real_path`'s UNC/drive-letter branches, `build_collection_tree`'s
-orphan-root case, `resolve_saved_search`'s ambiguous-key path) despite every command classifying
-Exact on the first harness run.
+**23 of 96 total CLI commands implemented.** (20 catalog/read commands classified Exact on main + 3 Phase 8 vector store commands classified Semantic).
+23 of 24 Phase 4 commands are Exact (only `session use-selected` remains for Phase 5), and all 3 Phase 8 commands are complete.
 
 Runtime foundation landed alongside these five (not independently
 command-tested, but exercised by all of them): `paths` (Zotero

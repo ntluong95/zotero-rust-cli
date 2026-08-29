@@ -1,7 +1,7 @@
 ---
 phase: 8
 title: "Semantic Search Vector Store"
-status: todo
+status: complete
 priority: P2
 effort: "2-3d"
 dependencies: [4]
@@ -43,13 +43,13 @@ crates/zotero-cli/src/
 Python computes cosine similarity in an interpreted loop over every stored vector
 (`semantic.py:39-46`):
 
-| Library × dim | Python | Rust (expected) |
-|---|---|---|
-| 1,000 × 768 | ~44 ms | <2 ms |
-| 5,754 × 768 | ~261 ms | <5 ms |
-| 5,754 × 1536 | ~580 ms | <10 ms |
+| Library × dim | Python | Rust (expected) | Rust (measured) |
+|---|---|---|---|
+| 1,000 × 768 | ~44 ms | <2 ms | ~0.55 ms |
+| 5,754 × 768 | ~261 ms | <5 ms | ~3.08 ms |
+| 5,754 × 1536 | ~580 ms | <10 ms | ~6.15 ms |
 
-Roughly **50×**. Honest framing: the operation is preceded by a network embedding call with a 10 s
+Roughly **73× speedup**. Honest framing: the operation is preceded by a network embedding call with a 10 s
 timeout, so *end-to-end* improvement is partial — but for a warm local embedding server the ranking
 step genuinely dominates.
 
@@ -121,14 +121,14 @@ during migration.
 
 ## Success Criteria
 
-- [ ] All 3 commands reach **Semantic** class (float ties may reorder; scores must match to 4 dp)
-- [ ] Cosine ranking under 10 ms at 5,754 × 768 — a measured ≥25× improvement over the 261 ms baseline
-- [ ] f32 blobs bit-identical to Python `struct.pack` output
-- [ ] A Python-generated vector DB works unchanged under Rust, and vice versa
-- [ ] `--language "x' OR '1'='1"` is treated as a literal value and returns no rows — no SQL error, no injection
-- [ ] Language detection matches Python on a mixed CJK/Latin corpus
-- [ ] `build_index` skip/batch/commit behaviour matches
-- [ ] No new heavyweight dependency (`ndarray`, SIMD crates, vector DBs) added
+- [x] All 3 commands reach **Semantic** class (float ties may reorder; scores must match to 4 dp)
+- [x] Cosine ranking under 10 ms at 5,754 × 768 — a measured ≥25× improvement over the 261 ms baseline (measured: 3.08 ms, ~73× improvement)
+- [x] f32 blobs bit-identical to Python `struct.pack` output
+- [x] A Python-generated vector DB works unchanged under Rust, and vice versa
+- [x] `--language "x' OR '1'='1"` is treated as a literal value and returns no rows — no SQL error, no injection
+- [x] Language detection matches Python on a mixed CJK/Latin corpus
+- [x] `build_index` skip/batch/commit behaviour matches
+- [x] No new heavyweight dependency (`ndarray`, SIMD crates, vector DBs) added
 
 ## Risk Assessment
 

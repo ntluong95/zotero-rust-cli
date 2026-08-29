@@ -6,6 +6,7 @@ pub mod http;
 pub mod output;
 pub mod paths;
 pub mod runtime;
+pub mod semantic;
 pub mod session;
 
 use clap::{CommandFactory, Parser};
@@ -91,6 +92,59 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             )?;
             output::emit(json_mode, &serde_json::to_value(items)?);
             Ok(0)
+        }
+        Commands::Item(ItemCommands::BuildIndex) => {
+            let config = semantic::SemanticConfig::from_env();
+            let result = semantic::build_index(&runtime.environment.sqlite_path, &config, 20);
+            let val = serde_json::to_value(&result)?;
+            let is_ok = result.is_ok();
+            output::emit(json_mode, &val);
+            if is_ok {
+                Ok(0)
+            } else {
+                Ok(1)
+            }
+        }
+        Commands::Item(ItemCommands::SemanticSearch {
+            query,
+            top_k,
+            min_score,
+            language,
+        }) => {
+            let config = semantic::SemanticConfig::from_env();
+            match semantic::semantic_search(
+                &query,
+                &config,
+                top_k,
+                min_score,
+                &language.to_string(),
+            ) {
+                Ok(items) => {
+                    output::emit(json_mode, &serde_json::to_value(items)?);
+                    Ok(0)
+                }
+                Err(err_val) => {
+                    output::emit(json_mode, &err_val);
+                    Ok(1)
+                }
+            }
+        }
+        Commands::Item(ItemCommands::Similar {
+            item_key,
+            top_k,
+            min_score,
+        }) => {
+            let config = semantic::SemanticConfig::from_env();
+            match semantic::find_similar(&item_key, &config, top_k, min_score) {
+                Ok(items) => {
+                    output::emit(json_mode, &serde_json::to_value(items)?);
+                    Ok(0)
+                }
+                Err(err_val) => {
+                    output::emit(json_mode, &err_val);
+                    Ok(1)
+                }
+            }
         }
         Commands::Collection(CollectionCommands::List) => {
             let collections = catalog::list_collections(&runtime, &session)?;
