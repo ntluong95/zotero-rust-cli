@@ -1,3 +1,9 @@
+// `bridge/mod.rs` (included below via #[path]) resolves the shared WriteOutcome contract via
+// `crate::write` -- this re-export provides that path in this test binary's own crate root, the
+// same way `bridge` will see it once Slice 6 registers `pub mod bridge;` inside zotero_cli's
+// real lib.rs.
+pub use zotero_cli::write;
+
 #[path = "../src/plugin/mod.rs"]
 mod plugin;
 

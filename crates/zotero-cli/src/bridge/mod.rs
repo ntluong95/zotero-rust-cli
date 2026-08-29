@@ -9,7 +9,14 @@ pub use types::{BridgeResponse, OwnershipMarker};
 // The single canonical write-outcome contract (`phase-06` §3.13), shared with the Local API
 // write path (`write.rs`) -- Bridge no longer maintains its own duplicate type. Re-exported here
 // so existing `bridge::WriteOutcome` call sites keep working unchanged.
-pub use zotero_cli::write::WriteOutcome;
+//
+// Uses `crate::write`, not an external `zotero_cli::write` reference: this module is compiled
+// both as a real child module of this crate (once Slice 6 registers `pub mod bridge;` in
+// lib.rs) and, today, via `#[path]` inclusion inside each integration-test binary. `crate::`
+// resolves correctly in both contexts as long as the including crate provides a `write` module
+// at its own root -- see each `#[path = "../src/bridge/mod.rs"] mod bridge;` test file's own
+// `pub use zotero_cli::write;` shim for the test-binary case.
+pub use crate::write::WriteOutcome;
 
 pub fn default_port() -> u16 {
     JSBridgeClient::with_default_port().port

@@ -8,9 +8,11 @@ use serde_json::Value;
 
 use super::templates;
 use super::types::BridgeResponse;
-// The canonical write-outcome contract, shared with the Local API write path -- see
-// `bridge/mod.rs`'s re-export note and `write.rs`'s own doc comment.
-use zotero_cli::write::WriteOutcome;
+// The canonical write-outcome contract, shared with the Local API write path -- re-exported by
+// `super` (`bridge/mod.rs`) from `crate::write`, not imported directly from there, so this file
+// compiles identically whether `bridge` is a real child module of this crate (Slice 6) or
+// included via `#[path]` into a test binary (today) -- see `bridge/mod.rs`'s own note.
+use super::WriteOutcome;
 
 pub const DEFAULT_PORT: u16 = 23119;
 
@@ -128,18 +130,31 @@ fn map_object_outcome(resp: &BridgeResponse) -> WriteOutcome {
             };
         }
     };
-    if let Some(key) = data.get("key").and_then(|v| v.as_str()) {
-        WriteOutcome::Applied {
+    // "key" and "error" must be mutually exclusive for this to be an unambiguous success --
+    // a response carrying both (e.g. `{"key":"ABC123","error":"failed"}`) is malformed/
+    // self-contradictory, not a success with an ignorable stray field, so it must not become
+    // `Applied` (the same "never silently claim success on an ambiguous response" rule
+    // `map_text_outcome` follows). An empty-string key is likewise not a usable affected key.
+    let key = data
+        .get("key")
+        .and_then(|v| v.as_str())
+        .filter(|k| !k.is_empty());
+    let error = data.get("error").and_then(|v| v.as_str());
+    match (key, error) {
+        (Some(key), None) => WriteOutcome::Applied {
             affected_key: key.to_string(),
-        }
-    } else if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-        WriteOutcome::TransportError {
+        },
+        (None, Some(err)) => WriteOutcome::TransportError {
             detail: err.to_string(),
-        }
-    } else {
-        WriteOutcome::TransportError {
-            detail: format!("bridge returned an unrecognized response (expected \"key\" or \"error\"): {data:?}"),
-        }
+        },
+        (Some(_), Some(_)) => WriteOutcome::TransportError {
+            detail: format!("bridge returned both \"key\" and \"error\" (ambiguous/malformed): {data:?}"),
+        },
+        (None, None) => WriteOutcome::TransportError {
+            detail: format!(
+                "bridge returned an unrecognized response (expected a non-empty \"key\" or \"error\"): {data:?}"
+            ),
+        },
     }
 }
 

@@ -1,3 +1,9 @@
+// `bridge/mod.rs` (included below via #[path]) resolves the shared WriteOutcome contract via
+// `crate::write` -- this re-export provides that path in this test binary's own crate root, the
+// same way `bridge` will see it once Slice 6 registers `pub mod bridge;` inside zotero_cli's
+// real lib.rs.
+pub use zotero_cli::write;
+
 #[path = "../src/bridge/mod.rs"]
 mod bridge;
 
@@ -10,11 +16,61 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+/// `bridge::POSITIVE_PROBES` is process-global mutable state, and Rust's default test runner
+/// runs `#[test]` functions in parallel threads within the same process -- so any test that
+/// calls `clear_probe_cache()` can wipe another concurrently-running test's already-cached probe
+/// out from under it mid-sequence (observed directly: adding more tests to this file made a
+/// pre-existing test intermittently fail with "endpoint not available" instead of its expected
+/// response, because a concurrent `clear_probe_cache()` cleared its cached entry between two of
+/// its own calls). Every test in this file that touches the probe cache -- which is all of them
+/// -- must hold this lock for its entire duration.
+static PROBE_CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Reads and discards a full HTTP request (headers + `Content-Length` body) from `stream` before
+/// the caller writes its response. A single fixed-size `read()` is not enough: if the client is
+/// still writing its request body when this thread responds and drops the connection, the unread
+/// bytes cause a TCP RST instead of a clean close -- which can surface as a spurious read error
+/// on the client side for the *response* it's trying to read, not a real test failure. This is
+/// what caused an intermittent `cargo test --release` failure in this file (a different mock
+/// server, not draining the request, occasionally raced this way).
+fn drain_request(stream: &mut std::net::TcpStream) {
+    let mut raw = Vec::new();
+    let mut temp = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut temp).unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        raw.extend_from_slice(&temp[..n]);
+        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    let head = String::from_utf8_lossy(&raw[..header_end]);
+    let content_length = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    let mut body_len = raw.len() - header_end;
+    while body_len < content_length {
+        let n = stream.read(&mut temp).unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        body_len += n;
+    }
+}
+
 /// Writes a minimal `200 OK` JSON response naming our own fork, so the client's ownership probe
 /// succeeds -- shared by the tests below that need a valid probe before exercising a write.
 fn respond_with_verified_ownership(stream: &mut std::net::TcpStream) {
-    let mut buf = [0u8; 1024];
-    let _ = stream.read(&mut buf);
+    drain_request(stream);
     let body = r#"{"pong":true,"fork":"zotero-rust-cli","id":"cli-bridge@cli-anything-rust.dev","version":"1.2.1"}"#;
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -77,6 +133,7 @@ fn test_bridge_response_require_data() {
 
 #[test]
 fn test_probe_caching_and_ownership_invariants() {
+    let _guard = PROBE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     clear_probe_cache();
 
     // 1. Inactive port should return false and not be cached
@@ -90,8 +147,7 @@ fn test_probe_caching_and_ownership_invariants() {
     let server_handle = thread::spawn(move || {
         // Only 1 request served because second probe will be served from POSITIVE_PROBES cache
         if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
+            drain_request(&mut stream);
             let body = r#"{"pong":true,"fork":"zotero-rust-cli","id":"cli-bridge@cli-anything-rust.dev","version":"1.2.1"}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -114,6 +170,7 @@ fn test_probe_caching_and_ownership_invariants() {
 
 #[test]
 fn test_ownership_rejections_and_eval_bypass_prevention() {
+    let _guard = PROBE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     clear_probe_cache();
 
     // 1. WRONG FORK: HTTP 200 with wrong fork must be rejected and NOT cached
@@ -123,8 +180,7 @@ fn test_ownership_rejections_and_eval_bypass_prevention() {
         let handle = thread::spawn(move || {
             for _ in 0..2 {
                 if let Ok((mut stream, _)) = listener.accept() {
-                    let mut buf = [0u8; 1024];
-                    let _ = stream.read(&mut buf);
+                    drain_request(&mut stream);
                     let body = r#"{"pong":true,"fork":"other-upstream-fork"}"#;
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -159,8 +215,7 @@ fn test_ownership_rejections_and_eval_bypass_prevention() {
         let port = listener.local_addr().unwrap().port();
         let handle = thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 1024];
-                let _ = stream.read(&mut buf);
+                drain_request(&mut stream);
                 let body = r#"{"pong":true}"#; // Missing fork
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -185,8 +240,7 @@ fn test_ownership_rejections_and_eval_bypass_prevention() {
         let port = listener.local_addr().unwrap().port();
         let handle = thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 1024];
-                let _ = stream.read(&mut buf);
+                drain_request(&mut stream);
                 let body = "Not JSON At All";
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -211,8 +265,7 @@ fn test_ownership_rejections_and_eval_bypass_prevention() {
         let port = listener.local_addr().unwrap().port();
         let handle = thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 1024];
-                let _ = stream.read(&mut buf);
+                drain_request(&mut stream);
                 let body = r#"{"pong":true,"fork":"zotero-rust-cli","id":"wrong-addon-id"}"#;
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -234,6 +287,7 @@ fn test_ownership_rejections_and_eval_bypass_prevention() {
 
 #[test]
 fn test_execute_js_success_and_error_handling() {
+    let _guard = PROBE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     clear_probe_cache();
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
@@ -242,8 +296,7 @@ fn test_execute_js_success_and_error_handling() {
     let server_handle = thread::spawn(move || {
         // Request 1: probe with verified fork ownership
         if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
+            drain_request(&mut stream);
             let body = r#"{"pong":true,"fork":"zotero-rust-cli","id":"cli-bridge@cli-anything-rust.dev","version":"1.2.1"}"#;
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -256,8 +309,7 @@ fn test_execute_js_success_and_error_handling() {
 
         // Request 2: successful eval returning OK string
         if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
+            drain_request(&mut stream);
             let body = "\"OK: updated My Title\"";
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -270,8 +322,7 @@ fn test_execute_js_success_and_error_handling() {
 
         // Request 3: error eval returning 500 with structured error
         if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
+            drain_request(&mut stream);
             let body = r#"{"error":"item KEY999 not found","name":"NotFoundError","stack":"...","raw":"Error: item KEY999 not found"}"#;
             let resp = format!(
                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -311,6 +362,7 @@ fn test_execute_js_success_and_error_handling() {
 
 #[test]
 fn test_error_prefixed_response_maps_to_canonical_transport_error() {
+    let _guard = PROBE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     clear_probe_cache();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     let port = listener.local_addr().unwrap().port();
@@ -322,8 +374,7 @@ fn test_error_prefixed_response_maps_to_canonical_transport_error() {
         // The Bridge's own "ERROR:" convention never distinguished precondition-vs-conflict
         // failures -- this must keep mapping uniformly to TransportError, not invent a split.
         if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
+            drain_request(&mut stream);
             let body = "\"ERROR: item KEY999 not found\"";
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -353,6 +404,7 @@ fn test_error_prefixed_response_maps_to_canonical_transport_error() {
 
 #[test]
 fn test_unrecognized_response_never_becomes_applied() {
+    let _guard = PROBE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     clear_probe_cache();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     let port = listener.local_addr().unwrap().port();
@@ -365,8 +417,7 @@ fn test_unrecognized_response_never_becomes_applied() {
         // "ERROR:" -- previously fell through to `Applied` by mistake; this is the regression
         // test for that fix.
         if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
+            drain_request(&mut stream);
             let body = "\"unexpected garbage response\"";
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -392,6 +443,7 @@ fn test_unrecognized_response_never_becomes_applied() {
 
 #[test]
 fn test_ambiguous_transport_failure_maps_to_transport_error_with_no_retry() {
+    let _guard = PROBE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     clear_probe_cache();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     let port = listener.local_addr().unwrap().port();
@@ -442,6 +494,7 @@ fn test_ambiguous_transport_failure_maps_to_transport_error_with_no_retry() {
 
 #[test]
 fn test_ownership_rejection_blocks_privileged_write_outcome() {
+    let _guard = PROBE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     clear_probe_cache();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     let port = listener.local_addr().unwrap().port();
@@ -450,8 +503,7 @@ fn test_ownership_rejection_blocks_privileged_write_outcome() {
         // Only one connection expected: bridge_endpoint_active() rejects the wrong fork and
         // execute_js short-circuits, so no second (privileged eval) request is ever sent.
         if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
+            drain_request(&mut stream);
             let body = r#"{"pong":true,"fork":"other-upstream-fork"}"#;
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -474,4 +526,88 @@ fn test_ownership_rejection_blocks_privileged_write_outcome() {
     );
 
     let _ = server_handle.join();
+}
+
+// ── collection_create's object-response shape ({"key"|"error"}), strict/mutually-exclusive ──
+
+/// Runs `collection_create` against a mock bridge whose write-attempt response body is exactly
+/// `body` (a raw JSON value, e.g. `r#"{"key":"COLL123"}"#`), after a successful ownership probe.
+fn collection_create_outcome_for_body(body: &'static str) -> WriteOutcome {
+    let _guard = PROBE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    clear_probe_cache();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().unwrap().port();
+
+    let server_handle = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            respond_with_verified_ownership(&mut stream);
+        }
+        if let Ok((mut stream, _)) = listener.accept() {
+            drain_request(&mut stream);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    let client = JSBridgeClient::new(port);
+    let outcome = client
+        .collection_create(1, "New Collection", None)
+        .expect("a write call always returns Ok(WriteOutcome), never an escaped Err");
+
+    let _ = server_handle.join();
+    outcome
+}
+
+#[test]
+fn test_collection_create_key_only_is_applied() {
+    let outcome = collection_create_outcome_for_body(r#"{"key":"COLL123"}"#);
+    assert_eq!(
+        outcome,
+        WriteOutcome::Applied {
+            affected_key: "COLL123".to_string()
+        }
+    );
+}
+
+#[test]
+fn test_collection_create_error_only_is_transport_error() {
+    let outcome = collection_create_outcome_for_body(r#"{"error":"failure"}"#);
+    match outcome {
+        WriteOutcome::TransportError { detail } => assert_eq!(detail, "failure"),
+        other => panic!("expected TransportError, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_collection_create_key_and_error_together_is_ambiguous_transport_error() {
+    // A response carrying both fields is self-contradictory, not a success with an ignorable
+    // stray field -- must never become Applied.
+    let outcome = collection_create_outcome_for_body(r#"{"key":"COLL123","error":"failure"}"#);
+    assert!(
+        matches!(outcome, WriteOutcome::TransportError { .. }),
+        "a response with both key and error must be treated as ambiguous/malformed, got {outcome:?}"
+    );
+}
+
+#[test]
+fn test_collection_create_empty_key_is_transport_error() {
+    let outcome = collection_create_outcome_for_body(r#"{"key":""}"#);
+    assert!(
+        matches!(outcome, WriteOutcome::TransportError { .. }),
+        "an empty key must not be treated as a usable affected key, got {outcome:?}"
+    );
+}
+
+#[test]
+fn test_collection_create_unrelated_object_is_transport_error() {
+    let outcome = collection_create_outcome_for_body(r#"{"unexpected":"shape"}"#);
+    assert!(
+        matches!(outcome, WriteOutcome::TransportError { .. }),
+        "a response with neither key nor error must never be treated as Applied, got {outcome:?}"
+    );
 }
