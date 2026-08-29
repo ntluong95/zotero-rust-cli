@@ -24,6 +24,15 @@ fn get_explicit_test_profile() -> Option<PathBuf> {
     Some(path)
 }
 
+fn get_explicit_test_artifact_dir() -> Option<PathBuf> {
+    let raw = std::env::var("ZOTERO_CLI_LIVE_TEST_ARTIFACT_DIR").ok()?;
+    let path = PathBuf::from(raw.trim());
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    Some(path)
+}
+
 fn stop_zotero() {
     bridge::clear_probe_cache();
     for _ in 0..10 {
@@ -83,7 +92,14 @@ fn test_live_zotero10_xpi_load_and_ownership() {
         }
     };
 
+    let artifact_dir = get_explicit_test_artifact_dir()
+        .unwrap_or_else(|| std::env::temp_dir().join("zotero-cli-phase6-manual-install"));
+
     println!("Targeting explicit test profile: {}", profile.display());
+    println!(
+        "Targeting neutral artifact output directory: {}",
+        artifact_dir.display()
+    );
 
     // 1. Audit manifest before installation
     let manifest_val: serde_json::Value =
@@ -107,18 +123,16 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     assert!(BOOTSTRAP_JS.contains("/cli-bridge/eval"));
     assert!(BOOTSTRAP_JS.contains("/cli-bridge/ownership"));
 
-    // 3. Stop running Zotero before touching extensions on disk
-    stop_zotero();
-
-    // 4. Stage XPI into profile
-    let xpi_path = stage_xpi(&profile).expect("Stage XPI into profile");
+    // 3. Stage XPI into neutral artifact directory (outside Zotero profile)
+    let xpi_path = stage_xpi(&artifact_dir).expect("Stage XPI into neutral artifact directory");
     assert!(xpi_path.exists());
     assert_eq!(xpi_path.file_name().unwrap(), XPI_FILENAME);
+    assert!(std::fs::metadata(&xpi_path).unwrap().len() > 0);
 
-    // 5. Start Zotero with the disposable test profile
+    // 4. Start Zotero with the disposable test profile
     start_zotero(&profile);
 
-    // 6. Verify Connector ping is 200 and running Zotero 10
+    // 5. Verify Connector ping is 200 and running Zotero 10
     let resp = ureq::get("http://127.0.0.1:23119/connector/ping")
         .config()
         .timeout_global(Some(Duration::from_secs(5)))
@@ -139,7 +153,7 @@ fn test_live_zotero10_xpi_load_and_ownership() {
         "Running Zotero version must be Zotero 10"
     );
 
-    // 7. Verify /cli-bridge/eval responds to ping
+    // 6. Verify /cli-bridge/eval responds to ping
     let mut eval_json: Option<serde_json::Value> = None;
     for _ in 0..20 {
         if let Ok(mut eval_resp) = ureq::post("http://127.0.0.1:23119/cli-bridge/eval")
@@ -168,7 +182,7 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     assert_eq!(eval_json["version"].as_str().unwrap(), "1.2.1");
     assert_eq!(eval_json["ownership"].as_str().unwrap(), "verified");
 
-    // 8. Verify /cli-bridge/eval executes privileged JavaScript under Zotero 10
+    // 7. Verify /cli-bridge/eval executes privileged JavaScript under Zotero 10
     let client = JSBridgeClient::new(23119);
     let js_resp = client.execute_js("return Zotero.version;", 5);
     assert!(js_resp.ok);
@@ -177,7 +191,7 @@ fn test_live_zotero10_xpi_load_and_ownership() {
         Some(zotero_version)
     );
 
-    // 9. Verify /cli-bridge/ownership companion endpoint
+    // 8. Verify /cli-bridge/ownership companion endpoint
     let mut own_resp = ureq::get("http://127.0.0.1:23119/cli-bridge/ownership")
         .config()
         .timeout_global(Some(Duration::from_secs(5)))
@@ -198,14 +212,12 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     assert_eq!(own_json["version"].as_str().unwrap(), "1.2.1");
     assert_eq!(own_json["ownership"].as_str().unwrap(), "verified");
 
-    // 10. Verify plugin_status reporting
-    let status = plugin_status(Some(&profile), 23119);
-    assert!(status.staged_on_disk);
+    // 9. Verify plugin_status reporting
+    let status = plugin_status(Some(&artifact_dir), 23119);
     assert_eq!(
         status.staged_xpi_path.as_deref(),
         Some(xpi_path.to_str().unwrap())
     );
-    assert!(!status.upstream_staged_on_disk);
     assert!(status.is_active);
     assert_eq!(
         status.ownership_status,
@@ -215,20 +227,18 @@ fn test_live_zotero10_xpi_load_and_ownership() {
         }
     );
 
-    // 11. Verify that an un-forked / legacy response is not mistaken for our fork
+    // 10. Verify that an un-forked / legacy response is not mistaken for our fork
     let foreign_response = OwnershipStatus::ActiveUpstreamPlugin { version: None };
     assert_ne!(status.ownership_status, foreign_response);
 
-    // 12. Clean removal of staged XPI
-    stop_zotero();
-    let uninstalled = remove_staged_xpi(&profile).expect("remove staged XPI");
+    // 11. Clean removal of staged XPI from neutral directory
+    let uninstalled = remove_staged_xpi(&artifact_dir).expect("remove staged XPI");
     assert!(uninstalled);
     assert!(!xpi_path.exists());
 
-    // 13. Verify that after removal and restart, the endpoint is inactive and uninstalled
-    start_zotero(&profile);
-    let post_status = plugin_status(Some(&profile), 23119);
-    assert!(!post_status.staged_on_disk);
-    assert!(!post_status.is_active);
+    // 12. Verify status reports no staged XPI
+    let post_status = plugin_status(Some(&artifact_dir), 23119);
+    assert!(post_status.staged_xpi_path.is_none());
+
     stop_zotero();
 }

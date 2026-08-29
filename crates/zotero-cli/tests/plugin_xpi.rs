@@ -69,55 +69,52 @@ fn test_build_xpi_contains_valid_files() {
 }
 
 #[test]
-fn test_xpi_staging_and_removal_in_temp_dir() {
+fn test_xpi_staging_and_removal_in_neutral_output_dir() {
     let test_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_profile = std::env::temp_dir().join(format!("zotero_profile_test_{test_id}"));
-    std::fs::create_dir_all(temp_profile.join("extensions")).expect("create temp extensions dir");
+    // Neutral output directory completely unrelated to any Zotero profile
+    let temp_output_dir = std::env::temp_dir().join(format!("zotero_cli_artifacts_{test_id}"));
+    std::fs::create_dir_all(&temp_output_dir).expect("create temp output dir");
 
-    let profile_path = &temp_profile;
+    // Place an unrelated file in output_dir to prove remove_staged_xpi leaves it untouched
+    let unrelated_file = temp_output_dir.join("other_artifact.txt");
+    std::fs::write(&unrelated_file, b"unrelated artifact data").expect("write unrelated file");
 
-    // Place an unrelated file in extensions to prove remove_staged_xpi leaves it untouched
-    let unrelated_file = temp_profile
-        .join("extensions")
-        .join("unrelated-plugin@example.com.xpi");
-    std::fs::write(&unrelated_file, b"dummy plugin content").expect("write unrelated extension");
-
-    // 1. Stage XPI
-    let staged_path = stage_xpi(profile_path).expect("staging succeeds");
+    // 1. Stage XPI into neutral directory
+    let staged_path = stage_xpi(&temp_output_dir).expect("staging succeeds");
     assert!(staged_path.exists());
     assert_eq!(staged_path.file_name().unwrap(), XPI_FILENAME);
+    assert_eq!(staged_path.parent().unwrap(), temp_output_dir.as_path());
+    assert!(std::fs::metadata(&staged_path).unwrap().len() > 0);
 
-    // 2. Status when staged on disk: file presence alone does NOT claim active runtime registration
-    let status = plugin_status(Some(profile_path), 59999);
-    assert!(status.staged_on_disk);
+    // 2. Status when staged in output directory: file presence alone does NOT claim active runtime registration
+    let status = plugin_status(Some(&temp_output_dir), 59999);
     assert_eq!(
         status.staged_xpi_path.as_deref(),
         Some(staged_path.to_str().unwrap())
     );
-    assert!(!status.upstream_staged_on_disk);
     assert!(
         !status.is_active,
-        "staging XPI on disk must not claim active runtime registration"
+        "staging XPI in artifact directory must not claim active runtime registration"
     );
     assert_eq!(status.ownership_status, OwnershipStatus::Inactive);
 
-    // 3. Remove staged XPI
-    let removed = remove_staged_xpi(profile_path).expect("removal succeeds");
+    // 3. Remove staged XPI from neutral directory
+    let removed = remove_staged_xpi(&temp_output_dir).expect("removal succeeds");
     assert!(removed);
     assert!(!staged_path.exists());
-    // Assert unrelated file in extensions/ was untouched
+    // Assert unrelated file was untouched
     assert!(
         unrelated_file.exists(),
-        "remove_staged_xpi must leave unrelated extension files untouched"
+        "remove_staged_xpi must leave unrelated files in output directory untouched"
     );
 
     // 4. Status after removal
-    let status_after = plugin_status(Some(profile_path), 59999);
-    assert!(!status_after.staged_on_disk);
+    let status_after = plugin_status(Some(&temp_output_dir), 59999);
     assert!(status_after.staged_xpi_path.is_none());
+    assert!(!status_after.is_active);
 
-    let _ = std::fs::remove_dir_all(&temp_profile);
+    let _ = std::fs::remove_dir_all(&temp_output_dir);
 }
