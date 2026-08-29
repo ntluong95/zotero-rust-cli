@@ -144,7 +144,7 @@ harness is built first (Phase 1) and runs continuously rather than as a late gat
 | 3 | [CLI Skeleton, Result Contract and Config](./phase-03-cli-skeleton-result-contract-and-config.md) | v1 command paths, output contracts, exit codes, `--json` anywhere, paths | In Progress |
 | 4 | [SQLite Read Layer and Typed Models](./phase-04-sqlite-read-layer-and-typed-models.md) | 24 read commands (the Exact-class core) | In Progress |
 | 5 | [HTTP Surfaces and Runtime](./phase-05-http-surfaces-connector-local-api-and-runtime.md) | Connector + Local API + runtime/doctor/session/audit | In Progress |
-| 6 | [Write Backends: Local-API-First](./phase-06-js-bridge-and-injection-hardening.md) | **Redesigned.** Local API writes (Zotero 10+) + JS Bridge for ~10 privileged ops; fixes D1; XPI | Pending |
+| 6 | [Write Backends: Local-API-First](./phase-06-js-bridge-and-injection-hardening.md) | **Re-planned 2026-08-29 against merged Phase 14 evidence, then red-teamed.** Local API writes (gated on the `local_api_writes_available` capability flag, not Zotero version) + JS Bridge for 4 confirmed privileged ops (up to 7 contingent); fixes D1; XPI. Corrects two factual errors caught in red-team review (a fabricated "already-landed" Connector client; wrong Zotero PATCH-array semantics) | Pending |
 | 7 | [Ingest, Attachments and PDF Cascade](./phase-07-ingest-attachments-and-pdf-cascade.md) | `add`/`import`/`note`/PDF cascade/hygiene/metrics | Pending |
 | 8 | [Semantic Search Vector Store](./phase-08-semantic-search-vector-store.md) | 3 commands; fixes D2; ~50× cosine speedup | Pending |
 | 9 | [Pure OOXML DOCX Commands](./phase-09-pure-ooxml-docx-commands.md) | 4 subprocess-free DOCX commands | Complete |
@@ -167,6 +167,14 @@ P2 ──┘        └─→ P9 ───────────────�
   P6**. This graph is authoritative. (P8 already shipped before P5–P7 by the same principle.)
 - **⟦P14⟧ is a hard gate.** P6 must not start until its success criteria pass. It also retro-fixes a
   CRITICAL defect in already-landed P4 code — see Zotero 10 section below.
+- **"Phase 5C" (2026-08-29 addition, source-audit finding):** P5's own declared Connector client
+  scope (`getSelectedCollection`, `import`, `saveItems`, `saveAttachment`, `updateSession` —
+  `phase-05...md:67`) remains unimplemented in `crates/`. A source-level audit found this gates
+  **P7's** import/note commands (`add doi`/`import doi`/`import pmid`/`import file`/`import json`/
+  `add url`/`note add` — all P7-owned, not P6-owned, per this table's own row 7), not P6's — P6 has
+  zero Connector-routed commands (see `phase-06` §3.1a/§3.6 for the full audit). The `P5 → ... → P7`
+  edge already visible above covers this ordering; this note exists so the gate is never assumed
+  solved just because the arrow does.
 - **P1 and P2 are independent** and may run concurrently.
 - **P3 blocks everything downstream** — it defines the result contract.
 - **P12 is optional** for reaching P13 only if its commands are formally deprecated instead.
@@ -183,7 +191,7 @@ analysis: [`plans/research/zotero-10-impact-on-rust-port.md`](../../research/zot
 | # | Finding | Class | Effect on this plan |
 |---|---|---|---|
 | 1 | **WAL mode enabled.** `mode=ro&immutable=1` makes SQLite ignore `-wal` → reproduced **1 of 5 rows returned**, exit 0, no warning | **CRITICAL** | Retro-fixes **landed** P4 code. D4 superseded, `--strict-read` cancelled. New `wal-mode` fixture (P1). Owned by **P14**. |
-| 2 | **XPI `strict_max_version: 9.0.*`** → plugin won't load on Zotero 10 | **CRITICAL** | P6's "reuse the XPI byte-for-byte" premise fails. Manifest bump owned by **P14**. |
+| 2 | **XPI `strict_max_version: 9.0.*`** → plugin won't load on Zotero 10 | **CRITICAL** | P6's "reuse the XPI byte-for-byte" premise fails. **Correction (2026-08-29, Phase 6 re-plan):** P14 established this requirement but never applied it — no `manifest.json` exists anywhere in the repo for P14 to have bumped. **P6 owns creating the manifest and setting/live-verifying `strict_max_version: 10.0.*`** (see `phase-06` §3.12). |
 | 3 | **Local API gained write support** (POST/PUT/PATCH/DELETE + tag delete, full-text, file upload) | **OPPORTUNITY** | **P6 redesigned Local-API-first.** JS Bridge shrinks ~33 → ~10 commands. D1 scope shrinks with it. |
 | 4 | Local API key + user consent dialog; `Zotero-Server-ID` required on writes; local version semantics decoupled from sync | HIGH | New auth/key-storage requirements in **P6**; Server-ID capture in **P5**. |
 | 5 | HTTP hardening: `Host` allowlist; `Mozilla/` UA or any `Origin` dropped | HIGH | Conformance test in **P5**. We pass today by luck, not design. |
@@ -374,10 +382,68 @@ provenance of this review is not overclaimed.
   before P5–P7 under the same rule). Renumbering 8 phase files to fix presentation would risk more
   than it clarifies.
 
-### Whole-Plan Consistency Sweep
+### Whole-Plan Consistency Sweep (2026-08-29, Zotero 10 adaptation session)
 - Files reread: plan.md, phase-01 through phase-13.
 - Decision deltas checked: result payload scope, release authentication, plugin endpoint ownership, move atomicity, deferred command visibility, live-only parity evidence, Python-only retirement wording, concurrency removal, AI endpoint threat model, SSRF policy, mixed Local API/SQLite stale reads, probe cache invalidation.
 - Reconciled stale references: 12.
+- Unresolved contradictions: 0.
+
+### Session — 2026-08-29 (Phase 6 re-plan, four-lens hostile review)
+**Findings:** 28 raw (from 4 parallel reviewers: Security Adversary, Failure Mode Analyst, Assumption Destroyer, Scope & Complexity Critic), deduplicated to 15 distinct findings (15 accepted, 0 rejected — every finding carried a file:line evidence citation and passed the evidence filter)
+**Severity breakdown:** 7 Critical, 6 High, 2 Medium (post-dedup)
+**Reviewers:** 4 parallel `code-reviewer` subagents, one per lens, each assigned a Full-tier verification role (Fact Checker, Flow Tracer, Scope Auditor, Contract Verifier) per this project's plan-review protocol.
+
+| # | Finding | Severity | Disposition | Applied To |
+|---|---|---|---|---|
+| 19 | Connector API `saveItems`/`saveAttachment` were claimed "already landed" in Phase 5; grep confirms zero matches anywhere in `crates/` and Phase 5's own file is still `status: todo` | High | Accept | Phase 6 Overview, §3.6, Unresolved Q9 |
+| 20 | `item add-to-collection`'s design PATCHed `data.collections` as if the Local API appends; Zotero's Web API v3 treats array properties as complete-replacement lists — as written, this would silently remove the item from every other collection (real data loss) | Critical | Accept | Phase 6 §3.6 row 47/68/26 |
+| 21 | `item duplicates`/`merge`/`sync` were labeled "LIVE VERIFIED absence" from the Local API; Phase 14 never actually probed anything duplicates/merge/sync-shaped — the label overclaimed evidence that doesn't exist | Critical | Accept | Phase 6 §3.6 rows 58/66/94 |
+| 22 | "No silent Bridge fallback on write-denial" does not address the double-write risk when a caller retries a non-idempotent write (`collection create`) after an ambiguous consent-denial status, per the plan's own fail-fast message instructing a re-run | Critical | Accept | Phase 6 §3.3 |
+| 23 | Write-fixture test design ("restore by file copy between runs") contradicts the plan's own live-verified proof that Zotero holds SQLite in exclusive locking mode — a file-copy race against a running Zotero produces flaky, non-reproducible failures | Critical | Accept | Phase 6 §Testing Strategy |
+| 24 | §3.6's matrix was keyed on Zotero version rather than the actual `local_api_writes_available` capability flag, silently breaking on the plan's own documented "Local API disabled on a 10+ machine" risk | Critical | Accept | Phase 6 §3.6 |
+| 25 | No slice was assigned to build the ≤9 JS-Bridge CRUD command templates the matrix requires — a baseline gap independent of the write-consent spike's outcome | Critical | Accept | Phase 6 §3.8a, new Slice 1b |
+| 26 | Single-plugin XPI ownership policy only checks ownership at install time; a later out-of-band upstream reinstall silently reclaims the shared endpoint with no runtime signal | High | Accept | Phase 6 §3.12, Unresolved Q5 |
+| 27 | The disposable write-consent spike's "scratch library" isolation relied on an unenforced environment-variable convention; `http.rs`'s `base_url` has no library/instance identity check, risking a write to a real production Zotero | High | Accept | Phase 6 §3.2 |
+| 28 | Diagnostic `server_id` persistence into `session.json` had no defined consumer, would be silently dropped by `save_session_state`'s hardcoded exact-4-key contract (or break Python-schema parity if wired in), and would turn previously read-only `app status`/`app doctor` into racy writers of a shared, non-atomically-locked file | High | Accept (cut from scope) | Phase 6 §3.4 |
+| 29 | Slice 6's shared write-interface contract (success/auth-denied/conflict/transport-error taxonomy) was left undefined until merge time instead of fixed upfront | High | Accept | Phase 6 §3.13 (new) |
+| 30 | Fail-fast/no-polling write-auth design gives an unattended AI-agent caller no machine-distinguishable signal to avoid blind retry loops | High | Accept | Phase 6 §3.3 |
+| 31 | No-SQLite-write regression guard's proposed grep pattern (`rusqlite::Connection::open`) does not match the codebase's actual unqualified `Connection::open` call style — the guard would not have caught a real violation | High | Accept | Phase 6 §3.7 |
+| 32 | "`catalog.rs` is the one shared file" was factually wrong — it has no dispatch logic at all; the real shared dispatch surface both agents' new commands land in is `cli.rs`/`lib.rs`, which the original plan never assigned an owner to | High | Accept | Phase 6 Related Code Files, §Agent split |
+| 33 | No enforcement test existed for "backend identity must never leak into stdout JSON," relying only on cross-backend diffing that never exercises single-backend commands (`js`, `sync`, `item duplicates`, `item merge`) | Medium | Accept | Phase 6 §3.5, §Testing Strategy |
+
+#### Additional smaller findings folded into the same edit pass (evidence-backed, Medium severity, not given individual table rows to keep this table to a manageable size)
+- Stale "~10 privileged ops" estimate contradicted by the matrix's actual confirmed count (4, up to 7) — corrected in this file's phase table (row 6) and in phase-06's §3.6.
+- A new dedicated `plans/research/phase-6-write-consent-spike.md` would have fragmented the existing, established `zotero-10-impact-on-rust-port.md` evidence trail — redirected to append as a new §8 there instead.
+- Success Criteria required every matrix cell fully resolved while Risk Assessment called the same resolution "a bonus, not a requirement" — reconciled to "committed backend required, evidence-tier upgrade optional."
+- The 14-18d effort estimate and the two-agent parallel split were carried forward from the user's explicit request (not reversed per this project's "do not silently undo explicit user decisions" rule) but now carry an explicit stated justification/scheduling assumption instead of an unstated one.
+- Slice 7's real dependency on Slice 3's matrix resolution existed only in prose; added as a soft dependency in the structured slice table.
+- Added Slice-0 open question on whether a `server_id` change should be correlated into the 401/403 error message, and whether repeated denied-write attempts stack Zotero's consent dialog.
+
+#### Adjudication Notes
+- All 15 primary findings passed the evidence filter (grep/read-verified file:line citations); none were rejected for lack of evidence.
+- No finding was rejected on the merits either — this session's four reviewers found convergent, non-overlapping structural issues (three independently flagged variations of the `session.json`/`server_id` diagnostic-field problem from different angles: schema-invariant violation, missing consumer, and a new write-race exposure — triangulated into one clean "cut it" decision rather than three separate patches).
+- The two-agent parallel split (Assumption/Scope Critic's "is this worth the coordination cost?" challenge) was **not** reversed: the user's original `/ak-fix` request explicitly required an "Agent A / Agent B parallel split" as a deliverable. Per this project's decision-authority rule, an audit concern about a user-specified deliverable gets surfaced with its trade-off, not silently overridden — the plan now states the scheduling assumption the split depends on explicitly, so the trade-off is visible rather than resolved unilaterally.
+
+### Whole-Plan Consistency Sweep (2026-08-29, Phase 6 re-plan session)
+- Files reread: plan.md (this file, including the phase table and both prior Red Team Review sessions), phase-06-js-bridge-and-injection-hardening.md (fully rewritten), phase-05, phase-14 (cross-checked for §C1/§C2/§C3 anchor consistency — those labels are preserved in phase-06's new section headers specifically so existing citations from phase-14/plan.md continue to resolve).
+- Decision deltas checked: Connector-API-landed assumption (reversed), PATCH array semantics (corrected), matrix keying (version → capability flag), evidence-tier discipline (LIVE VERIFIED downgraded where unearned), session.json diagnostic field (cut), shared-file identification (catalog.rs → cli.rs/lib.rs), write-interface contract (deferred → fixed upfront), effort/scope justification (added), "~10 privileged ops" estimate (corrected to 4-7).
+- Reconciled stale references: 1 (plan.md phase table row 6).
+- Unresolved contradictions: 0.
+
+### Post-review correction (2026-08-29, user-directed, before commit)
+User caught a Phase 14/Phase 6 ownership error the four automated reviewers missed: the draft above
+still said "Phase 14 already bumped `strict_max_version` to `10.0.*`," which contradicts Phase 14's
+own merge-gate classification ("no `plugin/` directory exists yet anywhere in this repo; Phase 6
+creates it") — confirmed by `find crates -iname "manifest.json"` returning nothing. Corrected in both
+files: Phase 14 established the Zotero-10-compatibility *requirement*; Phase 6 creates the manifest
+and owns setting/live-verifying the bump (`phase-06` §3.12; `plan.md` Zotero 10 impact table, Finding
+2). Also resolved, per explicit user decision, the §3.12 XPI ownership trade-off that the plan had
+left open: **ownership marker**, not an install-time-only single-plugin policy — an upstream plugin
+reinstalled later can silently reclaim the shared `/cli-bridge/eval` endpoint under the single-plugin
+option with no runtime signal, whereas a minimal marker lets `plugin-status` verify ownership
+continuously through the endpoint itself. Unresolved Question 5 in `phase-06` is now marked resolved.
+- Reconciled stale references: 2 (`phase-06` §3.12 body + Requirements bullet; `plan.md` Zotero 10
+  impact table row 2).
 - Unresolved contradictions: 0.
 
 <!-- slug: rust-port-of-cli-anything-zotero -->
