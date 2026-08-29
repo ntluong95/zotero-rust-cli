@@ -6,6 +6,10 @@ license.workspace = true
 repository.workspace = true
 description.workspace = true
 
+[lib]
+name = "zotero_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "zotero-cli"
 path = "src/main.rs"
@@ -20,3 +24,17 @@ path = "src/bin/cli_anything_zotero.rs"
 # rather than at Phase 4/5 when hundreds of call sites depend on them.
 rusqlite = { version = "0.40", features = ["bundled"] }
 ureq = { version = "3", features = ["json"] }
+# Runtime foundation (Phase 3+): CLI parsing, JSON contracts matching
+# Python's json.dumps(..., indent=2) key order exactly, error handling,
+# and cross-platform home-dir resolution for path discovery / session
+# state, matching the reference implementation's Path.home() usage.
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+anyhow = "1"
+dirs = "6"
+# note_html_to_text/note_preview (Python core: html.unescape + regex tag
+# stripping) — item get/list/find always populate these two fields.
+regex = "1"
+html-escape = "0.2"
