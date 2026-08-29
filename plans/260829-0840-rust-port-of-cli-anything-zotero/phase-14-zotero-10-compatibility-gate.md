@@ -365,6 +365,40 @@ install — a VM, a second machine, or an upgrade with a backed-up data director
       locally on this session's host (macOS/aarch64, one of the 5 targets), but this pass did not
       push a branch or run the actual CI matrix
 
+### Merge-gate classification (2026-08-29 integration pass)
+
+The checklist above records **evidence tier** (LIVE VERIFIED / SYNTHETIC / DOC-VERIFIED / BLOCKED)
+for each claim — that language is unchanged from the first pass and must stay that way; it says
+what is actually known, not what blocks integration. This section adds a second, independent axis:
+**does an open item block merging this branch, or is it legitimately this branch's own scope
+boundary?** Product decision (2026-08-29): the Layer A fix (the critical bug) and everything
+verifiable without Phase 6 or a second Zotero installation are ready for integration now; items
+that structurally require work this branch was told not to do are the *next* owner's problem, not a
+reason to hold this one back.
+
+**DEFERRED TO PHASE 6** (this branch cannot do these; Phase 6 owns them by construction):
+- XPI Zotero 10 compatibility (OQ4, `strict_max_version`, `/cli-bridge/eval` hardening check) — no
+  `plugin/` directory exists yet anywhere in this repo; Phase 6 creates it. Evidence stays BLOCKED
+  until Phase 6 has a testable endpoint.
+- Local API write-consent persistence (OQ5) — confirming what "Always Allow" persists across a
+  restart requires an actual Local API write and driving the consent dialog. Verify this during
+  Phase 6's first disposable write spike (against a throwaway library/fixture, not production data).
+  Evidence stays at "partially observed, LIVE VERIFIED (UI only)" until then.
+
+**DEFERRED COMPATIBILITY VERIFICATION** (real gaps, tracked, not blocking this integration):
+- Full 31-command live sweep against a live Zotero ≤9 instance (no ≤9 instance was available in
+  this environment). Track as backward-compatibility verification owed before Zotero ≤9 support is
+  claimed as fully certified, not before this branch merges — the ≤9 code paths (non-WAL
+  `immutable=1` fallback, no `Zotero-Server-ID`) are unchanged from pre-Phase-14 behavior and are
+  DOC-VERIFIED/structurally reasoned, not newly at risk.
+- Migrated saved-search live verification (OQ6) — requires a library that has actually gone through
+  Zotero's saved-search migration, which none available here have.
+
+**REQUIRED BEFORE MERGE:**
+- Green CI on all 5 targets (aarch64-apple-darwin, x86_64-apple-darwin, x86_64-pc-windows-msvc,
+  x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu). Local verification (macOS/aarch64) is not a
+  substitute — this is the actual gate for this PR.
+
 ## Compatibility Impact
 
 | Change | Class | Note |

@@ -152,7 +152,7 @@ harness is built first (Phase 1) and runs continuously rather than as a late gat
 | 11 | [Agent Skill, Docs and License Compliance](./phase-11-agent-skill-docs-and-license-compliance.md) | Regenerated SKILL.md, migration guide, Apache-2.0 compliance | Pending |
 | 12 | [DOCX Zoterify Chain (deferred, gated)](./phase-12-docx-zoterify-chain-deferred-gated.md) | The 7 external-process DOCX commands | Pending |
 | 13 | [Python Retirement](./phase-13-python-retirement.md) | Criteria-driven decommission | Pending |
-| 14 | [**Zotero 10 Compatibility Gate**](./phase-14-zotero-10-compatibility-gate.md) | **BLOCKS P6.** WAL-safe reads, WAL fixture, XPI 10.0.*, capability detection | **In progress — Layer A (SQLite policy), capability detection, HTTP hardening, and the Layer B read-backend specification are done and live-verified; XPI (needs Phase 6 to exist first), full 31-command live Zotero 9/10 sweep, and OQ4/OQ5/OQ6 remain open. See `phase-14`'s Success Criteria.** |
+| 14 | [**Zotero 10 Compatibility Gate**](./phase-14-zotero-10-compatibility-gate.md) | **BLOCKS P6.** WAL-safe reads, WAL fixture, XPI 10.0.*, capability detection | **Ready to merge pending CI.** Layer A (SQLite policy), capability detection, HTTP hardening, and the Layer B read-backend specification are done and live-verified. XPI and Local API write-consent persistence (OQ4/OQ5) are deferred to Phase 6 by construction; the live Zotero ≤9 sweep and migrated-saved-search check (OQ6) are tracked as deferred compatibility verification, not merge blockers. Green 5-target CI is the only remaining merge gate. See `phase-14`'s "Merge-gate classification". |
 
 ### Dependency graph
 

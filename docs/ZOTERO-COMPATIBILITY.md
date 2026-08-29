@@ -14,6 +14,21 @@ Every claim below is tagged with how it was established:
 - **DOC-VERIFIED** — sourced from Zotero's own published documentation, not independently observed live.
 - **BLOCKED** — genuinely unresolved; the reason is stated, not guessed around.
 
+These tags describe **what is known**. They are separate from, and unaffected by, the merge-gate
+status below, which describes **what blocks integrating this branch**.
+
+## Merge-gate status (2026-08-29)
+
+The Layer A fix (the critical WAL/`immutable=1` bug), capability detection, HTTP hardening, and the
+Layer B read-backend specification are complete and verified — see the sections below. The
+remaining open items fall into three buckets:
+
+| Bucket | Items | Why it doesn't block this branch |
+|---|---|---|
+| **Deferred to Phase 6** | XPI Zotero 10 compatibility (OQ4); Local API write-consent persistence (OQ5) | Structurally owned by Phase 6: no `plugin/` exists yet to test the XPI against, and confirming consent persistence needs an actual write, which Phase 6's first disposable write spike is the right place to do (not this read-only pass) |
+| **Deferred compatibility verification** | Live Zotero ≤9 sweep across all 31 commands; migrated saved-search live verification (OQ6) | Tracked gaps, not regressions — the ≤9 code paths are unchanged from before this phase and no ≤9 instance or migrated library was available here |
+| **Required before merge** | Green CI on all 5 targets | The actual gate for this PR; local verification (macOS/aarch64 only) doesn't substitute for it |
+
 ## Support matrix
 
 | Zotero version | Journal mode | SQLite reads | Local API writes | JS-Bridge (XPI) writes |
