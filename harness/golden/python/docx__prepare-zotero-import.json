@@ -1,0 +1,7 @@
+{
+  "command": "docx prepare-zotero-import",
+  "compatibility_class": "Deferred",
+  "fixture_state": "live-only",
+  "skipped": true,
+  "reason": "Phase 12"
+}

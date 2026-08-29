@@ -1,0 +1,40 @@
+{
+  "command": "import json",
+  "args": [
+    "--json",
+    "import",
+    "json",
+    "<ROOT>/fixture/inputs/sample.json"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"action\": \"import_json\",\n  \"path\": \"<ROOT>/fixture/inputs/sample.json\",\n  \"status\": \"success\",\n  \"sessionID\": \"<SESSION_ID>\",\n  \"target\": {\n    \"treeViewID\": \"C1\",\n    \"source\": \"selected\",\n    \"kind\": \"collection\",\n    \"collectionID\": 1,\n    \"collectionName\": \"Sample Collection\",\n    \"libraryID\": 1,\n    \"libraryName\": \"My Library\"\n  },\n  \"tags\": [],\n  \"submitted_count\": 1,\n  \"format\": \"connector\",\n  \"items\": [\n    {\n      \"id\": \"cli-anything-zotero-1\",\n      \"itemType\": \"journalArticle\",\n      \"title\": \"Fixture JSON\"\n    }\n  ],\n  \"attachment_summary\": {\n    \"planned_count\": 0,\n    \"created_count\": 0,\n    \"failed_count\": 0,\n    \"skipped_count\": 0\n  },\n  \"attachment_results\": []\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/connector/saveItems",
+      "body": "{\"sessionID\": \"<SESSION_ID>\", \"items\": [{\"itemType\": \"journalArticle\", \"title\": \"Fixture JSON\", \"id\": \"cli-anything-zotero-1\"}]}"
+    },
+    {
+      "method": "POST",
+      "path": "/connector/getSelectedCollection",
+      "body": "{}"
+    },
+    {
+      "method": "POST",
+      "path": "/connector/updateSession",
+      "body": "{\"sessionID\": \"<SESSION_ID>\", \"target\": \"C1\", \"tags\": \"\"}"
+    }
+  ]
+}

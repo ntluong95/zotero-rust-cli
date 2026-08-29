@@ -1,0 +1,22 @@
+[package]
+name = "zotero-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "zotero-cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "cli-anything-zotero"
+path = "src/bin/cli_anything_zotero.rs"
+
+[dependencies]
+# Added early per Phase 2: these two are the most likely to break
+# cross-compilation across the 5 release targets, so that surfaces now
+# rather than at Phase 4/5 when hundreds of call sites depend on them.
+rusqlite = { version = "0.40", features = ["bundled"] }
+ureq = { version = "3", features = ["json"] }

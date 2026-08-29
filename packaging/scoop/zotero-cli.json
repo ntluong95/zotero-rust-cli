@@ -1,0 +1,25 @@
+{
+  "version": "0.1.0",
+  "description": "Native CLI for AI agents to work with Zotero libraries (Rust port of cli-anything-zotero)",
+  "homepage": "https://github.com/ntluong95/zotero-rust-cli",
+  "license": "Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/ntluong95/zotero-rust-cli/releases/download/v0.1.0/zotero-cli-v0.1.0-x86_64-pc-windows-msvc.zip",
+      "hash": "REPLACE_WITH_X86_64_PC_WINDOWS_MSVC_SHA256",
+      "extract_dir": "zotero-cli-v0.1.0-x86_64-pc-windows-msvc"
+    }
+  },
+  "bin": ["zotero-cli.exe", "cli-anything-zotero.exe"],
+  "checkver": {
+    "github": "https://github.com/ntluong95/zotero-rust-cli"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/ntluong95/zotero-rust-cli/releases/download/v$version/zotero-cli-v$version-x86_64-pc-windows-msvc.zip",
+        "extract_dir": "zotero-cli-v$version-x86_64-pc-windows-msvc"
+      }
+    }
+  }
+}

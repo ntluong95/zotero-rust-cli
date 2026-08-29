@@ -1,0 +1,36 @@
+{
+  "command": "item add-to-collection",
+  "args": [
+    "--json",
+    "item",
+    "add-to-collection",
+    "REG12345",
+    "COLLAAAA"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "\"OK: added item to collection\"\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "var item = Zotero.Items.getByLibraryAndKey(1, 'REG12345'); if (!item) { return 'ERROR: item REG12345 not found'; } var col = Zotero.Collections.getByLibraryAndKey(1, 'COLLAAAA'); if (!col) { return 'ERROR: collection COLLAAAA not found'; } item.addToCollection(col.id); await item.saveTx(); return 'OK: added ' + item.getField('title').substring(0,60) + ' to ' + col.name;"
+    }
+  ]
+}

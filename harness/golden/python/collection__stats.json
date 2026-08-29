@@ -1,0 +1,35 @@
+{
+  "command": "collection stats",
+  "args": [
+    "--json",
+    "collection",
+    "stats",
+    "COLLAAAA"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "\"mock-bridge-ok\"\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "var c = Zotero.Collections.getByLibraryAndKey(1, 'COLLAAAA'); if (!c) { return 'ERROR: collection COLLAAAA not found'; } var ids = c.getChildItems(true); var items = ids.map(id => Zotero.Items.get(id)).filter(i => i && !i.isAttachment() && !i.isNote()); var total = items.length; var withPDF = items.filter(i => i.getAttachments().some(aid => { var a = Zotero.Items.get(aid); return a && a.attachmentContentType === 'application/pdf'; })).length; var years = {}; var journals = {}; items.forEach(i => { var y = (i.getField('date') || '').substring(0,4); if (y) years[y] = (years[y]||0) + 1; var j = i.getField('publicationTitle') || ''; if (j) journals[j] = (journals[j]||0) + 1; }); return {total: total, withPDF: withPDF, noPDF: total - withPDF, byYear: years, topJournals: Object.entries(journals).sort((a,b)=>b[1]-a[1]).slice(0,10).map(e=>({journal:e[0],count:e[1]}))};"
+    }
+  ]
+}

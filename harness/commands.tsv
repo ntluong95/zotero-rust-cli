@@ -1,0 +1,97 @@
+id	command	args_json	class	fixture_state	notes
+1	add arxiv	["--json","add","arxiv","{arxiv}","--no-fetch-pdf"]	Semantic	live-only	Zotero translator/network dependent
+2	add bibtex	["--json","add","bibtex","{bib}"]	Semantic	local-api-on	Connector fake import
+3	add doi	["--json","add","doi","{doi}","--no-fetch-pdf"]	Semantic	live-only	Zotero translator/network dependent
+4	add file	["--json","add","file","{pdf}"]	Semantic	live-only	Zotero translator dependent
+5	add url	["--json","add","url","{url}","--no-fetch-pdf"]	Semantic	live-only	Zotero translator/network dependent
+6	app check-update	["--json","app","check-update"]	Changed	live-only	GitHub network update check
+7	app doctor	["--json","app","doctor"]	Semantic	local-api-off	Fake runtime health
+8	app enable-local-api	["--json","app","enable-local-api"]	Semantic	local-api-off	Fixture user.js update
+9	app install-plugin	["--json","app","install-plugin"]	Semantic	local-api-on	Fixture XPI install
+10	app launch	["--json","app","launch","--wait-timeout","1"]	Semantic	live-only	Process launch
+11	app ping	["--json","app","ping"]	Exact	local-api-on	Fake connector ping
+12	app plugin-status	["--json","app","plugin-status"]	Semantic	local-api-on	Fixture XPI status
+13	app status	["--json","app","status"]	Exact	local-api-off	Fake runtime status
+14	app uninstall-plugin	["--json","app","uninstall-plugin"]	Semantic	local-api-on	Fixture XPI uninstall
+15	app version	["--json","app","version"]	Exact	local-api-on	Fixture application.ini
+16	audit path	["--json","audit","path"]	Exact	local-api-on	Local state only
+17	audit tail	["--json","audit","tail","--limit","5"]	Exact	local-api-on	Local state only
+18	collection create	["--json","collection","create","Fixture Created"]	Semantic	local-api-on	Fake bridge
+19	collection delete	["--json","collection","delete","{collection}","--confirm"]	Semantic	local-api-on	Fake bridge
+20	collection fetch-pdfs	["--json","collection","fetch-pdfs","{collection}","--limit","1","--sources","zotero"]	Semantic	live-only	Fake bridge does not model the cascade response shape
+21	collection find	["--json","collection","find","Sample","--limit","5"]	Exact	local-api-on	SQLite fixture
+22	collection find-pdfs	["--json","collection","find-pdfs","{collection}","--limit","1","--timeout-per-item","1"]	Semantic	local-api-on	Fake bridge
+23	collection get	["--json","collection","get","{collection}"]	Exact	local-api-on	SQLite fixture
+24	collection items	["--json","collection","items","{collection}"]	Exact	local-api-on	SQLite fixture
+25	collection list	["--json","collection","list"]	Exact	local-api-on	SQLite fixture
+26	collection remove-item	["--json","collection","remove-item","{collection}","{item}"]	Semantic	local-api-on	Fake bridge
+27	collection rename	["--json","collection","rename","{collection}","--name","Renamed Fixture"]	Semantic	local-api-on	Fake bridge
+28	collection stats	["--json","collection","stats","{collection}"]	Semantic	local-api-on	Fake bridge
+29	collection tree	["--json","collection","tree"]	Exact	local-api-on	SQLite fixture
+30	collection use-selected	["--json","collection","use-selected"]	Semantic	local-api-on	Fake connector selected collection
+31	docx cite	["--json","docx","cite","{docx_placeholders}","--mode","static","--output","{out_docx}","--force"]	Deferred	live-only	Phase 12
+32	docx doctor	["--json","docx","doctor"]	Deferred	live-only	Phase 12
+33	docx insert-citations	["--json","docx","insert-citations","{docx_placeholders}","--output","{out_docx}","--force"]	Deferred	live-only	Phase 12
+34	docx inspect-citations	["--json","docx","inspect-citations","{docx_citations}"]	Semantic	local-api-on	Pure OOXML JSON
+35	docx inspect-placeholders	["--json","docx","inspect-placeholders","{docx_placeholders}"]	Semantic	local-api-on	Pure OOXML JSON
+36	docx prepare-zotero-import	["--json","docx","prepare-zotero-import","{docx_placeholders}","--output","{out_docx}","--experimental","--force","--skip-external-checks"]	Deferred	live-only	Phase 12
+37	docx render-citations	["--json","docx","render-citations","{docx_placeholders}","--output","{out_docx}","--force"]	Semantic	local-api-on	Pure OOXML output
+38	docx validate-placeholders	["--json","docx","validate-placeholders","{docx_placeholders}"]	Semantic	local-api-on	Pure OOXML plus SQLite
+39	docx zoterify	["--json","docx","zoterify","{docx_placeholders}","--output","{out_docx}","--force","--no-open"]	Deferred	live-only	Phase 12
+40	docx zoterify-preflight	["--json","docx","zoterify-preflight","{docx_placeholders}","--skip-external-checks"]	Deferred	live-only	Phase 12
+41	docx zoterify-probe	["--json","docx","zoterify-probe"]	Deferred	live-only	Phase 12
+42	export bib	["--json","export","bib","--items","{item}","--output","{out_bib}"]	Semantic	local-api-on	Fake Local API export
+43	import doi	["--json","import","doi","{doi}","--no-translator"]	Semantic	live-only	Crossref network
+44	import file	["--json","import","file","{ris}"]	Semantic	local-api-on	Fake connector import
+45	import json	["--json","import","json","{json}"]	Semantic	local-api-on	Fake connector saveItems
+46	import pmid	["--json","import","pmid","{pmid}"]	Semantic	live-only	Zotero translator/network dependent
+47	item add-to-collection	["--json","item","add-to-collection","{item}","{collection}"]	Semantic	local-api-on	Fake bridge
+48	item analyze	["--json","item","analyze","{item}","--question","Summarize","--model","fixture-model"]	Semantic	local-api-on	Fake OpenAI-compatible endpoint
+49	item annotations	["--json","item","annotations","{item}"]	Semantic	local-api-on	Fake bridge
+50	item attach	["--json","item","attach","{item}","{pdf}"]	Semantic	local-api-on	Fake bridge
+51	item attachments	["--json","item","attachments","{item}"]	Exact	local-api-on	SQLite fixture
+52	item bibliography	["--json","item","bibliography","{item}"]	Semantic	local-api-on	Fake Local API
+53	item build-index	["--json","item","build-index"]	Semantic	live-only	Embedding endpoint
+54	item children	["--json","item","children","{item}"]	Exact	local-api-on	SQLite fixture
+55	item citation	["--json","item","citation","{item}"]	Semantic	local-api-on	Fake Local API
+56	item context	["--json","item","context","{item}"]	Semantic	local-api-on	SQLite plus fake Local API
+57	item delete	["--json","item","delete","{item}","--confirm"]	Semantic	local-api-on	Fake bridge
+58	item duplicates	["--json","item","duplicates","--by","doi","--limit","5"]	Semantic	local-api-on	SQLite duplicate detector
+59	item export	["--json","item","export","{item}","--format","bibtex"]	Semantic	local-api-on	Fake Local API
+60	item fetch-pdf	["--json","item","fetch-pdf","REG67890","--sources","zotero","--zotero-timeout","1","--download-timeout","1"]	Semantic	local-api-on	Fake bridge
+61	item file	["--json","item","file","{item}"]	Exact	local-api-on	SQLite fixture
+62	item find	["--json","item","find","{unicode_query}","--limit","5"]	Exact	unicode-cjk	Unicode, quotes, slashes, newline fixture
+63	item find-pdf	["--json","item","find-pdf","{item}","--timeout","1"]	Semantic	local-api-on	Fake bridge
+64	item get	["--json","item","get","{item}"]	Exact	local-api-on	SQLite fixture
+65	item list	["--json","item","list","--limit","5"]	Exact	local-api-on	SQLite fixture
+66	item merge	["--json","item","merge","{item}","REG67890","--dry-run"]	Semantic	local-api-on	SQLite preview
+67	item metrics	["--json","item","metrics","{item}","--pmid","12345678"]	Semantic	live-only	NIH iCite network
+68	item move-to-collection	["--json","item","move-to-collection","{item}","{collection}","--experimental"]	Changed	local-api-on	Experimental direct SQLite in Python
+69	item notes	["--json","item","notes","{item}"]	Exact	local-api-on	SQLite fixture
+70	item search-annotations	["--json","item","search-annotations","Sample","--limit","5"]	Semantic	local-api-on	Fake bridge
+71	item search-fulltext	["--json","item","search-fulltext","Sample","--limit","5"]	Semantic	local-api-on	Fake bridge
+72	item semantic-search	["--json","item","semantic-search","Sample","--top-k","5"]	Semantic	live-only	Embedding endpoint plus vector DB
+73	item similar	["--json","item","similar","{item}","--top-k","5"]	Semantic	live-only	Embedding endpoint plus vector DB
+74	item tag	["--json","item","tag","{item}","--add","fixture-tag"]	Semantic	local-api-on	Fake bridge
+75	item update	["--json","item","update","{item}","--field","title=Updated Fixture"]	Semantic	local-api-on	Fake bridge
+76	js	["--json","js","return Zotero.version"]	Exact	local-api-on	Raw bridge passthrough
+77	library list	["--json","library","list"]	Exact	group-library	Upstream helper includes user and group libraries
+78	note add	["--json","note","add","{item}","--text","Fixture note"]	Semantic	local-api-on	Fake connector
+79	note get	["--json","note","get","NOTEKEY"]	Semantic	local-api-on	SQLite note read
+80	repl	["repl"]	Dropped	live-only	Interactive only
+81	search get	["--json","search","get","{search}"]	Exact	local-api-on	SQLite fixture
+82	search items	["--json","search","items","{search}"]	Exact	local-api-on	Local API plus SQLite fixture
+83	search list	["--json","search","list"]	Exact	empty-library	Empty fixture
+84	session clear-collection	["--json","session","clear-collection"]	Exact	local-api-on	Local state only
+85	session clear-item	["--json","session","clear-item"]	Exact	local-api-on	Local state only
+86	session clear-library	["--json","session","clear-library"]	Exact	local-api-on	Local state only
+87	session history	["--json","session","history","--limit","5"]	Exact	local-api-on	Local state only
+88	session status	["--json","session","status"]	Exact	local-api-on	Local state only
+89	session use-collection	["--json","session","use-collection","{collection}"]	Exact	local-api-on	SQLite plus local state
+90	session use-item	["--json","session","use-item","{item}"]	Exact	local-api-on	SQLite plus local state
+91	session use-library	["--json","session","use-library","1"]	Exact	local-api-on	SQLite plus local state
+92	session use-selected	["--json","session","use-selected"]	Exact	local-api-on	Fake connector plus state
+93	style list	["--json","style","list"]	Exact	local-api-on	Fixture CSL style
+94	sync	["--json","sync"]	Semantic	local-api-on	Fake bridge
+95	tag items	["--json","tag","items","{tag}"]	Exact	local-api-on	SQLite fixture
+96	tag list	["--json","tag","list"]	Exact	unicode-cjk	Unicode, quotes, slashes, newline fixture

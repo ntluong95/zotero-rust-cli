@@ -1,0 +1,17 @@
+{
+  "command": "audit tail",
+  "args": [
+    "--json",
+    "audit",
+    "tail",
+    "--limit",
+    "5"
+  ],
+  "compatibility_class": "Exact",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"action\": \"audit_tail\",\n  \"ok\": true,\n  \"status\": \"success\",\n  \"path\": \"<ROOT>/audit/audit.jsonl\",\n  \"count\": 0,\n  \"entries\": []\n}\n",
+  "stderr": "",
+  "http_calls": []
+}

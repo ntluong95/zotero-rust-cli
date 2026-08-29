@@ -1,0 +1,7 @@
+{
+  "command": "app check-update",
+  "compatibility_class": "Changed",
+  "fixture_state": "live-only",
+  "skipped": true,
+  "reason": "GitHub network update check"
+}

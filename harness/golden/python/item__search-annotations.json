@@ -1,0 +1,37 @@
+{
+  "command": "item search-annotations",
+  "args": [
+    "--json",
+    "item",
+    "search-annotations",
+    "Sample",
+    "--limit",
+    "5"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "\"mock-bridge-ok\"\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "var s = new Zotero.Search(); s.libraryID = 1; s.addCondition('annotationText', 'contains', 'Sample'); var ids = await s.search(); var annots = await Zotero.Items.getAsync(ids); var filtered = annots.filter(a => true); return filtered.slice(0, 5).map(a => { var parent = Zotero.Items.get(a.parentItemID); var grandparent = parent ? Zotero.Items.get(parent.parentItemID) : null; var title = grandparent ? grandparent.getField('title').substring(0,60) : (parent ? parent.getField('title').substring(0,60) : ''); return {type: a.annotationType, text: (a.annotationText || '').substring(0,200), comment: a.annotationComment || '', color: a.annotationColor || '', page: a.annotationPageLabel || '', parentTitle: title}; });"
+    }
+  ]
+}

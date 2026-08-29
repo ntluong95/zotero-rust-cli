@@ -1,0 +1,19 @@
+# Read-only upstream checkout used for research; not vendored into this repo
+reference/
+
+# Rust
+/target/
+**/target/
+Cargo.lock.bak
+
+# Python tooling (harness venv lives outside the repo per phase-01 plan)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Local session/plan metadata
+.agentkit/

@@ -1,0 +1,31 @@
+{
+  "command": "item fetch-pdf",
+  "args": [
+    "--json",
+    "item",
+    "fetch-pdf",
+    "REG67890",
+    "--sources",
+    "zotero",
+    "--zotero-timeout",
+    "1",
+    "--download-timeout",
+    "1"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"action\": \"item_fetch_pdf\",\n  \"ok\": true,\n  \"status\": \"already_has_pdf\",\n  \"code\": \"ALREADY_HAS_PDF\",\n  \"key\": \"REG67890\",\n  \"title\": \"Second Item\",\n  \"DOI\": \"\",\n  \"source\": \"existing\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    }
+  ]
+}

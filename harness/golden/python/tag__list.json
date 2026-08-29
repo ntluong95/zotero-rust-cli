@@ -1,0 +1,24 @@
+{
+  "command": "tag list",
+  "args": [
+    "--json",
+    "tag",
+    "list"
+  ],
+  "compatibility_class": "Exact",
+  "fixture_state": "unicode-cjk",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "[\n  {\n    \"tagID\": 1,\n    \"name\": \"sample-tag\",\n    \"itemCount\": 2\n  },\n  {\n    \"tagID\": 90,\n    \"name\": \"tag\\\\slash 'quote' 中文\",\n    \"itemCount\": 1\n  }\n]\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    }
+  ]
+}

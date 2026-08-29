@@ -1,0 +1,27 @@
+{
+  "command": "item move-to-collection",
+  "args": [
+    "--json",
+    "item",
+    "move-to-collection",
+    "REG12345",
+    "COLLAAAA",
+    "--experimental"
+  ],
+  "compatibility_class": "Changed",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 1,
+  "stdout": "{\n  \"error\": \"Experimental SQLite write commands require Zotero to be closed\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    }
+  ]
+}

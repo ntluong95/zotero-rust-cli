@@ -1,0 +1,37 @@
+{
+  "command": "item merge",
+  "args": [
+    "--json",
+    "item",
+    "merge",
+    "REG12345",
+    "REG67890",
+    "--dry-run"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"action\": \"item_merge\",\n  \"ok\": true,\n  \"status\": \"dry_run\",\n  \"code\": \"DRY_RUN\",\n  \"keep\": {\n    \"key\": \"REG12345\",\n    \"title\": \"Sample Title\",\n    \"DOI\": \"10.1000/sample\",\n    \"date\": \"<TIMESTAMP>\",\n    \"itemType\": \"journalArticle\",\n    \"tags\": [\n      \"sample-tag\"\n    ],\n    \"collections\": [\n      {\n        \"id\": 1,\n        \"key\": \"COLLAAAA\",\n        \"name\": \"Sample Collection\"\n      }\n    ],\n    \"attachments\": [\n      {\n        \"key\": \"ATTACHKEY\",\n        \"title\": \"\",\n        \"contentType\": \"application/pdf\",\n        \"filename\": \"storage:paper.pdf\"\n      }\n    ],\n    \"notes\": [\n      {\n        \"key\": \"NOTEKEY\",\n        \"title\": \"Example note\"\n      }\n    ],\n    \"nAttachments\": 1,\n    \"nNotes\": 1,\n    \"nTags\": 1,\n    \"nCollections\": 1\n  },\n  \"others\": [\n    {\n      \"key\": \"REG67890\",\n      \"title\": \"Second Item\",\n      \"DOI\": \"\",\n      \"date\": \"<TIMESTAMP>\",\n      \"itemType\": \"journalArticle\",\n      \"tags\": [\n        \"sample-tag\"\n      ],\n      \"collections\": [\n        {\n          \"id\": 2,\n          \"key\": \"COLLBBBB\",\n          \"name\": \"Archive Collection\"\n        },\n        {\n          \"id\": 1,\n          \"key\": \"COLLAAAA\",\n          \"name\": \"Sample Collection\"\n        }\n      ],\n      \"attachments\": [\n        {\n          \"key\": \"LINKATT1\",\n          \"title\": \"\",\n          \"contentType\": \"application/pdf\",\n          \"filename\": \"file:///C:/Users/Public/linked.pdf\"\n        }\n      ],\n      \"notes\": [],\n      \"nAttachments\": 1,\n      \"nNotes\": 0,\n      \"nTags\": 1,\n      \"nCollections\": 2\n    }\n  ],\n  \"missing\": [],\n  \"will\": {\n    \"move_attachments\": 1,\n    \"move_notes\": 0,\n    \"add_tags\": [],\n    \"add_collections\": [\n      {\n        \"id\": 2,\n        \"key\": \"COLLBBBB\",\n        \"name\": \"Archive Collection\"\n      }\n    ],\n    \"trash_items\": [\n      \"REG67890\"\n    ]\n  },\n  \"preview_source\": \"sqlite\",\n  \"summary\": {\n    \"trash_count\": 1,\n    \"move_attachments\": 1,\n    \"move_notes\": 0,\n    \"add_tags\": [],\n    \"add_collections\": [\n      \"Archive Collection\"\n    ]\n  },\n  \"message\": \"Would trash 1 item(s) into keep=REG12345: move 1 attachment(s), 0 note(s); add 0 tag(s), 1 collection(s). (preview via sqlite) Re-run with --confirm to apply.\",\n  \"bridge_error\": \"preview failed\",\n  \"plan\": {\n    \"keep\": \"REG12345\",\n    \"merge\": [\n      \"REG67890\"\n    ],\n    \"dry_run\": true\n  },\n  \"dry_run\": true\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "function summarize(item) {   if (!item) return null;   var tags = (item.getTags() || []).map(t => (t && (t.tag || t.name)) || String(t));   var cols = (item.getCollections() || []).map(id => {     var c = Zotero.Collections.get(id);     return c ? {id: c.id, key: c.key, name: c.name} : {id: id};   });   var attachments = (item.getAttachments() || []).map(id => {     var a = Zotero.Items.get(id);     if (!a) return {id: id};     return {key: a.key, title: a.getField('title'), contentType: a.attachmentContentType || '',             filename: a.attachmentFilename || '', linkMode: a.attachmentLinkMode};   });   var notes = ((item.getNotes && item.getNotes()) || []).map(id => {     var n = Zotero.Items.get(id);     if (!n) return {id: id};     var title = ''; try { title = n.getNoteTitle ? n.getNoteTitle() : n.getField('title'); } catch (e) {}     return {key: n.key, title: (title || '').substring(0, 80)};   });   return {key: item.key, title: item.getField('title'), DOI: item.getField('DOI') || '',           date: item.getField('date') || '', itemType: item.itemType,           tags: tags, collections: cols, attachments: attachments, notes: notes,           nAttachments: attachments.length, nNotes: notes.length, nTags: tags.length, nCollections: cols.length}; } var keys = [\"REG12345\", \"REG67890\"]; var keep = Zotero.Items.getByLibraryAndKey(1, keys[0]); if (!keep) { return {ok:false, error:'keep item not found', keep: keys[0]}; } var keepSum = summarize(keep); var others = []; var missing = []; for (var i = 1; i < keys.length; i++) {   var it = Zotero.Items.getByLibraryAndKey(1, keys[i]);   if (!it) { missing.push(keys[i]); continue; }   others.push(summarize(it)); } var keepTagSet = new Set(keepSum.tags || []); var keepColSet = new Set((keepSum.collections || []).map(c => c.key || String(c.id))); var tagsToAdd = []; var colsToAdd = []; var attachmentsToMove = 0; var notesToMove = 0; for (var o of others) {   attachmentsToMove += (o.nAttachments || 0);   notesToMove += (o.nNotes || 0);   for (var t of (o.tags || [])) { if (!keepTagSet.has(t)) { tagsToAdd.push(t); keepTagSet.add(t); } }   for (var c of (o.collections || [])) {     var ck = c.key || String(c.id);     if (!keepColSet.has(ck)) { colsToAdd.push(c); keepColSet.add(ck); }   } } return {ok:true, keep: keepSum, others: others, missing: missing,         will: {move_attachments: attachmentsToMove, move_notes: notesToMove,                add_tags: tagsToAdd, add_collections: colsToAdd, trash_items: others.map(o => o.key)}}; "
+    }
+  ]
+}

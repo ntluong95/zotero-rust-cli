@@ -1,0 +1,25 @@
+{
+  "command": "note get",
+  "args": [
+    "--json",
+    "note",
+    "get",
+    "NOTEKEY"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"itemID\": 3,\n  \"key\": \"NOTEKEY\",\n  \"libraryID\": 1,\n  \"itemTypeID\": 3,\n  \"typeName\": \"note\",\n  \"dateAdded\": \"<TIMESTAMP>\",\n  \"dateModified\": \"<TIMESTAMP>\",\n  \"version\": 1,\n  \"title\": \"Example note\",\n  \"DOI\": \"\",\n  \"date\": null,\n  \"hasPdf\": false,\n  \"noteParentItemID\": 1,\n  \"noteContent\": \"<div>Example note</div>\",\n  \"attachmentParentItemID\": null,\n  \"annotationParentItemID\": null,\n  \"annotationText\": null,\n  \"annotationComment\": null,\n  \"linkMode\": null,\n  \"contentType\": null,\n  \"attachmentPath\": null,\n  \"fields\": {},\n  \"creators\": [],\n  \"tags\": [],\n  \"isAttachment\": false,\n  \"isNote\": true,\n  \"isAnnotation\": false,\n  \"parentItemID\": 1,\n  \"noteText\": \"Example note\",\n  \"notePreview\": \"Example note\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    }
+  ]
+}

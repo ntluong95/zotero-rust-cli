@@ -1,0 +1,25 @@
+{
+  "command": "item context",
+  "args": [
+    "--json",
+    "item",
+    "context",
+    "REG12345"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"item\": {\n    \"itemID\": 1,\n    \"key\": \"REG12345\",\n    \"libraryID\": 1,\n    \"itemTypeID\": 1,\n    \"typeName\": \"journalArticle\",\n    \"dateAdded\": \"<TIMESTAMP>\",\n    \"dateModified\": \"<TIMESTAMP>\",\n    \"version\": 1,\n    \"title\": \"Sample Title\",\n    \"DOI\": \"10.1000/sample\",\n    \"date\": null,\n    \"hasPdf\": true,\n    \"noteParentItemID\": null,\n    \"noteContent\": null,\n    \"attachmentParentItemID\": null,\n    \"annotationParentItemID\": null,\n    \"annotationText\": null,\n    \"annotationComment\": null,\n    \"linkMode\": null,\n    \"contentType\": null,\n    \"attachmentPath\": null,\n    \"fields\": {\n      \"DOI\": \"10.1000/sample\",\n      \"title\": \"Sample Title\",\n      \"url\": \"https://example.com/paper\"\n    },\n    \"creators\": [\n      {\n        \"creatorID\": 1,\n        \"firstName\": \"Ada\",\n        \"lastName\": \"Lovelace\",\n        \"fieldMode\": 0,\n        \"creatorTypeID\": 1,\n        \"orderIndex\": 0\n      }\n    ],\n    \"tags\": [\n      {\n        \"tagID\": 1,\n        \"name\": \"sample-tag\",\n        \"type\": 0\n      }\n    ],\n    \"isAttachment\": false,\n    \"isNote\": false,\n    \"isAnnotation\": false,\n    \"parentItemID\": null,\n    \"noteText\": \"\",\n    \"notePreview\": \"\"\n  },\n  \"attachments\": [\n    {\n      \"itemID\": 2,\n      \"key\": \"ATTACHKEY\",\n      \"libraryID\": 1,\n      \"itemTypeID\": 2,\n      \"typeName\": \"attachment\",\n      \"dateAdded\": \"<TIMESTAMP>\",\n      \"dateModified\": \"<TIMESTAMP>\",\n      \"version\": 1,\n      \"title\": \"\",\n      \"DOI\": \"\",\n      \"date\": null,\n      \"hasPdf\": false,\n      \"noteParentItemID\": null,\n      \"noteContent\": null,\n      \"attachmentParentItemID\": 1,\n      \"annotationParentItemID\": null,\n      \"annotationText\": null,\n      \"annotationComment\": null,\n      \"linkMode\": 0,\n      \"contentType\": \"application/pdf\",\n      \"attachmentPath\": \"storage:paper.pdf\",\n      \"fields\": {},\n      \"creators\": [],\n      \"tags\": [],\n      \"isAttachment\": true,\n      \"isNote\": false,\n      \"isAnnotation\": false,\n      \"parentItemID\": 1,\n      \"noteText\": \"\",\n      \"notePreview\": \"\",\n      \"resolvedPath\": \"<ROOT>/fixture/ZoteroData/storage/ATTACHKEY/paper.pdf\"\n    }\n  ],\n  \"notes\": [],\n  \"exports\": {},\n  \"links\": {},\n  \"prompt_context\": \"Title: Sample Title\\nItem Key: REG12345\\nItem Type: journalArticle\\nCreators: Ada Lovelace\\nDOI: 10.1000/sample\\nurl: https://example.com/paper\\nAttachments:\\n- ATTACHKEY: <ROOT>/fixture/ZoteroData/storage/ATTACHKEY/paper.pdf\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    }
+  ]
+}

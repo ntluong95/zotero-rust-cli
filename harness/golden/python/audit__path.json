@@ -1,0 +1,15 @@
+{
+  "command": "audit path",
+  "args": [
+    "--json",
+    "audit",
+    "path"
+  ],
+  "compatibility_class": "Exact",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"action\": \"audit_path\",\n  \"ok\": true,\n  \"status\": \"success\",\n  \"path\": \"<ROOT>/audit/audit.jsonl\"\n}\n",
+  "stderr": "",
+  "http_calls": []
+}

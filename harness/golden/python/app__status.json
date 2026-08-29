@@ -1,0 +1,24 @@
+{
+  "command": "app status",
+  "args": [
+    "--json",
+    "app",
+    "status"
+  ],
+  "compatibility_class": "Exact",
+  "fixture_state": "local-api-off",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"executable\": \"<ROOT>/fixture/Program Files/Zotero/zotero.exe\",\n  \"executable_exists\": true,\n  \"install_dir\": \"<ROOT>/fixture/Program Files/Zotero\",\n  \"version\": \"7.0.32\",\n  \"profile_root\": \"<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default\",\n  \"profile_dir\": \"<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default\",\n  \"data_dir\": \"<ROOT>/fixture/ZoteroData\",\n  \"data_dir_exists\": true,\n  \"sqlite_path\": \"<ROOT>/fixture/ZoteroData/zotero.sqlite\",\n  \"sqlite_exists\": true,\n  \"styles_dir\": \"<ROOT>/fixture/ZoteroData/styles\",\n  \"styles_exists\": true,\n  \"storage_dir\": \"<ROOT>/fixture/ZoteroData/storage\",\n  \"storage_exists\": true,\n  \"translators_dir\": \"<ROOT>/fixture/ZoteroData/translators\",\n  \"translators_exists\": true,\n  \"port\": \"<PORT>\",\n  \"local_api_enabled_configured\": false,\n  \"backend\": \"auto\",\n  \"connector_available\": true,\n  \"connector_message\": \"connector available\",\n  \"local_api_available\": false,\n  \"local_api_message\": \"local API disabled\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    }
+  ]
+}

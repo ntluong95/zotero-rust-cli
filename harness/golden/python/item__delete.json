@@ -1,0 +1,36 @@
+{
+  "command": "item delete",
+  "args": [
+    "--json",
+    "item",
+    "delete",
+    "REG12345",
+    "--confirm"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "\"mock-bridge-ok\"\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "var item = Zotero.Items.getByLibraryAndKey(1, 'REG12345'); if (!item) { return 'ERROR: item REG12345 not found'; } var title = item.getField('title').substring(0,60); await item.eraseTx(); return 'DELETED: ' + title;"
+    }
+  ]
+}

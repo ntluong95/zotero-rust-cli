@@ -1,0 +1,24 @@
+{
+  "command": "app enable-local-api",
+  "args": [
+    "--json",
+    "app",
+    "enable-local-api"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-off",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"profile_dir\": \"<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default\",\n  \"user_js_path\": \"<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default/user.js\",\n  \"already_enabled\": false,\n  \"enabled\": true,\n  \"launched\": false,\n  \"connector_ready\": true,\n  \"local_api_ready\": false\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    }
+  ]
+}

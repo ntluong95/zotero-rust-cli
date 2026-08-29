@@ -1,0 +1,16 @@
+{
+  "command": "session use-collection",
+  "args": [
+    "--json",
+    "session",
+    "use-collection",
+    "COLLAAAA"
+  ],
+  "compatibility_class": "Exact",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"current_library\": null,\n  \"current_collection\": \"COLLAAAA\",\n  \"current_item\": null,\n  \"state_path\": \"<ROOT>/state/session.json\",\n  \"history_count\": 0\n}\n",
+  "stderr": "",
+  "http_calls": []
+}

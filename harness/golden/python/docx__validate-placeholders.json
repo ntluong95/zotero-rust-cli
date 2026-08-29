@@ -1,0 +1,25 @@
+{
+  "command": "docx validate-placeholders",
+  "args": [
+    "--json",
+    "docx",
+    "validate-placeholders",
+    "<ROOT>/fixture/inputs/placeholders.docx"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"path\": \"<ROOT>/fixture/inputs/placeholders.docx\",\n  \"placeholder_count\": 2,\n  \"citation_count\": 2,\n  \"unique_keys\": [\n    \"NOITEM99\",\n    \"REG12345\"\n  ],\n  \"duplicate_keys\": [],\n  \"placeholders\": [\n    {\n      \"raw\": \"{{zotero:REG12345}}\",\n      \"keys\": [\n        \"REG12345\"\n      ],\n      \"context\": \"Known {{zotero:REG12345}} and missing {{zotero:NOITEM99}}.\"\n    },\n    {\n      \"raw\": \"{{zotero:NOITEM99}}\",\n      \"keys\": [\n        \"NOITEM99\"\n      ],\n      \"context\": \"Known {{zotero:REG12345}} and missing {{zotero:NOITEM99}}.\"\n    }\n  ],\n  \"invalid_placeholders\": [],\n  \"notes\": [\n    \"Zotero placeholders are present; validate them before converting or finalizing the DOCX.\",\n    \"Some Zotero placeholder keys do not resolve to local Zotero items.\"\n  ],\n  \"ok\": false,\n  \"valid_count\": 1,\n  \"missing_count\": 1,\n  \"items\": [\n    {\n      \"itemID\": 1,\n      \"key\": \"REG12345\",\n      \"libraryID\": 1,\n      \"typeName\": \"journalArticle\",\n      \"title\": \"Sample Title\",\n      \"year\": null,\n      \"doi\": \"10.1000/sample\",\n      \"pmid\": null\n    }\n  ],\n  \"missing_keys\": [\n    \"NOITEM99\"\n  ],\n  \"errors\": {\n    \"NOITEM99\": \"Item not found: NOITEM99\"\n  }\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    }
+  ]
+}

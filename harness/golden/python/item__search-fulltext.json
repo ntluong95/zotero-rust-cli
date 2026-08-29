@@ -1,0 +1,37 @@
+{
+  "command": "item search-fulltext",
+  "args": [
+    "--json",
+    "item",
+    "search-fulltext",
+    "Sample",
+    "--limit",
+    "5"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "\"mock-bridge-ok\"\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "var s = new Zotero.Search(); s.libraryID = 1; s.addCondition('fulltextContent', 'contains', 'Sample'); var ids = await s.search(); var items = await Zotero.Items.getAsync(ids); return items.slice(0, 5).map(i => ({key: i.key, title: i.getField('title'), date: i.getField('date')}));"
+    }
+  ]
+}

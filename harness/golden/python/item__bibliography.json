@@ -1,0 +1,29 @@
+{
+  "command": "item bibliography",
+  "args": [
+    "--json",
+    "item",
+    "bibliography",
+    "REG12345"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"itemKey\": \"REG12345\",\n  \"libraryID\": 1,\n  \"style\": null,\n  \"locale\": null,\n  \"linkwrap\": false,\n  \"bibliography\": \"REG12345 bibliography\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/0/items/REG12345?format=json&include=bib"
+    }
+  ]
+}

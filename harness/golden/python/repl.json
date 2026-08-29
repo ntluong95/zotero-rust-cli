@@ -1,0 +1,7 @@
+{
+  "command": "repl",
+  "compatibility_class": "Dropped",
+  "fixture_state": "live-only",
+  "skipped": true,
+  "reason": "Interactive only"
+}

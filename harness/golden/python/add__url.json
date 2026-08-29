@@ -1,0 +1,7 @@
+{
+  "command": "add url",
+  "compatibility_class": "Semantic",
+  "fixture_state": "live-only",
+  "skipped": true,
+  "reason": "Zotero translator/network dependent"
+}

@@ -1,0 +1,37 @@
+{
+  "command": "item find-pdf",
+  "args": [
+    "--json",
+    "item",
+    "find-pdf",
+    "REG12345",
+    "--timeout",
+    "1"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 1,
+  "stdout": "{\n  \"action\": \"item_find_pdf\",\n  \"ok\": false,\n  \"status\": \"error\",\n  \"code\": \"FIND_PDF_FAILED\",\n  \"error\": \"mock-bridge-ok\",\n  \"key\": \"REG12345\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "var item = Zotero.Items.getByLibraryAndKey(1, 'REG12345'); if (!item) { return 'ERROR: item REG12345 not found'; } var att = await Zotero.Attachments.addAvailablePDF(item); return att ? 'FOUND: ' + att.key : 'NOT_FOUND: no PDF available for ' + item.getField('title').substring(0,60);"
+    }
+  ]
+}

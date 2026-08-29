@@ -1,0 +1,7 @@
+{
+  "command": "import doi",
+  "compatibility_class": "Semantic",
+  "fixture_state": "live-only",
+  "skipped": true,
+  "reason": "Crossref network"
+}

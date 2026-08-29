@@ -1,0 +1,31 @@
+{
+  "command": "item export",
+  "args": [
+    "--json",
+    "item",
+    "export",
+    "REG12345",
+    "--format",
+    "bibtex"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"itemKey\": \"REG12345\",\n  \"libraryID\": 1,\n  \"format\": \"bibtex\",\n  \"content\": \"@article{reg12345}\\n\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/0/items/REG12345?format=bibtex"
+    }
+  ]
+}

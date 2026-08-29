@@ -1,0 +1,29 @@
+{
+  "command": "search items",
+  "args": [
+    "--json",
+    "search",
+    "items",
+    "SEARCHKEY"
+  ],
+  "compatibility_class": "Exact",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "[\n  {\n    \"key\": \"REG12345\"\n  }\n]\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/0/searches/SEARCHKEY/items?format=json"
+    }
+  ]
+}

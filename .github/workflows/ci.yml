@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-13
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      - name: Build (release)
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+
+      - name: Test
+        run: cargo test --workspace --release --target ${{ matrix.target }}
+
+      - name: Verify binaries run
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_dir="target/${{ matrix.target }}/release"
+          ext=""
+          if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
+          "$bin_dir/zotero-cli$ext"
+          "$bin_dir/cli-anything-zotero$ext"
+
+      - name: Report binary size
+        shell: bash
+        run: |
+          bin_dir="target/${{ matrix.target }}/release"
+          ext=""
+          if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
+          ls -la "$bin_dir/zotero-cli$ext"

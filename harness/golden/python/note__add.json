@@ -1,0 +1,37 @@
+{
+  "command": "note add",
+  "args": [
+    "--json",
+    "note",
+    "add",
+    "REG12345",
+    "--text",
+    "Fixture note"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"action\": \"note_add\",\n  \"key\": \"MOCKNOTE\",\n  \"itemID\": 99999,\n  \"parentItemKey\": \"REG12345\",\n  \"parentItemID\": 1,\n  \"format\": \"text\",\n  \"notePreview\": \"Fixture note\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "var parent = Zotero.Items.getByLibraryAndKey(1, 'REG12345'); if (!parent) { return 'ERROR: parent item not found'; } var note = new Zotero.Item('note'); note.libraryID = 1; note.parentItemID = parent.id; note.setNote('<p>Fixture note</p>'); await note.saveTx(); return {key: note.key, itemID: note.id, title: parent.getField('title').substring(0,60)};"
+    }
+  ]
+}

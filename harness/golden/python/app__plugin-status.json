@@ -1,0 +1,39 @@
+{
+  "command": "app plugin-status",
+  "args": [
+    "--json",
+    "app",
+    "plugin-status"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"plugin\": {\n    \"xpi_installed\": false,\n    \"xpi_path\": \"<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default/extensions/cli-bridge@cli-anything.dev.xpi\",\n    \"profile_dir\": \"<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default\",\n    \"installed_version\": null,\n    \"bundled_version\": \"1.2.1\",\n    \"update_available\": false\n  },\n  \"bridge\": {\n    \"endpoint_active\": true,\n    \"js_ok\": false,\n    \"js_result\": \"mock-bridge-ok\",\n    \"js_error\": null\n  },\n  \"plugin_installed\": false,\n  \"endpoint_active\": true,\n  \"profile_dir\": \"<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default\",\n  \"ready\": false,\n  \"next_step\": \"Run: zotero-cli app install-plugin, restart Zotero, then rerun this command.\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return {ok: true, value: 'cli-bridge-ok'};"
+    }
+  ]
+}

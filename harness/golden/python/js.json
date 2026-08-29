@@ -1,0 +1,34 @@
+{
+  "command": "js",
+  "args": [
+    "--json",
+    "js",
+    "return Zotero.version"
+  ],
+  "compatibility_class": "Exact",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "\"mock-bridge-ok\"\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return Zotero.version"
+    }
+  ]
+}

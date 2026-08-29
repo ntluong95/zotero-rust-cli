@@ -1,0 +1,16 @@
+{
+  "command": "docx inspect-citations",
+  "args": [
+    "--json",
+    "docx",
+    "inspect-citations",
+    "<ROOT>/fixture/inputs/citations.docx"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"path\": \"<ROOT>/fixture/inputs/citations.docx\",\n  \"has_fields\": true,\n  \"systems\": [\n    \"endnote\",\n    \"static-text\"\n  ],\n  \"field_counts\": {\n    \"endnote\": 1\n  },\n  \"field_count\": 1,\n  \"fields\": [\n    {\n      \"system\": \"endnote\",\n      \"instruction\": \"ADDIN EN.CITE\"\n    }\n  ],\n  \"static_citation_count\": 1,\n  \"static_citation_samples\": [\n    \"[1]\"\n  ],\n  \"notes\": [\n    \"EndNote fields are present; Zotero cannot refresh these as Zotero citations.\",\n    \"Static citation-looking text is present; these citations may not be refreshable fields.\"\n  ]\n}\n",
+  "stderr": "",
+  "http_calls": []
+}

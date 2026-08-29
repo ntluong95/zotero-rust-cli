@@ -1,0 +1,7 @@
+{
+  "command": "item metrics",
+  "compatibility_class": "Semantic",
+  "fixture_state": "live-only",
+  "skipped": true,
+  "reason": "NIH iCite network"
+}

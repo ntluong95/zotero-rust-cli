@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            archive: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cargo-license
+        run: cargo install cargo-license --locked
+
+      - name: Generate third-party license bundle
+        shell: bash
+        run: bash packaging/generate-third-party-licenses.sh THIRD-PARTY-LICENSES.md
+
+      - name: Build (release)
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+
+      # Ad-hoc signing (no paid Apple Developer account): satisfies the
+      # arm64 "must be signed to run" requirement, but does NOT clear
+      # Gatekeeper quarantine on downloaded files. Homebrew is the
+      # documented primary macOS channel; docs/INSTALL.md carries the
+      # `xattr -d com.apple.quarantine` fallback for direct downloads.
+      - name: Ad-hoc codesign (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --sign - --timestamp=none "target/${{ matrix.target }}/release/zotero-cli"
+          codesign --force --sign - --timestamp=none "target/${{ matrix.target }}/release/cli-anything-zotero"
+
+      - name: Stage archive contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="stage/zotero-cli-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "$stage"
+          ext=""
+          if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
+          cp "target/${{ matrix.target }}/release/zotero-cli$ext" "$stage/"
+          cp "target/${{ matrix.target }}/release/cli-anything-zotero$ext" "$stage/"
+          cp LICENSE "$stage/"
+          cp NOTICE-CHANGES.md "$stage/"
+          cp THIRD-PARTY-LICENSES.md "$stage/"
+          echo "STAGE=$stage" >> "$GITHUB_ENV"
+
+      - name: Archive (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          out="zotero-cli-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          tar -C stage -czf "$out" "$(basename "$STAGE")"
+          echo "ARCHIVE=$out" >> "$GITHUB_ENV"
+
+      - name: Archive (zip)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          out="zotero-cli-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          (cd stage && 7z a "../$out" "$(basename "$STAGE")")
+          echo "ARCHIVE=$out" >> "$GITHUB_ENV"
+
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+
+      # Free, keyless signing via GitHub's Sigstore-backed attestation
+      # service. No paid signing credentials required. Verify with:
+      #   gh attestation verify <file> --repo ${{ github.repository }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: "dist/*"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

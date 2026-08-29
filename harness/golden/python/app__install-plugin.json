@@ -1,0 +1,39 @@
+{
+  "command": "app install-plugin",
+  "args": [
+    "--json",
+    "app",
+    "install-plugin"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "{\n  \"action\": \"install_plugin\",\n  \"method\": \"manual\",\n  \"plugin_path\": \"<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default/extensions/cli-bridge@cli-anything.dev.xpi\",\n  \"message\": \"Plugin .xpi created. Install manually in Zotero: Tools > Add-ons > gear icon > Install Add-on From File, then select: <ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default/extensions/cli-bridge@cli-anything.dev.xpi. Restart Zotero so /cli-bridge/eval is active, then run: zotero-cli app plugin-status.\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "var {AddonManager} = ChromeUtils.importESModule('resource://gre/modules/AddonManager.sys.mjs'); var file = Zotero.File.pathToFile('<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default/extensions/cli-bridge@cli-anything.dev.xpi'); var install = await AddonManager.getInstallForFile(file); await install.install(); return 'OK: ' + install.addon.id;"
+    }
+  ]
+}

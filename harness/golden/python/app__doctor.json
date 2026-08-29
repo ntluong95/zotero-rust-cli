@@ -1,0 +1,39 @@
+{
+  "command": "app doctor",
+  "args": [
+    "--json",
+    "app",
+    "doctor"
+  ],
+  "compatibility_class": "Semantic",
+  "fixture_state": "local-api-off",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 1,
+  "stdout": "{\n  \"action\": \"app_doctor\",\n  \"ok\": false,\n  \"status\": \"degraded\",\n  \"code\": \"DEGRADED\",\n  \"ready\": false,\n  \"read_ready\": true,\n  \"write_ready\": false,\n  \"checks\": {\n    \"package\": {\n      \"ok\": true,\n      \"version\": \"1.2.1\"\n    },\n    \"zotero_app\": {\n      \"ok\": true,\n      \"version\": \"7.0.32\",\n      \"executable\": \"<ROOT>/fixture/Program Files/Zotero/zotero.exe\",\n      \"data_dir\": \"<ROOT>/fixture/ZoteroData\",\n      \"profile_dir\": \"<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default\"\n    },\n    \"connector\": {\n      \"ok\": true,\n      \"message\": \"connector available\"\n    },\n    \"local_api\": {\n      \"ok\": false,\n      \"message\": \"local API disabled\",\n      \"configured\": false\n    },\n    \"plugin\": {\n      \"ok\": false,\n      \"xpi_installed\": false,\n      \"xpi_path\": \"<ROOT>/fixture/AppData/Roaming/Zotero/Zotero/Profiles/test.default/extensions/cli-bridge@cli-anything.dev.xpi\",\n      \"installed_version\": null,\n      \"bundled_version\": \"1.2.1\",\n      \"update_available\": false\n    },\n    \"bridge\": {\n      \"ok\": false,\n      \"endpoint_active\": true,\n      \"js_ok\": false,\n      \"js_error\": null,\n      \"js_result\": \"mock-bridge-ok\",\n      \"zotero_js_version\": null\n    }\n  },\n  \"next_steps\": [\n    \"Enable Local API: zotero-cli app enable-local-api --launch (or Zotero Settings → Advanced → allow other apps).\",\n    \"Install CLI Bridge: zotero-cli app install-plugin, then restart Zotero.\"\n  ],\n  \"summary\": \"Some surfaces are unavailable; see checks and next_steps.\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return 'ping';"
+    },
+    {
+      "method": "POST",
+      "path": "/cli-bridge/eval",
+      "body": "return {ok: true, value: 'cli-bridge-ok', version: Zotero.version};"
+    }
+  ]
+}

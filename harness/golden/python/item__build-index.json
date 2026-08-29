@@ -1,0 +1,7 @@
+{
+  "command": "item build-index",
+  "compatibility_class": "Semantic",
+  "fixture_state": "live-only",
+  "skipped": true,
+  "reason": "Embedding endpoint"
+}

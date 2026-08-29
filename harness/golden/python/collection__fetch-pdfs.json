@@ -1,0 +1,7 @@
+{
+  "command": "collection fetch-pdfs",
+  "compatibility_class": "Semantic",
+  "fixture_state": "live-only",
+  "skipped": true,
+  "reason": "Fake bridge does not model the cascade response shape"
+}
