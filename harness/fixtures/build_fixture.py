@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
+import os
 import sqlite3
 import zipfile
 from pathlib import Path
@@ -51,6 +53,50 @@ def _add_unicode_case(sqlite_path: Path) -> None:
         cur.execute("INSERT INTO collectionItems VALUES (?, ?, 0)", (90, 90))
 
 
+def _wal_worker(sqlite_path: str) -> None:
+    conn = sqlite3.connect(sqlite_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        "INSERT INTO items VALUES (?, ?, '2026-08-17', '2026-08-17', '2026-08-17', ?, ?, 1, 1)",
+        (91, 1, 1, "WALFIX01"),
+    )
+    conn.commit()
+    # Deliberately never call conn.close(): SQLite checkpoints a WAL
+    # database's -wal file back into the main file as part of closing the
+    # *last* connection to it (see sqlite.org "Checkpoint Starvation" /
+    # "Closing WAL" docs) -- a clean close here would checkpoint this row
+    # right back out of -wal, defeating the entire point of this fixture
+    # (phase-14-zotero-10-compatibility-gate.md §2: "The fixture must leave
+    # rows in the WAL, uncheckpointed -- a fixture that checkpoints on
+    # close proves nothing"). `os._exit()` terminates this child process
+    # immediately, skipping Python's interpreter shutdown/GC/atexit
+    # entirely, so `sqlite3_close()` (and its checkpoint-on-last-close
+    # logic) never runs. This is portable: unlike sending a kill signal to
+    # simulate a crash, `os._exit()` works identically on Windows, macOS,
+    # and Linux.
+    os._exit(0)
+
+
+def _add_wal_mode_case(sqlite_path: Path) -> None:
+    # Runs in a genuinely separate process (not just a thread) so this
+    # process's own `sqlite3` connection -- and Python's normal interpreter
+    # shutdown, which would otherwise run on this process's exit -- can
+    # never touch the child's connection or trigger its checkpoint.
+    proc = multiprocessing.Process(target=_wal_worker, args=(str(sqlite_path),))
+    proc.start()
+    proc.join(timeout=30)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join()
+    wal_path = sqlite_path.with_name(sqlite_path.name + "-wal")
+    if not wal_path.exists() or wal_path.stat().st_size == 0:
+        raise RuntimeError(
+            "wal-mode fixture setup did not leave an uncheckpointed -wal "
+            "file; this fixture cannot demonstrate the bug it exists to "
+            "cover -- see phase-14-zotero-10-compatibility-gate.md §2"
+        )
+
+
 def _empty_library(sqlite_path: Path) -> None:
     with sqlite3.connect(sqlite_path) as conn:
         for table in (
@@ -96,6 +142,8 @@ def build_fixture(base: Path, state: str) -> dict[str, str]:
         _empty_library(paths["sqlite_path"])
     if state == "unicode-cjk":
         _add_unicode_case(paths["sqlite_path"])
+    if state == "wal-mode":
+        _add_wal_mode_case(paths["sqlite_path"])
 
     input_dir = base / "inputs"
     input_dir.mkdir(exist_ok=True)
@@ -129,6 +177,13 @@ def main() -> int:
             "empty-library",
             "group-library",
             "unicode-cjk",
+            # Zotero-10-compatibility-gate fixture
+            # (phase-14-zotero-10-compatibility-gate.md §2): leaves item
+            # WALFIX01 (id 91) committed to the WAL journal but
+            # deliberately uncheckpointed, so a reader that ignores -wal
+            # (the pre-fix `mode=ro&immutable=1` connection) observably
+            # misses it while a WAL-aware reader (`mode=ro`) sees it.
+            "wal-mode",
             # No dedicated data mutation (see build_fixture()) -- this
             # state only changes capture.py's control flow (no fake
             # HTTP server is started at all). Listed here so `--state`

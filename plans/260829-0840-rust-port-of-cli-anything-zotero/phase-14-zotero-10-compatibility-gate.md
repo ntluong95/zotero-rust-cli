@@ -1,7 +1,7 @@
 ---
 phase: 14
 title: "Zotero 10 Compatibility Gate"
-status: todo
+status: in-progress
 priority: P1
 effort: "3-5d"
 dependencies: [4, 5]
@@ -159,34 +159,32 @@ do" by default. Columns, as specified:
 
 `Command | Zotero running | Zotero closed | stale fallback | parity impact`
 
-Draft below, built from the current `catalog.rs`/`db.rs` implementation and the Local API surface
-described in `plan.md`'s Zotero 10 findings — **not yet verified against Zotero 10's actual
-documented Local API capabilities for each shape**, which is why several cells are marked `TBD`.
-Resolving every `TBD` (empirically, against a live Zotero 10, the same discipline as the Open
-Questions) is part of this phase's Implementation Steps and Success Criteria below, not a
-prerequisite to recording the matrix itself.
+**Resolved 2026-08-29** against a real, running Zotero 10.0.1 instance (LIVE VERIFIED unless noted
+otherwise) — see `docs/ZOTERO-COMPATIBILITY.md` for the classified evidence log this table
+summarizes. `catalog.rs` routing (layer B) is still **not implemented** by this resolution — per
+this phase's scope, resolving the matrix is a specification deliverable only.
 
 | Command | Zotero running | Zotero closed | Stale fallback | Parity impact |
 |---|---|---|---|---|
-| `library list` | `TBD`: verify whether Local API exposes a library list with the same fields `fetch_libraries` needs (`editable`, `filesEditable`, `storageVersion`, `archived`); if not, SQLite via layer A | SQLite `mode=ro` (layer A) | `--allow-stale-sqlite` only if layer A's `mode=ro` itself is denied | None if Local API can match the shape; needs a compatibility renderer otherwise |
-| `collection list` / `find` / `get` | `TBD`: Local API exposes collections, but `itemCount` aggregation and the exact field set need verification | SQLite `mode=ro` | Same as above | Same as above |
-| `collection items` | Local API `GET /collections/<key>/items` likely satisfies the item-listing half; the collection-ref resolution half still needs library/collection lookup (Local API or SQLite, `TBD`) | SQLite `mode=ro` | Same | Needs compatibility renderer (item shape) — see Phase 6 §C2 |
-| `collection tree` | `TBD`: Local API's parent/child representation for the tree walk is unverified | SQLite `mode=ro` | Same | None if verified equivalent |
-| `item list` / `get` | Local API `GET /items` / `GET /items/<key>` can very likely satisfy this | SQLite `mode=ro` | Same | Needs compatibility renderer (Phase 6 §C2) — Local API's item shape is not `_normalize_item`'s shape |
+| `library list` | **Resolved: no Local API equivalent.** `GET /api/users/0/collections`/`/items` embed a `library` object with only `type`, `id`, `name`, `links` — none of `editable`/`filesEditable`/`storageVersion`/`archived`/`lastSync` that `fetch_libraries` needs. Remains SQLite via layer A. | SQLite `mode=ro` (layer A) | N/A — no Local API path exists to prefer over SQLite in the first place | None; SQLite-only was always the only option, just now confirmed rather than assumed |
+| `collection list` / `find` / `get` | **Resolved: yes.** `GET /api/users/0/collections` returns `key`, `version`, `data.name`, `data.parentCollection` (`false` or parent key), `meta.numItems` (item count), `meta.numCollections` (child count) | SQLite `mode=ro` | `--allow-stale-sqlite` only if layer A's `mode=ro` itself is denied | Needs a compatibility renderer: field names/shape diverge from `Collection` (`data.name` vs `collectionName`, `parentCollection` vs `parentCollectionID`, nested `data`/`meta` vs flat) |
+| `collection items` | **Resolved: yes**, from two already-verified pieces: collection-ref resolution via `collections` above, item listing via the `items/top` shape verified below (and already proven live in `find_items`'s landed Local-API-first branch, which hits the same collection-scoped endpoint) | SQLite `mode=ro` | Same | Needs compatibility renderer (item shape) — see Phase 6 §C2 |
+| `collection tree` | **Resolved: yes.** `data.parentCollection` from `collections` above is sufficient to walk the tree (`false` = root, else parent key) | SQLite `mode=ro` | Same | None — tree-walk logic is equivalent, only field names differ (covered by the collection renderer) |
+| `item list` / `get` | **Resolved: yes.** `GET /api/users/0/items/top` / `/items/<key>` return `key`, `version`, `library`, `links`, `meta` (`creatorSummary`, `parsedDate`, `numChildren`), `data` (`itemType`, `title`, `creators[]`, all typed fields) | SQLite `mode=ro` | Same | Needs compatibility renderer (Phase 6 §C2) confirmed — Local API's item shape is structurally different from `_normalize_item`'s flattened shape, not just renamed fields |
 | `item find` | **Already Local-API-first in landed code** (`catalog::find_items`); SQLite title-search is the existing fallback when Local API returns nothing or `--exact-title` is set | SQLite `mode=ro` title search (existing fallback path) | Extend so the *existing* SQLite fallback also honors layer A's refuse/opt-in policy, not just a fresh direct call | Already handled by the landed Local-API-first branch; no new parity risk beyond what layer A adds to its own SQLite leg |
-| `item children` / `notes` / `attachments` | Local API can likely list an item's children; resolving the parent item itself still needs `resolve_item`-equivalent lookup (`TBD` whether fully Local-API-representable) | SQLite `mode=ro` | Same | Needs compatibility renderer; `attachments`' `resolvedPath` is a **local filesystem computation** regardless of backend — never sourced from either API |
+| `item children` / `notes` / `attachments` | **Resolved: yes.** `GET /api/users/0/items/<key>/children` returns the full child list, including attachments with `data.filename`, `data.linkMode`, `data.contentType`, and (bonus, unused by this port by design) `links.enclosure.href` — a `file://` path Zotero itself resolves for `imported_file` attachments | SQLite `mode=ro` | Same | Needs compatibility renderer; `attachments`' `resolvedPath` stays a **local filesystem computation** regardless of backend, per this phase's own design — never sourced from either API, including the enclosure link just found |
 | `item file` | Same as `item attachments`, plus a local filesystem `exists()` check that is backend-independent | SQLite `mode=ro` | Same | Same as attachments |
-| `search list` / `get` | `TBD` — **highest-priority unresolved item**: Local API's representation of saved-search *conditions* (the actual query definition, not just results) is unverified and may not exist at all. If it does not, this command has **no Local API equivalent** and must get an explicit documented behavior under layer B rather than being silently routed to layer A's refusal | SQLite `mode=ro` | If no Local API equivalent exists, this command needs the `--allow-stale-sqlite` opt-in to remain usable at all while Zotero runs and Local API can't help — that is a real product decision to make explicitly, not default into | None if SQLite-only is the accepted answer; flag in `docs/ZOTERO-COMPATIBILITY.md` either way |
-| `search items` | **Already Local-API-only** in landed code (`catalog::search_items` errors today if Local API is unavailable, regardless of whether Zotero is running or closed) | Errors today — no SQLite fallback exists; `TBD` whether Phase 14 should add one or accept the existing hard dependency | N/A — no SQLite path exists to fall back to | No SQLite involvement at all currently; unaffected by layer A |
-| `tag list` / `items` | `TBD`: Local API's tag+item-count aggregation shape is unverified | SQLite `mode=ro` | Same | Same |
+| `search list` / `get` | **DOC-VERIFIED, not live-verified** — no saved search exists in the only available live Zotero 10 instance (confirmed empty via read-only SQLite query against the real library), and creating one to test would write to the user's real production library, out of scope for this read-only pass. Zotero's public Web API docs (`zotero.org/support/dev/web_api/v3/*`) and the third-party Pyzotero client's documented response shape both show `GET .../searches/<key>` returning `data.conditions: [{condition, operator, value}, ...]` — the exact shape `SavedSearchCondition` needs. The Local API is documented to mirror the Web API's object JSON, and every sibling endpoint checked this session (`items`, `collections`, `tags`) matched the Web API v3 shape exactly, so this is assessed **likely yes** but flagged DOC-VERIFIED pending live confirmation against a populated saved search | SQLite `mode=ro` | `--allow-stale-sqlite` opt-in remains the fallback until the DOC-VERIFIED answer above is upgraded to LIVE VERIFIED | Needs a compatibility renderer if confirmed; document the DOC-VERIFIED caveat in `docs/ZOTERO-COMPATIBILITY.md` either way |
+| `search items` | **Already Local-API-only** in landed code (`catalog::search_items` errors today if Local API is unavailable, regardless of whether Zotero is running or closed) | Errors today — no SQLite fallback exists; **resolved: accept the existing hard dependency**, consistent with `search list`/`get`'s Local-API-preferred direction once DOC-VERIFIED is confirmed live | N/A — no SQLite path exists to fall back to | No SQLite involvement at all currently; unaffected by layer A |
+| `tag list` / `items` | **Resolved: yes.** `GET /api/users/0/tags` returns `tag`, `links`, `meta.type`, `meta.numItems` — the item-count aggregation `fetch_tags` needs | SQLite `mode=ro` | Same | Needs compatibility renderer (`tag` vs `name`, nested `meta.numItems` vs flat `itemCount`) |
 | `style list` | **No backend decision needed at all** — pure local filesystem CSL parsing, no SQLite and no HTTP in either Zotero state | Same | N/A | None |
 | `session status` / `use-collection` / `use-item` / `clear-*` / `history` | **No backend decision needed** — pure local JSON state file, zero SQLite and zero HTTP | Same | N/A | None |
-| `session use-library` | Needs library resolution (same `TBD` as `library list`) | SQLite `mode=ro` | Same as `library list` | None if resolved via Local API cleanly |
-| `session use-selected` / `collection use-selected` | Not SQLite-backed at all — HTTP-mediated via the connector's `getSelectedCollection`, gated on Open Question 3 (Phase 5's decision matrix). Listed here only to state explicitly that layer A's SQLite policy does not apply to these two commands | Selection state only exists while Zotero runs — command is inherently Zotero-running-only | N/A | Already Semantic/HTTP-mediated class; unaffected by the SQLite connection policy |
+| `session use-library` | Needs library resolution — **resolved (inherits `library list`'s answer): SQLite via layer A**, Local API has no equivalent field set | SQLite `mode=ro` | Same as `library list` | None; was already going to be SQLite-only |
+| `session use-selected` / `collection use-selected` | **Resolved (Open Question 3 answered).** `/connector/getSelectedCollection` exists on Zotero 10.0.1, requires `POST {}` (not GET — a live 400 "Endpoint does not support method" confirms this), and returns the single currently-selected collection/library (`{libraryID, libraryName, editable, id, name, targets: [...]}`). Live testing found Zotero 10.0.1's collection tree has **no multi-select at all** — Cmd-click and Shift-click both simply move the single selection rather than extending it — so "multi-selection" is not a reachable UI state for this endpoint; the response is inherently single-valued. A true "nothing selected" state was not reachable either: the tree always keeps exactly one row focused once any collection/library has ever been clicked in a session. Not SQLite-backed at all — layer A's policy does not apply to these two commands | Selection state only exists while Zotero runs — command is inherently Zotero-running-only | N/A | Already Semantic/HTTP-mediated class; unaffected by the SQLite connection policy. `use-selected`'s implementation can assume single-collection-or-absent semantics, never a list |
 
-**What this table is not:** a claim that any of the `TBD` cells are resolved, or that layer B is
-implemented. It is the enumeration of decision points layer B must resolve — each `TBD` becomes a
-finding the same way Open Questions 1–6 do, with the same "live-verified, not guessed" discipline.
+**What this table is not:** a claim that layer B is implemented — resolving the specification above
+is this phase's deliverable; wiring the routing into `catalog.rs` remains separable follow-up work,
+as originally scoped.
 
 ### 2. WAL-mode harness fixture (makes the fix permanently testable)
 
@@ -314,22 +312,92 @@ install — a VM, a second machine, or an upgrade with a backed-up data director
 
 ## Success Criteria
 
-- [ ] Open Questions 1–6 answered against a live Zotero 10, recorded in the research report
-- [ ] `connect_readonly` reads WAL databases completely — verified by the `wal-mode` fixture
-- [ ] The `wal-mode` fixture **demonstrably fails** when `immutable=1` is reintroduced
-- [ ] All 31 landed commands Exact/Semantic against `wal-mode` fixtures
-- [ ] All 31 landed commands verified against a **live Zotero 10** and a **live Zotero 9**
-- [x] ~~`immutable=1` appears nowhere in the codebase except a comment explaining why it must not return~~ — **superseded by the 2026-08-29 correction above**: `immutable=1` is retained, by design, for (a) non-WAL databases (Zotero ≤9, always correct there) and (b) the explicit `--allow-stale-sqlite` opt-in on a WAL database. It must never be the silent default when `-wal` is present and `mode=ro` fails.
-- [ ] Capability detection correctly reports 10+ vs ≤9 on both live versions
-- [ ] `app status` exposes `server_id` + `local_api_writes_available`; goldens re-baselined
-- [ ] Conformance test asserts no `Mozilla/` UA and no `Origin` on Zotero-local requests
-- [ ] XPI installs and registers `/cli-bridge/eval` on Zotero 10 **and** Zotero 9
-- [ ] `/cli-bridge/eval` confirmed reachable under Zotero 10 HTTP hardening (OQ4)
-- [ ] `docs/ZOTERO-COMPATIBILITY.md` states the support matrix honestly
-- [ ] Read-backend matrix (§1c) has zero remaining `TBD` cells, each resolved against a live Zotero
-      10 with the same discipline as the Open Questions — **specification only; no `catalog.rs`
-      routing implementation is required by this criterion**
-- [ ] CI green on all 5 targets
+- [~] Open Questions 1–6 answered against a live Zotero 10 — **OQ1, OQ2, OQ3 LIVE VERIFIED this
+      session (independently re-confirmed OQ1); OQ4 and OQ6 remain genuinely BLOCKED (no XPI exists
+      yet for OQ4; no migrated saved-search library available for OQ6); OQ5 partially observed
+      (LIVE VERIFIED, UI-only) — see `docs/ZOTERO-COMPATIBILITY.md` §Open Questions for the full,
+      classified account. Not all six are closed.**
+- [x] `connect_readonly` reads WAL databases completely — LIVE VERIFIED against a real Zotero
+      10.0.1 (`~/Zotero/zotero.sqlite`) and against the project's own `wal-mode` harness fixture;
+      also covered by 4 permanent unit tests in `db.rs`
+- [x] The `wal-mode` fixture **demonstrably fails** when `immutable=1` is reintroduced —
+      LIVE VERIFIED at the harness level (Python's unmodified `immutable=1`-based
+      `connect_readonly` returns `"Item not found"` for the fixture's deliberately-uncheckpointed
+      row; Rust's fix returns it correctly) **and** SYNTHETIC/deterministic at the unit-test level
+      (`db::tests::wal_mode_immutable_fallback_silently_misses_uncheckpointed_commits` and 3
+      sibling tests reproduce both the bug and the refusal path without needing a live instance)
+- [ ] All 31 landed commands Exact/Semantic against `wal-mode` fixtures — **not done**; only 2
+      representative rows (`item get`/`item list`) were added and verified this pass, per the
+      plan's own "representative read commands" scope, not the full 31
+- [ ] All 31 landed commands verified against a **live Zotero 10** and a **live Zotero 9** —
+      **not done**; spot-verified against live Zotero 10 (WAL/lock behavior, HTTP hardening,
+      capability detection, selection semantics) but not all 31 commands individually, and no
+      Zotero ≤9 instance was available in this environment at all (BLOCKED)
+- [x] ~~`immutable=1` appears nowhere in the codebase except a comment explaining why it must not return~~ — **superseded by the 2026-08-29 correction above**: `immutable=1` is retained, by design, for (a) non-WAL databases (Zotero ≤9, always correct there) and (b) the explicit `--allow-stale-sqlite` opt-in on a WAL database. It must never be the silent default when `-wal` is present and `mode=ro` fails. **Implementation note (this pass):** the `--allow-stale-sqlite` CLI flag itself was deliberately *not* wired — `connect_readonly` refuses unconditionally on a locked WAL database rather than offering a bypass, which is stricter than this criterion requires, not looser. Threading an opt-in flag through all 24 read commands' call sites is left as follow-up scope.
+- [x] Capability detection correctly reports 10+ vs ≤9 on both live versions — LIVE VERIFIED for
+      10+ against the real Zotero 10.0.1 instance (`Zotero-Server-ID: QR43gFhLblRt` captured, even
+      on a 403 when Local API is disabled). The ≤9 branch (`server_id: None`) has no live Zotero ≤9
+      to test against in this environment, but is DOC-VERIFIED/structurally guaranteed: Zotero ≤9
+      never sends this header at all (a 2026-vintage capability, per `phase-14` §4's own sourcing),
+      and every existing harness fixture (which never sends the header) already exercises the
+      `None` branch as an Exact-classified regression via `app status`
+- [x] `app status` exposes `server_id` + `local_api_writes_available`; goldens re-baselined —
+      additive fields implemented, harness-normalized (`harness/normalize.py`), and verified
+      Exact against the Python golden for both `app status` rows (13 and 97) via the project's own
+      `capture.py`/`compare.py` pipeline
+- [x] Conformance test asserts no `Mozilla/` UA and no `Origin` on Zotero-local requests —
+      `crates/zotero-cli/tests/zotero10_conformance.rs`, 3 passing tests; the underlying claim
+      (Zotero silently drops both) is itself LIVE VERIFIED against the real Zotero 10.0.1 instance
+      (`curl` exit 52, empty reply, for both conditions independently)
+- [ ] XPI installs and registers `/cli-bridge/eval` on Zotero 10 **and** Zotero 9 — **BLOCKED**:
+      no `plugin/` directory or manifest exists anywhere in this repo yet (confirmed by search);
+      the XPI is explicitly created in Phase 6, which this pass was instructed not to start
+- [ ] `/cli-bridge/eval` confirmed reachable under Zotero 10 HTTP hardening (OQ4) — **BLOCKED**,
+      same reason: no custom endpoint exists yet to test against, live or otherwise
+- [x] `docs/ZOTERO-COMPATIBILITY.md` states the support matrix honestly
+- [~] Read-backend matrix (§1c) has zero remaining `TBD` cells — **12 of 13 rows resolved to LIVE
+      VERIFIED; `search list`/`get`'s Local API conditions shape is resolved to DOC-VERIFIED only**
+      (no populated saved search available to confirm live without writing to the user's real
+      library, which was out of scope). Every cell has a concrete, classified answer; one is not at
+      the highest evidence tier. **Specification only; no `catalog.rs` routing implementation was
+      done, as scoped.**
+- [ ] CI green on all 5 targets — **not verified**; `cargo build`/`test`/`clippy`/`fmt` all pass
+      locally on this session's host (macOS/aarch64, one of the 5 targets), but this pass did not
+      push a branch or run the actual CI matrix
+
+### Merge-gate classification (2026-08-29 integration pass)
+
+The checklist above records **evidence tier** (LIVE VERIFIED / SYNTHETIC / DOC-VERIFIED / BLOCKED)
+for each claim — that language is unchanged from the first pass and must stay that way; it says
+what is actually known, not what blocks integration. This section adds a second, independent axis:
+**does an open item block merging this branch, or is it legitimately this branch's own scope
+boundary?** Product decision (2026-08-29): the Layer A fix (the critical bug) and everything
+verifiable without Phase 6 or a second Zotero installation are ready for integration now; items
+that structurally require work this branch was told not to do are the *next* owner's problem, not a
+reason to hold this one back.
+
+**DEFERRED TO PHASE 6** (this branch cannot do these; Phase 6 owns them by construction):
+- XPI Zotero 10 compatibility (OQ4, `strict_max_version`, `/cli-bridge/eval` hardening check) — no
+  `plugin/` directory exists yet anywhere in this repo; Phase 6 creates it. Evidence stays BLOCKED
+  until Phase 6 has a testable endpoint.
+- Local API write-consent persistence (OQ5) — confirming what "Always Allow" persists across a
+  restart requires an actual Local API write and driving the consent dialog. Verify this during
+  Phase 6's first disposable write spike (against a throwaway library/fixture, not production data).
+  Evidence stays at "partially observed, LIVE VERIFIED (UI only)" until then.
+
+**DEFERRED COMPATIBILITY VERIFICATION** (real gaps, tracked, not blocking this integration):
+- Full 31-command live sweep against a live Zotero ≤9 instance (no ≤9 instance was available in
+  this environment). Track as backward-compatibility verification owed before Zotero ≤9 support is
+  claimed as fully certified, not before this branch merges — the ≤9 code paths (non-WAL
+  `immutable=1` fallback, no `Zotero-Server-ID`) are unchanged from pre-Phase-14 behavior and are
+  DOC-VERIFIED/structurally reasoned, not newly at risk.
+- Migrated saved-search live verification (OQ6) — requires a library that has actually gone through
+  Zotero's saved-search migration, which none available here have.
+
+**REQUIRED BEFORE MERGE:**
+- Green CI on all 5 targets (aarch64-apple-darwin, x86_64-apple-darwin, x86_64-pc-windows-msvc,
+  x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu). Local verification (macOS/aarch64) is not a
+  substitute — this is the actual gate for this PR.
 
 ## Compatibility Impact
 

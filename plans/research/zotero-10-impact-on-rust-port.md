@@ -143,20 +143,28 @@ for a contradiction during the cross-document consistency review.
 
 1. **Does `mode=ro` (no `immutable`) open a live Zotero 10 DB while Zotero holds it?** WAL readers
    must map `-shm`; a read-only open can fail `SQLITE_CANTOPEN`. Originally flagged (recovered
-   verbatim, `plan.md`) as "the highest-risk unknown in the whole adaptation." **Answered — see §7.**
-2. **Does `Host: 127.0.0.1:23119` (with port) pass** Zotero 10's new Host allowlist? Not yet
-   re-verified after the data loss — see §7 for what could and could not be re-tested this session.
+   verbatim, `plan.md`) as "the highest-risk unknown in the whole adaptation." **Answered — see §7,
+   and independently re-confirmed 2026-08-29 in a separate session — see §7.3.**
+2. **Does `Host: 127.0.0.1:23119` (with port) pass** Zotero 10's new Host allowlist? **Answered
+   2026-08-29 — see §7.3: yes, both `Host: localhost:23119` and `Host: 127.0.0.1:23119` pass; an
+   unrelated `Host` value gets a real `400`.**
 3. **Does `/connector/getSelectedCollection` still exist in 10, and what does it return under
    multi-selection?** Determines `use-selected` semantics — see `phase-05`'s recovered decision
-   matrix. Not yet answered.
+   matrix. **Answered 2026-08-29 — see §7.3: the endpoint exists (requires `POST`, not `GET`), and
+   Zotero 10.0.1's collection tree has no multi-select at all, so "under multi-selection" is not a
+   reachable state to answer for.**
 4. **Does `/cli-bridge/eval` still pass** the hardened browser-origin check without
    `allowRequestsFromUnsafeWebContent`? Not yet answered — no XPI/plugin exists in this repository
    yet to test against (Phase 6 has not started), so this question is currently untestable regardless
    of live Zotero access, and stays open until Phase 6 produces a testable endpoint.
 5. **Does "Always Allow" survive a Zotero restart, and where is the key stored?** Determines whether
    unattended agent writes are viable at all on Zotero 10 (see §4). Requires driving Zotero's own
-   consent-dialog UI, which was not attempted this session (read-only, non-interactive verification
-   only) — not yet answered.
+   consent-dialog UI. **Partially observed 2026-08-29 (UI only, no live write attempted — see
+   §7.3): Zotero's Advanced settings expose a "Clear Write Authorizations" control, gated on at
+   least one authorization existing, confirming *some* persistence mechanism exists. What exactly
+   survives a restart, and where it's stored, still requires driving the consent dialog via an
+   actual write, which was deliberately not attempted (real production library, writes out of
+   scope for this pass).**
 6. **Do Zotero-10-migrated saved searches** (e.g. `childNote` → `note` + `resultLevel`) change
    `search list`/`search get` JSON versus the Python baseline on the same library? Not yet answered;
    requires a library that has actually gone through Zotero's migration, not merely a fresh Zotero 10
@@ -220,3 +228,68 @@ sandboxing artifact (an earlier attempt at the same probes failed differently, w
 refusal from a sandboxed shell that does not share the host's loopback network namespace by default,
 which was resolved before the process-quit issue occurred). OQ2–OQ6 remain open pending a fresh
 Zotero 10 relaunch and a repeat pass; §6 above marks each accordingly.
+
+### §7.3 Completed repeat pass (2026-08-29, separate session, zotero10-compat-impl branch)
+
+The relaunch this section anticipated happened, in a later session implementing the Zotero 10
+compatibility gate against a real, running Zotero 10.0.1 instance on the same dev machine. Recorded
+here as genuinely new, independently-gathered evidence — not a recovery or continuation of §7.1/§7.2
+(this session never saw their content beforehand) — and it happens to corroborate §7.1's OQ1 finding
+independently, which is worth noting given §7.1 itself was reconstructed rather than a verbatim
+recovery.
+
+**OQ1, independently re-confirmed.** Direct `sqlite3` CLI probes against the real
+`~/Zotero/zotero.sqlite` (confirmed WAL-active: non-empty `-wal`/`-shm` files, growing while Zotero
+ran) while Zotero 10.0.1 held it open:
+
+```
+mode=ro&immutable=1                    -> succeeds, 5754 rows
+mode=ro (no immutable), timeout=2000ms -> FAILS every time: "database is locked" (SQLITE_BUSY)
+```
+
+Same failure on a bare `SELECT 1`. After quitting Zotero (WAL auto-checkpointed to 0 bytes on
+clean exit), `mode=ro` succeeded and matched `immutable=1`'s count exactly. Matches §7.1's finding
+and its interpretation (Zotero holds an exclusive-locking-mode connection, independent of journal
+mode) precisely.
+
+**OQ2, answered.** `Host: localhost:23119` → `200`. `Host: 127.0.0.1:23119` (this port's actual
+client base URL) → `200`. `Host: evil.example.com` → real `400 Bad Request`.
+
+**HTTP hardening, independently confirmed beyond OQ2.** `curl` with a `Mozilla/`-prefixed
+`User-Agent`, and separately with any `Origin` header, both produced exit code 52 ("empty reply
+from server") against `/connector/ping` and `/api/` — a genuine dropped connection, not a JSON
+error response. A plain `ureq/x.y`-style UA with no `Origin` passed cleanly.
+
+**Capability detection.** `GET /api/` carried `Zotero-Server-ID: QR43gFhLblRt` on **every**
+response observed, including a `403 Forbidden` (`"Nothing to see here."` body) when the Local API
+was disabled in preferences at the time — a stronger discriminator than the original text
+anticipated (header presence, not `200`-gated).
+
+**OQ3, answered.** `/connector/getSelectedCollection` requires `POST {}`; a `GET` returns
+`400 Endpoint does not support method`. With a single collection selected, it returns
+`{libraryID, libraryName, editable, id, name, tags: {...}, targets: [...]}` — `id` an integer, not
+the `"C<n>"` form used inside `targets`. Attempting to reproduce "multi-selection" via both
+Cmd-click and Shift-click on Zotero 10.0.1's collection tree found **no multi-select support at
+all**: both gestures simply moved the single selection rather than extending it. A true
+zero-selection state was not reachable either — the tree keeps exactly one row focused once
+anything has been clicked in the session.
+
+**OQ5, partially observed (UI only).** Zotero's Advanced settings exposed a "Clear Write
+Authorizations" control once the Local API was enabled — grayed out until at least one write
+authorization exists, confirming persistence of *something* beyond the current session, but no
+write was actually attempted (deliberately out of scope), so what survives a restart and where it's
+stored remain open.
+
+**Local API endpoint shapes, live-verified for the read-backend matrix.** Against the real library
+(Local API temporarily enabled for testing, then reverted): `GET /collections` returns
+`key`/`version`/`data.name`/`data.parentCollection`/`meta.numItems`/`meta.numCollections`;
+`GET /items/top` and `/items/<key>` return the standard Web-API-v3 item shape; `GET /items/<key>/children`
+returns child items including attachments with `data.filename`/`linkMode`/`contentType` and a
+`links.enclosure.href` file path; `GET /tags` returns `tag`/`meta.type`/`meta.numItems`. No
+saved search existed in this library to verify `GET /searches/<key>`'s conditions shape live; the
+Web API's public docs and Pyzotero's documented response format describe `data.conditions:
+[{condition, operator, value}]`, assessed DOC-VERIFIED rather than LIVE VERIFIED for this reason.
+Full detail in `docs/ZOTERO-COMPATIBILITY.md` and `phase-14-zotero-10-compatibility-gate.md` §1c.
+
+**Not re-attempted:** OQ4 (still no XPI in this repo to test) and OQ6 (no migrated saved-search
+library available). Both remain open for the same reasons §6 already states.

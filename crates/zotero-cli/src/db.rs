@@ -6,12 +6,12 @@
 //! re-checking against golden fixtures, since SQLite column order feeds
 //! JSON key order.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use regex::Regex;
-use rusqlite::{Connection, OpenFlags, Row};
+use rusqlite::{Connection, ErrorCode, OpenFlags, Row};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -205,7 +205,38 @@ pub struct Library {
     pub archived: i64,
 }
 
-/// `connect_readonly()` (`zotero_sqlite.py:25-32`).
+/// `connect_readonly()` (`zotero_sqlite.py:25-32`), corrected for Zotero 10's
+/// WAL-mode database per `phase-14-zotero-10-compatibility-gate.md` §1/§1b.
+///
+/// The original unconditional `mode=ro&immutable=1` silently drops
+/// uncheckpointed WAL commits: `immutable=1` tells SQLite the file will
+/// never change, so it never attaches `-wal` at all. Zotero 10 enables WAL,
+/// so every uncheckpointed row vanished with no error.
+///
+/// The naive fix ("just drop `immutable=1`") is not sufficient either.
+/// Live-verified independently against a real, running Zotero 10.0.1
+/// instance (2026-08-29): Zotero holds its own database connection in
+/// SQLite's exclusive locking mode on every version, not only in WAL mode —
+/// a plain `mode=ro` open fails with `SQLITE_BUSY` on the *first statement*
+/// (confirmed with a bare `SELECT 1`, at busy timeouts up to 2s, 5+
+/// consecutive reproductions), which is why `immutable=1` was chosen
+/// originally: not for staleness tolerance, but because it was the only way
+/// to open the file at all while Zotero runs. The failure surfaces at
+/// statement-prepare time, not at `Connection::open_with_flags` time, so
+/// this function must run a real probe query to detect it here rather than
+/// deferring to the caller's first query.
+///
+/// Corrected policy: try the WAL-safe `mode=ro` open first — this is the
+/// only path taken when Zotero is closed, or when the database has no
+/// `-wal` sidecar (Zotero <=9's rollback-journal format), i.e. zero
+/// behavior change for pre-10 installs. If that fails with `SQLITE_BUSY`
+/// specifically (Zotero is running and holds the lock) and a `-wal` file
+/// exists, refuse loudly rather than silently returning a possibly
+/// incomplete snapshot — `immutable=1` must never be a silent fallback on a
+/// WAL database. If `SQLITE_BUSY` occurs with no `-wal` file present, the
+/// database is not in WAL mode, so `immutable=1` cannot miss anything it
+/// wasn't already going to miss; falling back there matches the
+/// unconditional pre-10 behavior exactly.
 pub fn connect_readonly(sqlite_path: &Path) -> anyhow::Result<Connection> {
     if !sqlite_path.exists() {
         return Err(DomainError::new(format!(
@@ -222,13 +253,59 @@ pub fn connect_readonly(sqlite_path: &Path) -> anyhow::Result<Connection> {
     // `\\?\` extended-length prefix, which SQLite's URI parser does not
     // accept — that would trade this bug for a different one.
     let posix_path = sqlite_path.to_string_lossy().replace('\\', "/");
-    let uri = format!("file:{posix_path}?mode=ro&immutable=1");
+
+    match open_and_probe(&format!("file:{posix_path}?mode=ro")) {
+        Ok(conn) => Ok(conn),
+        Err(err) if is_sqlite_busy(&err) => {
+            if wal_sidecar_path(sqlite_path).exists() {
+                Err(DomainError::new(format!(
+                    "Zotero appears to be running and holds an exclusive lock on the \
+                     WAL-mode database ({}). Reading with immutable=1 would silently \
+                     skip uncheckpointed commits, so this refuses instead of returning \
+                     stale data. Close Zotero and retry, or use a command backed by the \
+                     Zotero Local API while Zotero is running.",
+                    sqlite_path.display()
+                ))
+                .into())
+            } else {
+                open_and_probe(&format!("file:{posix_path}?mode=ro&immutable=1"))
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Opens a read-only SQLite URI and runs a trivial probe query so a lock
+/// held by another process (Zotero) surfaces here, not on the caller's
+/// first real query — see `connect_readonly`'s doc comment for why the
+/// probe is necessary (the failure occurs at prepare time, not open time).
+fn open_and_probe(uri: &str) -> anyhow::Result<Connection> {
     let conn = Connection::open_with_flags(
-        &uri,
+        uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )?;
     conn.busy_timeout(Duration::from_secs_f64(1.0))?;
+    conn.query_row("SELECT 1", [], |_| Ok(()))?;
     Ok(conn)
+}
+
+fn is_sqlite_busy(err: &anyhow::Error) -> bool {
+    matches!(
+        err.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::SqliteFailure(ffi_err, _)) if ffi_err.code == ErrorCode::DatabaseBusy
+    )
+}
+
+/// The WAL sidecar file SQLite maintains alongside a database in WAL
+/// journal mode (e.g. `zotero.sqlite` -> `zotero.sqlite-wal`). Its presence
+/// — even at 0 bytes, since Zotero holds the database open continuously —
+/// is how `connect_readonly` distinguishes "Zotero 10+ holding a WAL
+/// database" (refuse) from "Zotero <=9 holding a rollback-journal database"
+/// (safe to fall back to `immutable=1`, matching pre-10 behavior).
+fn wal_sidecar_path(sqlite_path: &Path) -> PathBuf {
+    let mut name = sqlite_path.file_name().unwrap_or_default().to_os_string();
+    name.push("-wal");
+    sqlite_path.with_file_name(name)
 }
 
 /// `_is_numeric_ref()` (`zotero_sqlite.py:48-53`): Python's `int(str(value))`
@@ -1331,6 +1408,194 @@ mod tests {
         let path = temp_sqlite_path("does-not-exist");
         let err = connect_readonly(&path).unwrap_err();
         assert!(err.to_string().contains("Zotero database not found"));
+    }
+
+    // Zotero-10-compatibility-gate regression coverage (`phase-14-zotero-10-
+    // compatibility-gate.md` §1/§2). These reproduce the WAL bug and its fix
+    // deterministically in-process, without needing a real Zotero instance:
+    // a writer connection puts committed rows in `-wal` without
+    // checkpointing (SQLite's default auto-checkpoint threshold is ~1000
+    // pages, far above what these tests write), which is exactly the state
+    // `immutable=1` was blind to.
+
+    fn open_wal_db(path: &Path) -> Connection {
+        let conn = Connection::open(path).expect("create scratch sqlite file");
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .expect("enable WAL journal mode");
+        conn.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)")
+            .expect("create schema");
+        // Checkpoint the schema itself into the main file so the bug this
+        // reproduces is specifically "misses uncheckpointed rows" (matching
+        // the plan's "1 of 5 rows" reproduction), not the more trivial
+        // "misses the whole uncheckpointed database, table included."
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .expect("checkpoint schema");
+        conn
+    }
+
+    fn immutable_count(path: &Path) -> i64 {
+        let posix_path = path.to_string_lossy().replace('\\', "/");
+        let uri = format!("file:{posix_path}?mode=ro&immutable=1");
+        let conn = Connection::open_with_flags(
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .expect("open immutable=1 connection");
+        conn.query_row("SELECT count(*) FROM items", [], |row| row.get(0))
+            .expect("count rows")
+    }
+
+    /// Reproduces the CRITICAL bug this phase fixes: `immutable=1` never
+    /// attaches `-wal`, so it silently under-counts uncheckpointed commits
+    /// (matches the plan's live reproduction: "1 of 5 rows" under
+    /// `immutable=1` vs "5 of 5" under `mode=ro`) — with exit code 0 and no
+    /// error, which is what made it dangerous.
+    #[test]
+    fn wal_mode_immutable_fallback_silently_misses_uncheckpointed_commits() {
+        let path = temp_sqlite_path("wal-immutable-bug");
+        let writer = open_wal_db(&path);
+        for i in 0..5 {
+            writer
+                .execute("INSERT INTO items VALUES (?1, ?2)", (i, format!("row{i}")))
+                .expect("insert uncheckpointed row");
+        }
+
+        let stale_count = immutable_count(&path);
+        assert_eq!(
+            stale_count, 0,
+            "immutable=1 must miss all 5 uncheckpointed WAL rows here, \
+             demonstrating the bug this phase fixes -- if this assertion \
+             ever fails, SQLite's own behavior changed and this test's \
+             premise needs re-checking, not the assertion relaxed"
+        );
+
+        drop(writer);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(wal_sidecar_path(&path));
+        let _ = std::fs::remove_file({
+            let mut name = path.file_name().unwrap().to_os_string();
+            name.push("-shm");
+            path.with_file_name(name)
+        });
+    }
+
+    /// The fix: `connect_readonly`'s corrected `mode=ro` path reads the same
+    /// uncheckpointed WAL state completely and correctly, with no writer
+    /// holding Zotero's exclusive lock (matches "Zotero is closed, or a
+    /// `-wal` file simply isn't present" -- the common, zero-behavior-change
+    /// case for the corrected policy).
+    #[test]
+    fn connect_readonly_reads_uncheckpointed_wal_commits_completely() {
+        let path = temp_sqlite_path("wal-immutable-fix");
+        let writer = open_wal_db(&path);
+        for i in 0..5 {
+            writer
+                .execute("INSERT INTO items VALUES (?1, ?2)", (i, format!("row{i}")))
+                .expect("insert uncheckpointed row");
+        }
+        drop(writer);
+
+        let conn = connect_readonly(&path).expect("mode=ro must succeed with no lock holder");
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM items", [], |row| row.get(0))
+            .expect("count rows");
+        assert_eq!(
+            count, 5,
+            "connect_readonly must see all 5 WAL rows the old immutable=1 \
+             path silently dropped"
+        );
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(wal_sidecar_path(&path));
+        let _ = std::fs::remove_file({
+            let mut name = path.file_name().unwrap().to_os_string();
+            name.push("-shm");
+            path.with_file_name(name)
+        });
+    }
+
+    /// Proves the corrected policy refuses rather than silently degrading:
+    /// with another connection holding an exclusive lock on a WAL database
+    /// (the same failure shape observed live against a running Zotero
+    /// 10.0.1 -- SQLITE_BUSY on the first statement), `connect_readonly`
+    /// must return a loud, actionable error, never a silent `immutable=1`
+    /// fallback. This is the harness-fixture-fails-when-immutable=1-is-
+    /// reintroduced gate criterion, expressed as a direct unit test: the
+    /// fix under test refuses, so nothing here ever exercises `immutable=1`
+    /// against this locked WAL database.
+    #[test]
+    fn connect_readonly_refuses_not_falls_back_when_wal_database_is_locked() {
+        let path = temp_sqlite_path("wal-locked-refuse");
+        let holder = open_wal_db(&path);
+        // Plain WAL mode still allows concurrent readers even while a
+        // writer holds the write lock -- that's the whole point of WAL.
+        // Zotero's own connection instead holds SQLite's exclusive
+        // *locking mode* (`PRAGMA locking_mode=EXCLUSIVE`, live-confirmed
+        // interpretation against a real Zotero 10.0.1 process), which
+        // blocks readers too. The lock isn't actually taken until the next
+        // access, hence the trigger write.
+        holder
+            .pragma_update(None, "locking_mode", "EXCLUSIVE")
+            .expect("set exclusive locking mode");
+        holder
+            .execute(
+                "INSERT INTO items VALUES (99, 'trigger-exclusive-lock')",
+                [],
+            )
+            .expect("trigger the exclusive lock to actually take effect");
+
+        let err = connect_readonly(&path).expect_err(
+            "must refuse, not silently fall back to immutable=1, while a WAL \
+             database is exclusively locked",
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("holds an exclusive lock"),
+            "error must explain the refusal, not a generic SQLite error: {message}"
+        );
+
+        drop(holder);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(wal_sidecar_path(&path));
+        let _ = std::fs::remove_file({
+            let mut name = path.file_name().unwrap().to_os_string();
+            name.push("-shm");
+            path.with_file_name(name)
+        });
+    }
+
+    /// Non-WAL (rollback-journal) databases keep the pre-Zotero-10 behavior
+    /// unconditionally: falling back to `immutable=1` when locked is safe
+    /// there because there is no `-wal` file for it to miss. This is the
+    /// "zero behavior change on Zotero <=9" guarantee.
+    #[test]
+    fn connect_readonly_falls_back_to_immutable_when_locked_non_wal_database() {
+        let path = temp_sqlite_path("rollback-journal-locked");
+        let holder = Connection::open(&path).expect("create scratch sqlite file");
+        holder
+            .execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)")
+            .expect("create schema");
+        holder
+            .execute("INSERT INTO items VALUES (1, 'row0')", [])
+            .expect("insert and commit a row");
+        holder
+            .pragma_update(None, "locking_mode", "EXCLUSIVE")
+            .expect("set exclusive locking mode");
+        holder
+            .execute("INSERT INTO items VALUES (2, 'row1')", [])
+            .expect("trigger the exclusive lock to actually take effect");
+
+        let conn = connect_readonly(&path)
+            .expect("must fall back to immutable=1 on a locked non-WAL database, not refuse");
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM items", [], |row| row.get(0))
+            .expect("count rows");
+        assert_eq!(count, 2);
+
+        drop(conn);
+        drop(holder);
+        let _ = std::fs::remove_file(&path);
     }
 
     // `resolve_attachment_real_path` is the highest cross-platform risk

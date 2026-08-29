@@ -34,6 +34,26 @@ def normalize_unreachable_transport_messages(text: str) -> str:
     return text
 
 
+# Accepted divergence, scoped to `app status` only (see
+# phase-14-zotero-10-compatibility-gate.md "Compatibility Impact": the
+# third approved intentional break). `server_id` and
+# `local_api_writes_available` are additive Rust-only fields with no
+# Python equivalent at all -- Python's reference predates Zotero 10 and
+# has no concept of either, so there is no value to normalize *to*, only
+# two extra keys to elide entirely so the rest of the payload stays a
+# real Exact comparison. This must stay scoped to these two named,
+# always-trailing fields on this one command; it must never be widened
+# into a general "drop unknown keys" rule.
+APP_STATUS_CAPABILITY_FIELDS_RE = re.compile(
+    r',\n {2}"server_id": (?:null|"(?:[^"\\]|\\.)*"),'
+    r'\n {2}"local_api_writes_available": (?:true|false)(?=\n\})'
+)
+
+
+def normalize_app_status_capability_fields(text: str) -> str:
+    return APP_STATUS_CAPABILITY_FIELDS_RE.sub("", text)
+
+
 def normalize_text(text: str, *, roots: list[str] | None = None) -> str:
     out = text.replace("\r\n", "\n")
     for root in roots or []:
@@ -80,6 +100,14 @@ def normalize_capture(capture: dict[str, Any]) -> dict[str, Any]:
             value = normalized.get(field)
             if isinstance(value, str):
                 normalized[field] = normalize_unreachable_transport_messages(value)
+    # `.startswith`, not `==`: row 97 in commands.tsv labels its branch-
+    # coverage variant "app status (unreachable)" (same underlying `app
+    # status` invocation against the `zotero-unreachable` fixture), and
+    # both variants carry the same two additive fields.
+    if normalized.get("command", "").startswith("app status"):
+        stdout = normalized.get("stdout")
+        if isinstance(stdout, str):
+            normalized["stdout"] = normalize_app_status_capability_fields(stdout)
     return normalized
 
 

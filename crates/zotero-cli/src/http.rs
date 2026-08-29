@@ -41,9 +41,28 @@ pub fn connector_is_available(port: u16, timeout: Duration) -> (bool, String) {
     }
 }
 
+/// Result of probing `GET /api/`: availability (Python-parity shape) plus
+/// the Zotero 10+ capability discriminator that has no Python equivalent.
+pub struct LocalApiProbe {
+    pub available: bool,
+    pub message: String,
+    /// The `Zotero-Server-ID` response header, when present. Live-confirmed
+    /// (2026-08-29, real Zotero 10.0.1) to appear on **every** response from
+    /// this endpoint, including a `403` when the Local API itself is
+    /// disabled in preferences -- so its presence is a reliable Zotero 10+
+    /// discriminator independent of whether the Local API is currently
+    /// usable. Preferred over parsing `environment.version` (the installed
+    /// binary found on disk, which can disagree with the *running*
+    /// instance the HTTP port actually belongs to) per
+    /// `phase-14-zotero-10-compatibility-gate.md` §4.
+    pub server_id: Option<String>,
+}
+
 /// `local_api_is_available()` (`zotero_http.py:196-205`): a 403 is
-/// special-cased to the exact string `"local API disabled"`.
-pub fn local_api_is_available(port: u16, timeout: Duration) -> (bool, String) {
+/// special-cased to the exact string `"local API disabled"`. Single-probe
+/// helper -- see `probe_local_api` for the Zotero 10+ capability signal
+/// this shares the same HTTP round trip with.
+pub fn probe_local_api(port: u16, timeout: Duration) -> LocalApiProbe {
     match ureq::get(&base_url(port, "/api/"))
         .header("Zotero-API-Version", LOCAL_API_VERSION)
         .config()
@@ -53,17 +72,44 @@ pub fn local_api_is_available(port: u16, timeout: Duration) -> (bool, String) {
         .call()
     {
         Ok(response) => {
+            let server_id = response
+                .headers()
+                .get("Zotero-Server-ID")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
             let status = response.status().as_u16();
-            if status == 200 {
+            let (available, message) = if status == 200 {
                 (true, "local API available".to_string())
             } else if status == 403 {
                 (false, "local API disabled".to_string())
             } else {
                 (false, format!("local API returned HTTP {status}"))
+            };
+            LocalApiProbe {
+                available,
+                message,
+                server_id,
             }
         }
-        Err(err) => (false, format!("HTTP request failed for /api/: {err}")),
+        Err(err) => LocalApiProbe {
+            available: false,
+            message: format!("HTTP request failed for /api/: {err}"),
+            server_id: None,
+        },
     }
+}
+
+/// `local_api_is_available()` (`zotero_http.py:196-205`), landed in Phase 5.
+/// Thin wrapper over `probe_local_api` preserving the original Python
+/// function's `(bool, str)` shape. `runtime::build_runtime_context` calls
+/// `probe_local_api` directly as of Phase 14 (it needs `server_id` too, from
+/// the same round trip) -- this has no callers in-crate as a result, kept
+/// for the documented Python-parity surface (`phase-05` §Success Criteria
+/// names it explicitly) and any future caller that only needs the plain
+/// availability tuple.
+pub fn local_api_is_available(port: u16, timeout: Duration) -> (bool, String) {
+    let probe = probe_local_api(port, timeout);
+    (probe.available, probe.message)
 }
 
 /// `local_api_get_json()` (`zotero_http.py:229-233`).
