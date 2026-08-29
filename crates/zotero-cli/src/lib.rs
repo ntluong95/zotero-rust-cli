@@ -1,6 +1,7 @@
 pub mod catalog;
 pub mod cli;
 pub mod db;
+pub mod docx;
 pub mod error;
 pub mod http;
 pub mod output;
@@ -13,8 +14,8 @@ use clap::{CommandFactory, Parser};
 use serde_json::Value;
 
 use cli::{
-    AppCommands, Cli, CollectionCommands, Commands, ItemCommands, LibraryCommands, SearchCommands,
-    SessionCommands, StyleCommands, TagCommands,
+    AppCommands, Cli, CollectionCommands, Commands, DocxCommands, ItemCommands, LibraryCommands,
+    SearchCommands, SessionCommands, StyleCommands, TagCommands,
 };
 
 /// Port of `dispatch()`/`entrypoint()` (`zotero_cli.py:2657-2676`).
@@ -336,6 +337,49 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         Commands::Session(SessionCommands::History { limit }) => {
             let entries = session::python_negative_tail_slice(&session.command_history, limit);
             let payload = serde_json::json!({ "history": entries });
+            output::emit(json_mode, &payload);
+            Ok(0)
+        }
+        Commands::Docx(DocxCommands::InspectCitations { path, sample_limit }) => {
+            let path_buf = std::path::PathBuf::from(&path);
+            let payload = docx::inspect_citations(&path_buf, sample_limit)?;
+            output::emit(json_mode, &payload);
+            Ok(0)
+        }
+        Commands::Docx(DocxCommands::InspectPlaceholders { path, sample_limit }) => {
+            let path_buf = std::path::PathBuf::from(&path);
+            let payload = docx::inspect_placeholders(&path_buf, sample_limit)?;
+            output::emit(json_mode, &payload);
+            Ok(0)
+        }
+        Commands::Docx(DocxCommands::ValidatePlaceholders { path, sample_limit }) => {
+            let runtime = build_runtime();
+            let path_buf = std::path::PathBuf::from(&path);
+            let payload = docx::validate_placeholders(&runtime, &path_buf, sample_limit, &session)?;
+            output::emit(json_mode, &payload);
+            Ok(0)
+        }
+        Commands::Docx(DocxCommands::RenderCitations {
+            path,
+            output: out_path,
+            style,
+            locale,
+            bibliography,
+            force,
+        }) => {
+            let runtime = build_runtime();
+            let src_buf = std::path::PathBuf::from(&path);
+            let out_buf = std::path::PathBuf::from(&out_path);
+            let payload = docx::render_static_citations(
+                &runtime,
+                &src_buf,
+                &out_buf,
+                &style,
+                &locale,
+                &bibliography,
+                &session,
+                force,
+            )?;
             output::emit(json_mode, &payload);
             Ok(0)
         }

@@ -48,3 +48,5 @@ quick-xml = "0.42"
 # unavailable, e.g. on Windows). A small, focused crate rather than the
 # broader fs2, per the project's small-dependency-footprint principle.
 fd-lock = "4"
+# Native ZIP/OOXML handling for Phase 9 DOCX commands.
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
