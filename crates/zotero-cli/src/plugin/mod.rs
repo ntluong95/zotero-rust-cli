@@ -18,14 +18,78 @@ pub const UPSTREAM_XPI_FILENAME: &str = "cli-bridge@cli-anything.dev.xpi";
 pub const MANIFEST_JSON: &str = include_str!("assets/manifest.json");
 pub const BOOTSTRAP_JS: &str = include_str!("assets/bootstrap.js");
 
+const ADDON_ENTRY_TEMPLATE: &str = r#"{
+  "id": "cli-bridge@cli-anything-rust.dev",
+  "syncGUID": "{9ae5ac53-3fed-4553-ad27-06f21c9f0d89}",
+  "version": "1.2.1",
+  "type": "extension",
+  "loader": null,
+  "updateURL": null,
+  "installOrigins": null,
+  "manifestVersion": 2,
+  "optionsURL": null,
+  "optionsType": null,
+  "optionsBrowserStyle": true,
+  "aboutURL": null,
+  "defaultLocale": {
+    "name": "CLI Bridge for Zotero (Rust)",
+    "description": "Registers /cli-bridge/eval HTTP endpoint for CLI-Anything Zotero integration",
+    "creator": null,
+    "developers": null,
+    "translators": null,
+    "contributors": null
+  },
+  "visible": true,
+  "active": true,
+  "userDisabled": false,
+  "appDisabled": false,
+  "embedderDisabled": false,
+  "installDate": 0,
+  "updateDate": 0,
+  "applyBackgroundUpdates": 1,
+  "path": "",
+  "skinnable": false,
+  "sourceURI": null,
+  "releaseNotesURI": null,
+  "softDisabled": false,
+  "foreignInstall": true,
+  "strictCompatibility": true,
+  "locales": [],
+  "targetApplications": [{
+    "id": "zotero@zotero.org",
+    "minVersion": "7.0",
+    "maxVersion": "10.*"
+  }],
+  "targetPlatforms": [],
+  "signedState": 0,
+  "signedTypes": [],
+  "signedDate": null,
+  "seen": true,
+  "dependencies": [],
+  "incognito": "spanning",
+  "userPermissions": { "permissions": [], "origins": [], "data_collection": [] },
+  "optionalPermissions": { "permissions": [], "origins": [], "data_collection": [] },
+  "requestedPermissions": { "permissions": [], "origins": [], "data_collection": [] },
+  "icons": {},
+  "iconURL": null,
+  "blocklistAttentionDismissed": false,
+  "blocklistState": 0,
+  "blocklistURL": null,
+  "startupData": null,
+  "hidden": false,
+  "installTelemetryInfo": { "source": "app-profile", "method": "sideload" },
+  "recommendationState": null,
+  "rootURI": "",
+  "location": "app-profile"
+}"#;
+
 /// Builds the XPI plugin zip archive in memory.
 pub fn build_xpi() -> Result<Vec<u8>> {
     let mut buffer = std::io::Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut buffer);
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated)
-            .unix_permissions(0o644);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         zip.start_file("manifest.json", options)
             .context("Failed to add manifest.json to XPI")?;
@@ -58,19 +122,78 @@ pub fn install_plugin(profile_dir: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Failed to write XPI file to: {}", xpi_path.display()))?;
 
     // In Zotero 7+ through 10+, ensure sideloaded extension is not auto-disabled on startup
-    let user_js = profile_dir.join("user.js");
-    let pref_line = "user_pref(\"extensions.autoDisableScopes\", 0);\n";
-    let current_user_js = std::fs::read_to_string(&user_js).unwrap_or_default();
-    if !current_user_js.contains("extensions.autoDisableScopes") {
-        let mut new_content = current_user_js;
-        if !new_content.is_empty() && !new_content.ends_with('\n') {
-            new_content.push('\n');
+    for pref_file_name in &["user.js", "prefs.js"] {
+        let pref_file = profile_dir.join(pref_file_name);
+        let current_content = std::fs::read_to_string(&pref_file).unwrap_or_default();
+        let pref_line = "user_pref(\"extensions.autoDisableScopes\", 0);\n";
+        if !current_content.contains("extensions.autoDisableScopes") {
+            let mut new_content = current_content;
+            if !new_content.is_empty() && !new_content.ends_with('\n') {
+                new_content.push('\n');
+            }
+            new_content.push_str(pref_line);
+            let _ = std::fs::write(&pref_file, new_content);
         }
-        new_content.push_str(pref_line);
-        let _ = std::fs::write(&user_js, new_content);
     }
 
-    // Invalidate stale startup cache so Zotero detects and loads the new XPI on next boot
+    // Extract or synchronize UUID if extensions.webextensions.uuids exists in prefs
+    let mut sync_guid = "{bbfbe273-ad50-4520-95f0-9a8f1bc55bc6}".to_string();
+    let prefs_file = profile_dir.join("prefs.js");
+    if prefs_file.exists() {
+        if let Ok(prefs_str) = std::fs::read_to_string(&prefs_file) {
+            for line in prefs_str.lines() {
+                if line.contains("extensions.webextensions.uuids") && line.contains(ADDON_ID) {
+                    if let Some(start) = line.find(ADDON_ID) {
+                        let rem = &line[start + ADDON_ID.len()..];
+                        if let Some(colon) = rem.find(':') {
+                            let rem2 = rem[colon + 1..].trim();
+                            let clean: String = rem2
+                                .chars()
+                                .take_while(|c| *c != ',' && *c != '}' && *c != ')')
+                                .filter(|c| c.is_ascii_hexdigit() || *c == '-')
+                                .collect();
+                            if clean.len() >= 32 {
+                                sync_guid = format!("{{{clean}}}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // If extensions.json exists, update or register the add-on as active and verified
+    let ext_json_path = profile_dir.join("extensions.json");
+    if ext_json_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&ext_json_path) {
+            if let Ok(mut data) = serde_json::from_str::<Value>(&content) {
+                if let Some(addons) = data.get_mut("addons").and_then(|v| v.as_array_mut()) {
+                    addons.retain(|a| a.get("id").and_then(|v| v.as_str()) != Some(ADDON_ID));
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    let xpi_path_str = xpi_path.to_string_lossy().to_string();
+                    let encoded_uri = format!("jar:file://{}!/", xpi_path_str.replace(' ', "%20"));
+
+                    if let Ok(mut entry) = serde_json::from_str::<Value>(ADDON_ENTRY_TEMPLATE) {
+                        entry["syncGUID"] = Value::String(sync_guid);
+                        entry["path"] = Value::String(xpi_path_str);
+                        entry["rootURI"] = Value::String(encoded_uri);
+                        entry["installDate"] = Value::Number(serde_json::Number::from(now));
+                        entry["updateDate"] = Value::Number(serde_json::Number::from(now));
+                        addons.push(entry);
+                    }
+
+                    if let Ok(updated_json) = serde_json::to_string_pretty(&data) {
+                        let _ = std::fs::write(&ext_json_path, updated_json);
+                    }
+                }
+            }
+        }
+    }
+
+    // Invalidate stale startup cache so Zotero reloads the add-on on next boot
     let startup_cache = profile_dir.join("addonStartup.json.lz4");
     if startup_cache.exists() {
         let _ = std::fs::remove_file(&startup_cache);
@@ -85,6 +208,19 @@ pub fn uninstall_plugin(profile_dir: &Path) -> Result<bool> {
     let startup_cache = profile_dir.join("addonStartup.json.lz4");
     if startup_cache.exists() {
         let _ = std::fs::remove_file(&startup_cache);
+    }
+    let ext_json_path = profile_dir.join("extensions.json");
+    if ext_json_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&ext_json_path) {
+            if let Ok(mut data) = serde_json::from_str::<Value>(&content) {
+                if let Some(addons) = data.get_mut("addons").and_then(|v| v.as_array_mut()) {
+                    addons.retain(|a| a.get("id").and_then(|v| v.as_str()) != Some(ADDON_ID));
+                    if let Ok(updated_json) = serde_json::to_string_pretty(&data) {
+                        let _ = std::fs::write(&ext_json_path, updated_json);
+                    }
+                }
+            }
+        }
     }
     if xpi_path.exists() {
         std::fs::remove_file(&xpi_path)

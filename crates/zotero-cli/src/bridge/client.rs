@@ -81,9 +81,10 @@ impl JSBridgeClient {
         format!("http://127.0.0.1:{}/cli-bridge/eval", self.port)
     }
 
-    /// Check if the JS Bridge endpoint is active.
-    /// Uses positive probe caching (D3 fix): caches successful probes for process lifetime,
-    /// but never caches negative probes so retries after installation work immediately.
+    /// Check if the JS Bridge endpoint is active and verified to be our forked plugin (`zotero-rust-cli`).
+    /// Uses positive probe caching (D3 fix): caches successful, verified probes for process lifetime,
+    /// but never caches negative or unverified probes so retries after installation work immediately.
+    /// An HTTP 200 response alone is NOT sufficient; fork ownership verification must succeed.
     pub fn bridge_endpoint_active(&self) -> bool {
         {
             if let Ok(guard) = POSITIVE_PROBES.lock() {
@@ -102,12 +103,19 @@ impl JSBridgeClient {
             .send("return 'ping';".as_bytes());
 
         match resp {
-            Ok(response) => {
+            Ok(mut response) => {
                 if response.status().as_u16() == 200 {
-                    if let Ok(mut guard) = POSITIVE_PROBES.lock() {
-                        guard.insert(self.port);
+                    if let Ok(bytes) = response.body_mut().read_to_vec() {
+                        if let Ok(val) = serde_json::from_slice::<Value>(&bytes) {
+                            if val.get("fork").and_then(|v| v.as_str()) == Some("zotero-rust-cli") {
+                                if let Ok(mut guard) = POSITIVE_PROBES.lock() {
+                                    guard.insert(self.port);
+                                }
+                                return true;
+                            }
+                        }
                     }
-                    true
+                    false
                 } else {
                     false
                 }
