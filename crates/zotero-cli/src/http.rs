@@ -1,14 +1,19 @@
-//! Port of `utils/zotero_http.py`'s connector/Local API client (only the
-//! read paths needed by the vertical slice: availability probes and
-//! `local_api_get_json`, used by `item find`'s Local-API-first branch).
+//! Port of `utils/zotero_http.py`'s connector/Local API client.
 
 use std::time::Duration;
 
 use serde_json::Value;
 
+pub mod connector;
+
+pub use connector::{
+    connector_import_text, connector_save_attachment, connector_save_items,
+    connector_update_session, get_selected_collection,
+};
+
 pub const LOCAL_API_VERSION: &str = "3";
 
-fn base_url(port: u16, path: &str) -> String {
+pub(crate) fn base_url(port: u16, path: &str) -> String {
     let path = if path.starts_with('/') {
         path.to_string()
     } else {
@@ -17,9 +22,20 @@ fn base_url(port: u16, path: &str) -> String {
     format!("http://127.0.0.1:{port}{path}")
 }
 
+pub(crate) fn read_response_body(
+    response: &mut ureq::http::Response<ureq::Body>,
+) -> anyhow::Result<String> {
+    let raw = response
+        .body_mut()
+        .read_to_vec()
+        .map_err(|err| anyhow::anyhow!("Failed to read response body: {err}"))?;
+    Ok(String::from_utf8_lossy(&raw).into_owned())
+}
+
 /// `connector_is_available()` (`zotero_http.py:87-94`).
 pub fn connector_is_available(port: u16, timeout: Duration) -> (bool, String) {
     match ureq::get(&base_url(port, "/connector/ping"))
+        .header("Accept", "*/*")
         .config()
         .timeout_global(Some(timeout))
         .http_status_as_error(false)
@@ -140,11 +156,8 @@ pub fn local_api_get_json(
     // never fails on invalid UTF-8 (substitutes replacement characters),
     // but a genuine I/O failure still propagates instead of silently
     // becoming an empty body.
-    let raw = response
-        .body_mut()
-        .read_to_vec()
+    let body = read_response_body(&mut response)
         .map_err(|err| anyhow::anyhow!("Failed to read response body for {path}: {err}"))?;
-    let body = String::from_utf8_lossy(&raw).into_owned();
     if status != 200 {
         anyhow::bail!("Local API returned HTTP {status} for {path}: {body}");
     }
