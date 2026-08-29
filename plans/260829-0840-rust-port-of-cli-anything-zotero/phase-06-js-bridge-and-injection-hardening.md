@@ -1,18 +1,109 @@
 ---
 phase: 6
-title: "JS Bridge and Injection Hardening"
+title: "Write Backends: Local-API-First"
 status: todo
 priority: P1
 effort: "6-8d"
-dependencies: [5]
+dependencies: [5, 14]
 ---
 
-# Phase 6: JS Bridge and Injection Hardening
+# Phase 6: Write Backends: Local-API-First (formerly "JS Bridge and Injection Hardening")
+
+> ## ⚠️ RECONSTRUCTED 2026-08-29 — MATERIALLY INCOMPLETE, NOT A VERBATIM RECOVERY
+>
+> This phase file's Zotero-10 redesign (the actual committed diff was **475 changed lines** —
+> effectively a full rewrite of this document, per `git diff --stat` captured before the loss) was
+> destroyed by an uncoordinated concurrent git operation before it was committed anywhere. It could
+> not be read back from any commit, branch, or session-context capture — unlike `plan.md`,
+> `phase-05`, and `phase-14`, this file was never read in full after its Zotero-10 update landed.
+>
+> What follows is rebuilt **only** from what `plan.md` and `phase-14-zotero-10-compatibility-gate.md`
+> cite about this phase (both recovered verbatim), plus the original pre-redesign content below,
+> which is a real, unmodified recovery of the base file. The result is an honest **skeleton**, not a
+> restoration: it correctly states the redesign's *shape* (Local-API-first routing, ~10 privileged
+> JS Bridge commands instead of ~33, the C1/C2/C3 concepts named in `plan.md`'s red-team log) but
+> does **not** contain whatever detailed command-by-command backend-routing table, JS template diffs,
+> or XPI manifest specifics the original 475-line version worked out. **Do not begin Phase 6
+> implementation from this file alone** — the missing detail needs fresh design work, informed by
+> Phase 14's live-Zotero findings, before this phase can be executed responsibly. Treat every claim
+> below as either (a) recovered verbatim and cited, or (b) explicitly marked reconstructed.
 
 ## Overview
 
+**Redesigned for Zotero 10** (per `plan.md`'s Phases table and Zotero 10 impact table, both recovered
+verbatim): Zotero 10's Local API gained write support (POST/PUT/PATCH/DELETE, tag delete, full-text,
+file upload — `plan.md` Finding 3, class OPPORTUNITY). This phase now routes writes **Local-API-first
+on Zotero 10+**, falling back to the JS Bridge — shrunk from ~33 commands to **~10 privileged
+operations** the Local API cannot express — on Zotero ≤9 or wherever Local API genuinely cannot do
+the job. `plan.md`'s red-team adjudication (Finding 17, withdrawn) is explicit that this does **not**
+force a parity downgrade: parity is a property of the *observable CLI contract*, not the transport,
+so Exact stays achievable behind a compatibility renderer that makes both backends produce the same
+JSON shape — see §C2 below.
+
+This phase depends on **Phase 14 passing first** (`dependencies: [5, 14]`): Phase 14's capability
+detection (`Zotero-Server-ID` header, `local_api_writes_available` on `RuntimeContext`) is exactly
+what this phase's routing decision needs, and Phase 14 also owns the XPI manifest's `strict_max_version`
+bump to `10.0.*` that this phase's JS Bridge fallback path depends on to load at all on Zotero 10.
+
+**D1 (JS-injection) still applies, but its scope shrinks with the command count.** Whatever remains
+on the JS Bridge path (the ~10 privileged operations) must still fix D1 structurally — see §D1 fix
+below, recovered verbatim from the pre-redesign version of this file, which remains valid for those
+remaining bridge commands.
+
+### §C1 — Local API authorization and key persistence (gates the whole redesign)
+
+**[RECONSTRUCTED]** `plan.md`'s red-team Finding 18 names this "the only genuine reversal trigger":
+Zotero 10's Local API write path requires a user-facing key/consent dialog (`plan.md` Finding 4). If
+"Always Allow" does not persist across a Zotero restart — Open Question 9 in Phase 14 — then
+unattended agent writes are not viable via Local API at all, and the JS-Bridge-first design (the
+*original*, pre-redesign Phase 6 below) would be correct after all. **This phase must not proceed
+past its design stage until Phase 14's OQ9 has a live-verified answer.** The exact key-storage
+mechanism, where the key lives on disk, and how `zotero-cli` should re-authenticate after a restart
+are not specified further here — original detail lost, needs fresh design against Phase 14's
+findings.
+
+### §C2 — Compatibility renderer (keeps Exact achievable across two backends)
+
+**[RECONSTRUCTED]** Per `plan.md`'s Finding 17b (the surviving, inverted risk): a renderer that makes
+the JS-Bridge and Local-API write paths emit byte-identical CLI JSON is necessary for correctness,
+not just cosmetics — the risk is a renderer that achieves output parity while leaving Zotero in
+**different states** across the two backends. Concretely, Zotero 10's Local API object `version`
+field means something different from the Web API's / the JS Bridge's notion of `version` (per
+`plan.md`'s Finding 17 adjudication note), so a naive pass-through would leak a backend-specific
+value into the CLI's output. Success requires **post-write state parity** (re-reading the item after
+the write and confirming the same logical result), not merely matching JSON shapes. The specific
+field-by-field mapping between the Local API's write-response shape and the JS Bridge's
+`OK: <title>`-style return strings is not recoverable from session context and needs fresh design.
+
+### §C3 — Command routing (Local API vs. JS Bridge)
+
+**[RECONSTRUCTED — HIGH-LEVEL ONLY, NOT A COMMAND TABLE]** The original file almost certainly
+contained a per-command backend-routing table (which of the ~33 original bridge commands move to
+Local API vs. which ~10 stay on the JS Bridge, and why). That table is not recoverable. What can be
+stated with confidence from `plan.md`'s citations: routing should **attempt Exact first, downgrade
+only on demonstrated evidence** (the corrected rule that replaced withdrawn Finding 17); the ~10
+JS-Bridge-only operations are described only as "privileged ops" the Local API cannot express, which
+plausibly includes `js` (the raw privileged escape hatch — never a Local API candidate by
+definition), `item move-to-collection` (needs the transactional add+remove-in-one-operation
+semantics the original design already required), and other operations Zotero's Local API simply
+does not expose. **This table must be rebuilt from scratch during Phase 6 planning**, cross-checked
+against Zotero 10's actual documented Local API surface, before implementation starts.
+
+---
+
+## Pre-redesign content (recovered verbatim from the last committed version)
+
+Everything below this line is the phase's original, pre-Zotero-10-redesign content, recovered from
+`origin/main` (unmodified by the loss — this base version was never uncommitted). It describes the
+**JS-Bridge-first** design the redesign above supersedes as the *primary* routing decision, but it
+remains materially relevant: the D1/D3 fixes, the AppleScript removal, the XPI packaging/fork
+mechanics, and the `item move-to-collection` composition design still apply to whichever commands end
+up on the JS Bridge path after §C3's routing table is rebuilt. **Do not delete this section when
+filling in the redesign** — it is real, verified content, not a placeholder.
+
 Port the JavaScript **generation** layer of `core/jsbridge.py` and ship the XPI plugin. Delivers the
-33 bridge-backed commands — the largest single block of functionality.
+33 bridge-backed commands — the largest single block of functionality *under the original,
+pre-Zotero-10 design*; the redesign above shrinks this to ~10.
 
 The XPI itself is reused byte-for-byte. What is ported is the ~500 lines of JS source templates that
 Python builds as strings and POSTs to `/cli-bridge/eval`.
@@ -130,6 +221,11 @@ silently automating the GUI. Document it in the migration guide.
 "update_url": "https://raw.githubusercontent.com/PiaoyangGuohai1/cli-anything-zotero/main/update.json"
 ```
 
+**[RECONSTRUCTED note]** `strict_max_version` is currently `9.0.*`, which makes this manifest
+unloadable on Zotero 10 (`plan.md` Finding 2, CRITICAL) — bumping it to `10.0.*` is owned by
+**Phase 14** (it must happen before this phase's XPI work is meaningful on Zotero 10 at all), not
+duplicated here; this phase owns the id/`update_url` fork changes below.
+
 Shipping this unchanged would let **upstream** push plugin updates to this fork's users. Both fields
 must change. The addon id also determines the installed XPI filename
 (`<profile>/extensions/<id>.xpi`), so changing it means a user can have both plugins installed —
@@ -208,7 +304,16 @@ intent in any higher-level agent workflow.
 
 ## Success Criteria
 
-- [ ] All 33 bridge commands reach their target compatibility class
+- [ ] **[RECONSTRUCTED]** Phase 14 has passed (its success criteria are all checked) before any
+      implementation in this phase starts — the dependency graph in `plan.md` makes this a hard gate
+- [ ] **[RECONSTRUCTED]** Local API write routing implemented for Zotero 10+ (detected via
+      `RuntimeContext.local_api_writes_available` from Phase 14), JS Bridge routing preserved for
+      Zotero ≤9 and the ~10 privileged operations Local API cannot express (§C3 table, rebuilt fresh)
+- [ ] **[RECONSTRUCTED]** Compatibility renderer (§C2) achieves output parity **and** verified
+      post-write state parity across both backends for every command that supports both
+- [ ] **[RECONSTRUCTED]** Open Question 9 (does "Always Allow" persist across a Zotero restart)
+      answered before unattended-agent-write claims are made for the Local API path (§C1)
+- [ ] All ~10 remaining JS-Bridge-routed commands (down from 33 under the original design) reach their target compatibility class
 - [ ] **Injection suite passes**: titles, tags and collection names containing `\`, `'`, `"`, newline, `</script>`, `${}` and CJK round-trip correctly through every write command
 - [ ] The same adversarial inputs demonstrably **break** the Python implementation — recorded as evidence that D1 is fixed, not merely avoided
 - [ ] Bridge return strings byte-identical to Python (`OK: `, `ERROR: `, `FOUND: `, `NOT_FOUND: `, `TIMEOUT: `, `DELETED: `)

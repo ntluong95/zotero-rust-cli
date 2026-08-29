@@ -104,6 +104,54 @@ crates/zotero-cli/src/
   doctor.rs          # health aggregation
 ```
 
+### Zotero 10 additions to this phase (added 2026-08-29)
+
+Three items land here rather than in Phase 14, because they extend surfaces this phase already owns.
+Evidence: [`plans/research/zotero-10-impact-on-rust-port.md`](../../research/zotero-10-impact-on-rust-port.md).
+
+**1. Capture `Zotero-Server-ID` on the Local API probe.** Zotero 10 returns this header on every
+local API response. It is (a) the cleanest 10+ capability discriminator and (b) mandatory on writes
+in Phase 6. Capture it during the probe already performed here — no extra round trip. Extend
+`RuntimeContext` with `server_id: Option<String>` and `local_api_writes_available: bool`.
+
+Prefer header presence over `environment.version` for capability detection: the version field
+reflects the *installed binary discovered on disk*, which can disagree with the *running instance*
+that owns port 23119 (multiple installs, portable builds, a stale `application.ini`).
+
+**2. HTTP hardening conformance.** Zotero 10 requires `Host` ∈ {`localhost`, `127.0.0.1`, `[::1]`}
+(else `400`), and **drops without response** any request with a `Mozilla/`-prefixed `User-Agent` or
+*any* `Origin` header, unless it carries `Zotero-Allowed-Request`. This previously applied only to
+CORS-simple content types, so a JSON POST that worked before may now be rejected.
+
+Our client passes today by accident, not design (`ureq` default UA, no `Origin`). Add a regression
+test asserting no `Mozilla/` UA and no `Origin` on Zotero-local requests, so a future change fails
+loudly. **Do not** generalise the `Mozilla/5.0` UA that `metrics.py` uses for NIH iCite — that is an
+external host and must stay scoped to it.
+
+**3. `use-selected` under Zotero 10 multi-selection.** Zotero 10 lets users select multiple
+collections, saved searches, **and libraries** simultaneously. `ZoteroPane.getSelectedCollection()`,
+`getSelectedLibraryID()` and `getSelectedSavedSearch()` are **removed** — the singular getters now
+throw, naming their plural replacements.
+
+This does **not** automatically break `collection use-selected` / `session use-selected`, because
+Python reaches selection through the **connector** endpoint `/connector/getSelectedCollection`, not
+`ZoteroPane`. Whether that endpoint still exists in 10, and what it returns under multi-selection,
+is **Open Question 3** in Phase 14 and must be answered before these two commands are implemented.
+
+Decision matrix, to be resolved by OQ3's answer:
+
+| If the connector endpoint… | Then `use-selected` should… |
+|---|---|
+| still returns a single collection | keep current semantics; document that it reflects Zotero's own choice under multi-selection |
+| returns an array / errors on multi-select | take the **first** selected collection, and emit a `selection_count` field so an agent can detect ambiguity rather than silently acting on one of several |
+| no longer exists | reimplement via JS Bridge using `ZoteroPane.getSelectedCollections()` (plural), same first-plus-count semantics |
+
+In all three cases: **never silently pick one row out of several without signalling it.** Zotero's
+own rationale for removing the singular getters was "so that plugins don't silently try to operate
+on one arbitrary row" — the CLI should honour that intent. Also note collections and saved searches
+can now be selected together, so a selected row that is not a library is **not necessarily** a
+collection.
+
 ### Three surfaces, three contracts
 
 | Surface | Base | Headers | Success status | Notes |
