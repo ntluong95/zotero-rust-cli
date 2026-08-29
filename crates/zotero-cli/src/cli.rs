@@ -141,6 +141,52 @@ pub enum ItemCommands {
         #[arg(value_name = "REF")]
         item_ref: Option<String>,
     },
+    /// Build the semantic search vector index from your Zotero library.
+    BuildIndex,
+    /// Semantic search across Zotero library using local embedding model.
+    SemanticSearch {
+        query: String,
+        /// Number of results.
+        #[arg(long = "top-k", default_value_t = 10)]
+        top_k: usize,
+        /// Minimum similarity score (0-1).
+        #[arg(long = "min-score", default_value_t = 0.3)]
+        min_score: f32,
+        /// Filter by language.
+        #[arg(long, value_enum, default_value_t = SemanticLanguage::All)]
+        language: SemanticLanguage,
+    },
+    /// Find items similar to a given item using embeddings.
+    Similar {
+        item_key: String,
+        /// Number of similar items.
+        #[arg(long = "top-k", default_value_t = 5)]
+        top_k: usize,
+        /// Minimum similarity score (0-1).
+        #[arg(long = "min-score", default_value_t = 0.5)]
+        min_score: f32,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum SemanticLanguage {
+    #[value(name = "zh")]
+    Zh,
+    #[value(name = "en")]
+    En,
+    #[value(name = "all")]
+    All,
+}
+
+impl std::fmt::Display for SemanticLanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            SemanticLanguage::Zh => "zh",
+            SemanticLanguage::En => "en",
+            SemanticLanguage::All => "all",
+        };
+        write!(f, "{s}")
+    }
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
