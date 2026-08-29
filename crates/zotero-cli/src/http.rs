@@ -5,10 +5,14 @@ use std::time::Duration;
 use serde_json::Value;
 
 pub mod connector;
+pub mod local_write;
 
 pub use connector::{
     connector_import_text, connector_save_attachment, connector_save_items,
     connector_update_session, get_selected_collection,
+};
+pub use local_write::{
+    local_api_authorize, local_api_delete, local_api_patch, local_api_post, LocalWriteResponse,
 };
 
 pub const LOCAL_API_VERSION: &str = "3";

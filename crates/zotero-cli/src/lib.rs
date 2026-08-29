@@ -1,5 +1,6 @@
 pub mod catalog;
 pub mod cli;
+pub mod credentials;
 pub mod db;
 pub mod docx;
 pub mod error;
@@ -9,6 +10,8 @@ pub mod paths;
 pub mod runtime;
 pub mod semantic;
 pub mod session;
+pub mod write;
+pub mod write_router;
 
 use clap::{CommandFactory, Parser};
 use serde_json::Value;
