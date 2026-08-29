@@ -7,7 +7,10 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 use super::templates;
-use super::types::{BridgeResponse, WriteOutcome};
+use super::types::BridgeResponse;
+// The canonical write-outcome contract, shared with the Local API write path -- see
+// `bridge/mod.rs`'s re-export note and `write.rs`'s own doc comment.
+use zotero_cli::write::WriteOutcome;
 
 pub const DEFAULT_PORT: u16 = 23119;
 
@@ -56,6 +59,88 @@ pub fn format_bridge_error(err: &Value) -> String {
         return "unknown bridge error".to_string();
     }
     err.to_string()
+}
+
+/// Maps a Bridge write call's raw response onto the canonical `WriteOutcome`, at the
+/// write-operation boundary (not the transport layer -- `execute_http`/`execute_js` are
+/// untouched). Every JS-Bridge write template in this crate returns one of two shapes: a
+/// prefixed status string (`"<success_prefix>: ..."` / `"ERROR: ..."`) or, for
+/// `collection_create`, a JSON object -- see [`map_object_outcome`] for that one.
+///
+/// The Bridge has no consent/authorization semantics of its own to distinguish from a generic
+/// failure: `execute_js`/`execute_js_http_required` already gate every call on
+/// `bridge_endpoint_active()`'s fork+id ownership verification *before* this function is ever
+/// reached, so nothing here can legitimately become `WriteOutcome::AuthorizationFailed` --
+/// doing so would misrepresent an ordinary script failure as a consent-dialog-shaped problem
+/// that doesn't exist at this layer.
+///
+/// Three failure paths, all folded into `TransportError` (preserving the pre-existing meaning of
+/// the Bridge's own `"ERROR:"` convention -- it never distinguished precondition-vs-conflict
+/// failures, so this does not invent that distinction):
+/// - the bridge call itself failed (endpoint unavailable, non-200, or `ok: false`) --
+///   previously escaped as an untyped `anyhow::Error` via `resp.require_data()?`, now folded in
+///   here so every reachable outcome is a `WriteOutcome`, matching the Local API write path's
+///   own transport-safety convention (`write_router.rs`);
+/// - the script itself reported `"ERROR: ..."`;
+/// - the response matched neither the success prefix nor `"ERROR:"` -- previously fell through
+///   to `Applied` by mistake (a real bug this convergence fixes), now correctly treated as an
+///   ambiguous/unrecognized response, per the same "never silently claim success" rule the Local
+///   API path already follows.
+fn map_text_outcome(
+    resp: &BridgeResponse,
+    success_prefix: &str,
+    affected_key: &str,
+) -> WriteOutcome {
+    let data = match resp.require_data() {
+        Ok(data) => data,
+        Err(err) => {
+            return WriteOutcome::TransportError {
+                detail: err.to_string(),
+            };
+        }
+    };
+    let text = data.as_str().unwrap_or("");
+    if text.starts_with(success_prefix) {
+        WriteOutcome::Applied {
+            affected_key: affected_key.to_string(),
+        }
+    } else if text.starts_with("ERROR:") {
+        WriteOutcome::TransportError {
+            detail: text.to_string(),
+        }
+    } else {
+        WriteOutcome::TransportError {
+            detail: format!(
+                "bridge returned an unrecognized response (expected a \"{success_prefix}\" or \"ERROR:\" prefix): {text:?}"
+            ),
+        }
+    }
+}
+
+/// Same idea as [`map_text_outcome`] but for `collection_create`'s JSON-object response shape
+/// (`{"key": "..."}` on success, `{"error": "..."}` on failure) rather than a prefixed string.
+fn map_object_outcome(resp: &BridgeResponse) -> WriteOutcome {
+    let data = match resp.require_data() {
+        Ok(data) => data,
+        Err(err) => {
+            return WriteOutcome::TransportError {
+                detail: err.to_string(),
+            };
+        }
+    };
+    if let Some(key) = data.get("key").and_then(|v| v.as_str()) {
+        WriteOutcome::Applied {
+            affected_key: key.to_string(),
+        }
+    } else if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
+        WriteOutcome::TransportError {
+            detail: err.to_string(),
+        }
+    } else {
+        WriteOutcome::TransportError {
+            detail: format!("bridge returned an unrecognized response (expected \"key\" or \"error\"): {data:?}"),
+        }
+    }
 }
 
 /// JSBridgeClient handles communication with Zotero via the `/cli-bridge/eval` HTTP endpoint.
@@ -237,21 +322,7 @@ impl JSBridgeClient {
         }
         let code = templates::render_item_update(library_id, key, fields)?;
         let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        let text = data.as_str().unwrap_or("");
-        if text.starts_with("OK:") {
-            Ok(WriteOutcome::Applied {
-                affected_key: key.to_string(),
-            })
-        } else if text.starts_with("ERROR:") {
-            Ok(WriteOutcome::TransportError {
-                detail: text.to_string(),
-            })
-        } else {
-            Ok(WriteOutcome::Applied {
-                affected_key: key.to_string(),
-            })
-        }
+        Ok(map_text_outcome(&resp, "OK:", key))
     }
 
     pub fn item_tag(
@@ -266,41 +337,13 @@ impl JSBridgeClient {
         }
         let code = templates::render_item_tag(library_id, key, add_tags, remove_tags)?;
         let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        let text = data.as_str().unwrap_or("");
-        if text.starts_with("OK:") {
-            Ok(WriteOutcome::Applied {
-                affected_key: key.to_string(),
-            })
-        } else if text.starts_with("ERROR:") {
-            Ok(WriteOutcome::TransportError {
-                detail: text.to_string(),
-            })
-        } else {
-            Ok(WriteOutcome::Applied {
-                affected_key: key.to_string(),
-            })
-        }
+        Ok(map_text_outcome(&resp, "OK:", key))
     }
 
     pub fn item_delete(&self, library_id: u32, key: &str) -> Result<WriteOutcome> {
         let code = templates::render_item_delete(library_id, key)?;
         let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        let text = data.as_str().unwrap_or("");
-        if text.starts_with("DELETED:") {
-            Ok(WriteOutcome::Applied {
-                affected_key: key.to_string(),
-            })
-        } else if text.starts_with("ERROR:") {
-            Ok(WriteOutcome::TransportError {
-                detail: text.to_string(),
-            })
-        } else {
-            Ok(WriteOutcome::Applied {
-                affected_key: key.to_string(),
-            })
-        }
+        Ok(map_text_outcome(&resp, "DELETED:", key))
     }
 
     pub fn item_attach(
@@ -326,21 +369,7 @@ impl JSBridgeClient {
         let abs_str = abs_path.to_string_lossy();
         let code = templates::render_item_attach(library_id, key, &abs_str)?;
         let resp = self.execute_js(&code, 15);
-        let data = resp.require_data()?;
-        let text = data.as_str().unwrap_or("");
-        if text.starts_with("OK:") {
-            Ok(WriteOutcome::Applied {
-                affected_key: key.to_string(),
-            })
-        } else if text.starts_with("ERROR:") {
-            Ok(WriteOutcome::TransportError {
-                detail: text.to_string(),
-            })
-        } else {
-            Ok(WriteOutcome::Applied {
-                affected_key: key.to_string(),
-            })
-        }
+        Ok(map_text_outcome(&resp, "OK:", key))
     }
 
     pub fn item_add_to_collection(
@@ -351,21 +380,7 @@ impl JSBridgeClient {
     ) -> Result<WriteOutcome> {
         let code = templates::render_item_add_to_collection(library_id, item_key, collection_key)?;
         let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        let text = data.as_str().unwrap_or("");
-        if text.starts_with("OK:") {
-            Ok(WriteOutcome::Applied {
-                affected_key: item_key.to_string(),
-            })
-        } else if text.starts_with("ERROR:") {
-            Ok(WriteOutcome::TransportError {
-                detail: text.to_string(),
-            })
-        } else {
-            Ok(WriteOutcome::Applied {
-                affected_key: item_key.to_string(),
-            })
-        }
+        Ok(map_text_outcome(&resp, "OK:", item_key))
     }
 
     pub fn item_move_to_collection(
@@ -382,21 +397,7 @@ impl JSBridgeClient {
             from_collection_key,
         )?;
         let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        let text = data.as_str().unwrap_or("");
-        if text.starts_with("OK:") {
-            Ok(WriteOutcome::Applied {
-                affected_key: item_key.to_string(),
-            })
-        } else if text.starts_with("ERROR:") {
-            Ok(WriteOutcome::TransportError {
-                detail: text.to_string(),
-            })
-        } else {
-            Ok(WriteOutcome::Applied {
-                affected_key: item_key.to_string(),
-            })
-        }
+        Ok(map_text_outcome(&resp, "OK:", item_key))
     }
 
     pub fn collection_create(
@@ -407,18 +408,7 @@ impl JSBridgeClient {
     ) -> Result<WriteOutcome> {
         let code = templates::render_collection_create(library_id, name, parent_key)?;
         let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        if let Some(key) = data.get("key").and_then(|v| v.as_str()) {
-            Ok(WriteOutcome::Applied {
-                affected_key: key.to_string(),
-            })
-        } else if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-            Ok(WriteOutcome::TransportError {
-                detail: err.to_string(),
-            })
-        } else {
-            bail!("Unexpected response from collection create: {data:?}");
-        }
+        Ok(map_object_outcome(&resp))
     }
 
     pub fn collection_rename(
@@ -434,21 +424,7 @@ impl JSBridgeClient {
         let code =
             templates::render_collection_rename(library_id, collection_key, name, parent_key)?;
         let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        let text = data.as_str().unwrap_or("");
-        if text.starts_with("OK:") {
-            Ok(WriteOutcome::Applied {
-                affected_key: collection_key.to_string(),
-            })
-        } else if text.starts_with("ERROR:") {
-            Ok(WriteOutcome::TransportError {
-                detail: text.to_string(),
-            })
-        } else {
-            Ok(WriteOutcome::Applied {
-                affected_key: collection_key.to_string(),
-            })
-        }
+        Ok(map_text_outcome(&resp, "OK:", collection_key))
     }
 
     pub fn collection_delete(
@@ -459,21 +435,7 @@ impl JSBridgeClient {
     ) -> Result<WriteOutcome> {
         let code = templates::render_collection_delete(library_id, collection_key, delete_items)?;
         let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        let text = data.as_str().unwrap_or("");
-        if text.starts_with("DELETED:") {
-            Ok(WriteOutcome::Applied {
-                affected_key: collection_key.to_string(),
-            })
-        } else if text.starts_with("ERROR:") {
-            Ok(WriteOutcome::TransportError {
-                detail: text.to_string(),
-            })
-        } else {
-            Ok(WriteOutcome::Applied {
-                affected_key: collection_key.to_string(),
-            })
-        }
+        Ok(map_text_outcome(&resp, "DELETED:", collection_key))
     }
 
     pub fn collection_remove_item(
@@ -484,21 +446,7 @@ impl JSBridgeClient {
     ) -> Result<WriteOutcome> {
         let code = templates::render_collection_remove_item(library_id, item_key, collection_key)?;
         let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        let text = data.as_str().unwrap_or("");
-        if text.starts_with("OK:") {
-            Ok(WriteOutcome::Applied {
-                affected_key: item_key.to_string(),
-            })
-        } else if text.starts_with("ERROR:") {
-            Ok(WriteOutcome::TransportError {
-                detail: text.to_string(),
-            })
-        } else {
-            Ok(WriteOutcome::Applied {
-                affected_key: item_key.to_string(),
-            })
-        }
+        Ok(map_text_outcome(&resp, "OK:", item_key))
     }
 
     // ── Slice 7: Confirmed Independent Privileged JS Bridge Operations ────
@@ -528,20 +476,6 @@ impl JSBridgeClient {
         }
         let code = templates::render_item_merge(library_id, target_key, other_keys)?;
         let resp = self.execute_js(&code, 15);
-        let data = resp.require_data()?;
-        let text = data.as_str().unwrap_or("");
-        if text.starts_with("OK:") {
-            Ok(WriteOutcome::Applied {
-                affected_key: target_key.to_string(),
-            })
-        } else if text.starts_with("ERROR:") {
-            Ok(WriteOutcome::TransportError {
-                detail: text.to_string(),
-            })
-        } else {
-            Ok(WriteOutcome::Applied {
-                affected_key: target_key.to_string(),
-            })
-        }
+        Ok(map_text_outcome(&resp, "OK:", target_key))
     }
 }

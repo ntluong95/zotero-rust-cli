@@ -50,7 +50,10 @@ pub enum AuthorizationReason {
 /// The single shared, backend-neutral outcome of any Local API / JS Bridge / Connector write
 /// attempt. Dispatch code (Slice 6, out of this crate's current scope) matches over this, never
 /// over a backend-specific response type.
-#[derive(Debug, Clone, Serialize)]
+///
+/// Derives `PartialEq`/`Eq` (added for the Bridge convergence -- both nested types already had
+/// them) so callers can `assert_eq!` an outcome directly in tests instead of only `matches!`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum WriteOutcome {
     /// Write applied. `affected_key` feeds the post-write re-read/diff (`write_router`'s

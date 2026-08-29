@@ -5,7 +5,11 @@ pub mod templates;
 pub mod types;
 
 pub use client::{clear_probe_cache, format_bridge_error, JSBridgeClient, DEFAULT_PORT};
-pub use types::{BridgeResponse, OwnershipMarker, WriteOutcome};
+pub use types::{BridgeResponse, OwnershipMarker};
+// The single canonical write-outcome contract (`phase-06` §3.13), shared with the Local API
+// write path (`write.rs`) -- Bridge no longer maintains its own duplicate type. Re-exported here
+// so existing `bridge::WriteOutcome` call sites keep working unchanged.
+pub use zotero_cli::write::WriteOutcome;
 
 pub fn default_port() -> u16 {
     JSBridgeClient::with_default_port().port

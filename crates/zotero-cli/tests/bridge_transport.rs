@@ -6,7 +6,24 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
+
+/// Writes a minimal `200 OK` JSON response naming our own fork, so the client's ownership probe
+/// succeeds -- shared by the tests below that need a valid probe before exercising a write.
+fn respond_with_verified_ownership(stream: &mut std::net::TcpStream) {
+    let mut buf = [0u8; 1024];
+    let _ = stream.read(&mut buf);
+    let body = r#"{"pong":true,"fork":"zotero-rust-cli","id":"cli-bridge@cli-anything-rust.dev","version":"1.2.1"}"#;
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(resp.as_bytes());
+    let _ = stream.flush();
+}
 
 #[test]
 fn test_format_bridge_error_shapes() {
@@ -286,6 +303,175 @@ fn test_execute_js_success_and_error_handling() {
     assert!(!err_resp.ok);
     assert_eq!(err_resp.error_message(), Some("item KEY999 not found"));
     assert_eq!(err_resp.error_name.as_deref(), Some("NotFoundError"));
+
+    let _ = server_handle.join();
+}
+
+// ── WriteOutcome convergence: Bridge write primitives on the canonical shared type ────────
+
+#[test]
+fn test_error_prefixed_response_maps_to_canonical_transport_error() {
+    clear_probe_cache();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().unwrap().port();
+
+    let server_handle = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            respond_with_verified_ownership(&mut stream);
+        }
+        // The Bridge's own "ERROR:" convention never distinguished precondition-vs-conflict
+        // failures -- this must keep mapping uniformly to TransportError, not invent a split.
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let body = "\"ERROR: item KEY999 not found\"";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    let client = JSBridgeClient::new(port);
+    let outcome = client
+        .item_delete(1, "KEY999")
+        .expect("a write call always returns Ok(WriteOutcome), never an escaped Err");
+    match outcome {
+        WriteOutcome::TransportError { detail } => {
+            assert!(detail.contains("item KEY999 not found"));
+        }
+        other => {
+            panic!("expected TransportError preserving the bridge's ERROR: text, got {other:?}")
+        }
+    }
+
+    let _ = server_handle.join();
+}
+
+#[test]
+fn test_unrecognized_response_never_becomes_applied() {
+    clear_probe_cache();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().unwrap().port();
+
+    let server_handle = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            respond_with_verified_ownership(&mut stream);
+        }
+        // A well-formed 200 response whose body matches neither the success prefix nor
+        // "ERROR:" -- previously fell through to `Applied` by mistake; this is the regression
+        // test for that fix.
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let body = "\"unexpected garbage response\"";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    let client = JSBridgeClient::new(port);
+    let outcome = client
+        .item_delete(1, "KEY1")
+        .expect("a write call always returns Ok(WriteOutcome), never an escaped Err");
+    assert!(
+        matches!(outcome, WriteOutcome::TransportError { .. }),
+        "an unrecognized bridge response must never be silently treated as Applied, got {outcome:?}"
+    );
+
+    let _ = server_handle.join();
+}
+
+#[test]
+fn test_ambiguous_transport_failure_maps_to_transport_error_with_no_retry() {
+    clear_probe_cache();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel();
+
+    let server_handle = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            respond_with_verified_ownership(&mut stream);
+        }
+        tx.send(()).unwrap();
+
+        // The write attempt itself: accept the connection, then drop it without writing any
+        // response -- a genuine transport-level failure, distinct from a well-formed error body.
+        if let Ok((stream, _)) = listener.accept() {
+            tx.send(()).unwrap();
+            drop(stream);
+        }
+    });
+
+    let client = JSBridgeClient::new(port);
+    let outcome = client
+        .item_delete(1, "KEY1")
+        .expect("a write call always returns Ok(WriteOutcome), never an escaped Err");
+    assert!(
+        matches!(outcome, WriteOutcome::TransportError { .. }),
+        "expected TransportError for a dropped connection, got {outcome:?}"
+    );
+
+    // The probe connection's signal must have arrived (item_delete only returns once execute_js
+    // has finished, which happens after both connections are handled or dropped).
+    assert!(
+        rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+        "server must have received the ownership probe connection"
+    );
+    // The write-attempt connection's signal must also have arrived...
+    assert!(
+        rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+        "server must have received exactly one write-attempt connection"
+    );
+    // ...but no third connection (i.e. no automatic retry) must ever arrive.
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "no second write-attempt connection (i.e. no automatic retry) must arrive"
+    );
+
+    let _ = server_handle.join();
+}
+
+#[test]
+fn test_ownership_rejection_blocks_privileged_write_outcome() {
+    clear_probe_cache();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().unwrap().port();
+
+    let server_handle = thread::spawn(move || {
+        // Only one connection expected: bridge_endpoint_active() rejects the wrong fork and
+        // execute_js short-circuits, so no second (privileged eval) request is ever sent.
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"pong":true,"fork":"other-upstream-fork"}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let client = JSBridgeClient::new(port);
+    let outcome = client.item_delete(1, "KEY1").expect(
+        "a write call always returns Ok(WriteOutcome), never an escaped Err, even when \
+         ownership verification fails",
+    );
+    assert!(
+        matches!(outcome, WriteOutcome::TransportError { .. }),
+        "a privileged write must never execute (and never claim Applied) when ownership \
+         verification fails, got {outcome:?}"
+    );
 
     let _ = server_handle.join();
 }

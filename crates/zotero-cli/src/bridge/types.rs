@@ -69,25 +69,6 @@ impl BridgeResponse {
     }
 }
 
-/// Shared write-interface contract defined in §3.13 of the Phase 6 plan.
-/// Every write path (Bridge, Local API, Connector API) returns this.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WriteOutcome {
-    /// Write applied. `affected_key` feeds post-write re-read; the renderer produces the
-    /// stdout JSON from that re-read, never from this variant's own data.
-    Applied { affected_key: String },
-    /// Local/Connector API specific: consent not yet granted, or revoked. Maps to §3.3's
-    /// machine-distinguishable exit code / `needs_human_action` field. Never triggers a Bridge
-    /// fallback.
-    AuthorizationDenied { detail: String },
-    /// Version/precondition mismatch (`If-Unmodified-Since-Version` conflict, or Bridge-side
-    /// equivalent). Caller re-reads and may retry with a fresh version.
-    Conflict { detail: String },
-    /// Transport/unexpected failure. Distinct from `AuthorizationDenied` so retry-vs-stop
-    /// logic can tell "ask a human" apart from "genuinely broken."
-    TransportError { detail: String },
-}
-
 /// Ownership marker returned by our forked XPI plugin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnershipMarker {
