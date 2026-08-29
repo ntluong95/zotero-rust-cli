@@ -57,12 +57,35 @@ pub fn install_plugin(profile_dir: &Path) -> Result<PathBuf> {
     std::fs::write(&xpi_path, xpi_bytes)
         .with_context(|| format!("Failed to write XPI file to: {}", xpi_path.display()))?;
 
+    // In Zotero 7+ through 10+, ensure sideloaded extension is not auto-disabled on startup
+    let user_js = profile_dir.join("user.js");
+    let pref_line = "user_pref(\"extensions.autoDisableScopes\", 0);\n";
+    let current_user_js = std::fs::read_to_string(&user_js).unwrap_or_default();
+    if !current_user_js.contains("extensions.autoDisableScopes") {
+        let mut new_content = current_user_js;
+        if !new_content.is_empty() && !new_content.ends_with('\n') {
+            new_content.push('\n');
+        }
+        new_content.push_str(pref_line);
+        let _ = std::fs::write(&user_js, new_content);
+    }
+
+    // Invalidate stale startup cache so Zotero detects and loads the new XPI on next boot
+    let startup_cache = profile_dir.join("addonStartup.json.lz4");
+    if startup_cache.exists() {
+        let _ = std::fs::remove_file(&startup_cache);
+    }
+
     Ok(xpi_path)
 }
 
 /// Uninstalls the XPI plugin from the specified Zotero profile directory.
 pub fn uninstall_plugin(profile_dir: &Path) -> Result<bool> {
     let xpi_path = profile_dir.join("extensions").join(XPI_FILENAME);
+    let startup_cache = profile_dir.join("addonStartup.json.lz4");
+    if startup_cache.exists() {
+        let _ = std::fs::remove_file(&startup_cache);
+    }
     if xpi_path.exists() {
         std::fs::remove_file(&xpi_path)
             .with_context(|| format!("Failed to remove XPI file: {}", xpi_path.display()))?;
