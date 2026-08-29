@@ -74,6 +74,18 @@ pub enum Commands {
     /// Collection inspection and selection commands.
     #[command(subcommand)]
     Collection(CollectionCommands),
+    /// Library inspection commands.
+    #[command(subcommand)]
+    Library(LibraryCommands),
+    /// Saved search commands.
+    #[command(subcommand)]
+    Search(SearchCommands),
+    /// Tag inspection commands.
+    #[command(subcommand)]
+    Tag(TagCommands),
+    /// CSL citation style commands.
+    #[command(subcommand)]
+    Style(StyleCommands),
 }
 
 #[derive(Subcommand, Debug)]
@@ -109,6 +121,26 @@ pub enum ItemCommands {
         #[arg(long, value_enum, default_value_t = SearchScope::TitleCreatorYear)]
         scope: SearchScope,
     },
+    /// List child items (notes, attachments, annotations) of an item.
+    Children {
+        #[arg(value_name = "REF")]
+        item_ref: Option<String>,
+    },
+    /// List child notes of an item.
+    Notes {
+        #[arg(value_name = "REF")]
+        item_ref: Option<String>,
+    },
+    /// List child attachments of an item, with resolved filesystem paths.
+    Attachments {
+        #[arg(value_name = "REF")]
+        item_ref: Option<String>,
+    },
+    /// Resolve the primary file (or first attachment's file) for an item.
+    File {
+        #[arg(value_name = "REF")]
+        item_ref: Option<String>,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -135,5 +167,53 @@ impl std::fmt::Display for SearchScope {
 #[derive(Subcommand, Debug)]
 pub enum CollectionCommands {
     /// List collections in the current (or default) library.
+    List,
+    /// Find collections by name.
+    Find {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+    },
+    /// Get a single collection by ref or session default.
+    Get {
+        #[arg(value_name = "REF")]
+        collection_ref: Option<String>,
+    },
+    /// List items in a collection.
+    Items {
+        #[arg(value_name = "REF")]
+        collection_ref: Option<String>,
+    },
+    /// Print the collection hierarchy for the current (or default) library.
+    Tree,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LibraryCommands {
+    /// List all Zotero libraries.
+    List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SearchCommands {
+    /// List saved searches in the current (or default) library.
+    List,
+    /// Get a saved search by ref (key or numeric id).
+    Get { search_ref: String },
+    /// Run a saved search's items through the Zotero Local API.
+    Items { search_ref: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TagCommands {
+    /// List tags in the current (or default) library.
+    List,
+    /// List items carrying a given tag (by name or numeric id).
+    Items { tag_ref: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum StyleCommands {
+    /// List installed CSL citation styles.
     List,
 }

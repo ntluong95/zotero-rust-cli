@@ -1,0 +1,28 @@
+{
+  "command": "item find (sql-fallback)",
+  "args": [
+    "--json",
+    "item",
+    "find",
+    "Sample Title",
+    "--limit",
+    "5",
+    "--exact-title"
+  ],
+  "compatibility_class": "Exact",
+  "fixture_state": "local-api-on",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 0,
+  "stdout": "[\n  {\n    \"itemID\": 1,\n    \"key\": \"REG12345\",\n    \"libraryID\": 1,\n    \"itemTypeID\": 1,\n    \"typeName\": \"journalArticle\",\n    \"dateAdded\": \"<TIMESTAMP>\",\n    \"dateModified\": \"<TIMESTAMP>\",\n    \"version\": 1,\n    \"title\": \"Sample Title\",\n    \"DOI\": \"10.1000/sample\",\n    \"date\": null,\n    \"hasPdf\": true,\n    \"noteParentItemID\": null,\n    \"noteContent\": null,\n    \"attachmentParentItemID\": null,\n    \"annotationParentItemID\": null,\n    \"annotationText\": null,\n    \"annotationComment\": null,\n    \"linkMode\": null,\n    \"contentType\": null,\n    \"attachmentPath\": null,\n    \"fields\": {},\n    \"creators\": [],\n    \"tags\": [],\n    \"isAttachment\": false,\n    \"isNote\": false,\n    \"isAnnotation\": false,\n    \"parentItemID\": null,\n    \"noteText\": \"\",\n    \"notePreview\": \"\"\n  }\n]\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    }
+  ]
+}

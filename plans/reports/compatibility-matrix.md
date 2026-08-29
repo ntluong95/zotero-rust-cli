@@ -26,8 +26,33 @@ moves to **Migrated** when `compare.py` classifies it **Exact** (or
 | `app status` | Exact | **Exact** (byte-identical) | `runtime`, `paths`, `http` | First vertical slice; also exercises the connector+Local-API probe pair shared by every other command |
 | `item list` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Pure SQLite, no HTTP dependency for data |
 | `item get` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Exercises `include_related=true` (fields/creators/tags hydration) |
-| `item find` | Exact | **Exact** (byte-identical) | `catalog`, `db`, `http` | Exercises the Local-API-hit path (`unicode-cjk` fixture, CJK query correctly percent-encoded); the SQL-fallback path (`exact_title`/Local-API-down) is implemented but not yet covered by a golden fixture — flagged as a follow-up, not a known defect |
+| `item find` | Exact | **Exact** (byte-identical) | `catalog`, `db`, `http` | Exercises the Local-API-hit path (`unicode-cjk` fixture, CJK query correctly percent-encoded). **SQL-fallback path now covered**: row 98, `item find (sql-fallback)` — `--exact-title` forces `find_items_by_title` regardless of Local API state; matches `REG12345` by its literal `"Sample Title"` — **Exact** |
+| `app status (unreachable)` | Exact | **Exact** (byte-identical) | `runtime`, `paths`, `http` | Row 97; no fake HTTP server started, real closed-port connection refusal; `connector_message`/`local_api_message` normalized to `<CONNECTION_REFUSED>` per the accepted-divergence decision above — everything else compared unweakened |
 | `collection list` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Pure SQLite, no HTTP dependency for data |
+| `library list` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Trivial wrapper over `fetch_libraries` |
+| `collection find` | Exact | **Exact** (byte-identical) | `catalog`, `db` | `LIKE`-search with exact/prefix/substring ranking `CASE` |
+| `collection get` | Exact | **Exact** (byte-identical) | `catalog`, `db` | `ref: None` now falls back to session — see `get_collection` signature fix below |
+| `collection items` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Composes `get_collection` + `fetch_items` |
+| `collection tree` | Exact | **Exact** (byte-identical) | `catalog`, `db` | `build_collection_tree`; orphan-root branch unit-tested (fixture doesn't reach it — see phase-04 notes) |
+| `item children` | Exact | **Exact** (byte-identical) | `catalog`, `db` | `fetch_items` with `parent_item_id` filter (already existed) |
+| `item notes` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Filters `item_children` by `typeName == "note"` |
+| `item attachments` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Each attachment gains `resolvedPath` via `resolve_attachment_real_path` |
+| `item file` | Exact | **Exact** (byte-identical) | `catalog`, `db` | `resolve_attachment_real_path` — see phase-04 for the branch-coverage gap this closed |
+| `item find (sql-fallback)` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Row 98; see the `item find` entry above |
+| `search list` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Includes nested `conditions` per search |
+| `search get` | Exact | **Exact** (byte-identical) | `catalog`, `db` | `resolve_saved_search` numeric/key resolution |
+| `search get (ambiguous)` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Row 99; new standing fixture for the ambiguous-key error path — see phase-04 notes |
+| `search items` | Exact | **Exact** (byte-identical) | `catalog`, `http` | Raw Local API JSON passthrough (`{scope}/searches/{key}/items`) |
+| `tag list` | Exact | **Exact** (byte-identical) | `catalog`, `db` | — |
+| `tag items` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Resolves tag name/id then reuses `fetch_items`'s tag filter |
+| `style list` | Exact | **Exact** (byte-identical) | `catalog` | Real namespace-aware `*.csl` XML parse via `quick-xml` (new dependency — see module doc comment for why a regex heuristic was rejected) |
+
+**23 of 24 Phase 4 commands now Exact.** Only `session use-selected` remains (needs Phase 5's
+connector HTTP client). See `phase-04-sqlite-read-layer-and-typed-models.md` for the full account of
+this slice, including the `get_collection` signature fix and the three branch-coverage gaps found and
+closed (`resolve_attachment_real_path`'s UNC/drive-letter branches, `build_collection_tree`'s
+orphan-root case, `resolve_saved_search`'s ambiguous-key path) despite every command classifying
+Exact on the first harness run.
 
 Runtime foundation landed alongside these five (not independently
 command-tested, but exercised by all of them): `paths` (Zotero
@@ -90,20 +115,23 @@ done. Real bugs found and fixed:
   own note editor always emits well-formed, semicolon-terminated entities, so
   this only affects notes with hand-crafted/scraped legacy HTML. Not fixed;
   see `db.rs`'s `note_html_to_text` doc comment.
-- **Not yet resolved, needs a product decision:** when Zotero/the connector/Local
-  API is completely unreachable (not merely disabled — actually not listening
-  on the port), `app status`'s `connector_message`/`local_api_message` fields
-  contain OS/runtime-specific error text (`"HTTP request failed for ...: io:
-  Connection refused"` in Rust vs. Python's `urllib`-derived
-  `"<urlopen error [Errno 61] Connection refused]>"`-style text) — these cannot
-  be made byte-identical across languages. No existing fixture state exercises
-  this (`local-api-off` mocks an HTTP 403, not a real connection refusal), so
-  it isn't currently caught by the Exact-match harness at all. Options: add a
-  harness fixture state that doesn't start the fake server, and downgrade
-  `app status` to **Semantic** for these two message fields; or document the
-  gap and leave `app status` classified Exact on the assumption that agents
-  don't parse these particular message strings. Flagged for the user/maintainer,
-  not decided unilaterally here.
+- **Resolved (2026-08-29), user decision:** when Zotero/the connector/Local API
+  is completely unreachable (not merely disabled — nothing listening on the
+  port at all), `app status`'s `connector_message`/`local_api_message` fields
+  contain OS/runtime-specific transport error text (Rust's `ureq::Error`
+  `Display` vs. Python's `urllib`-derived `<urlopen error [Errno 61] ...>`
+  text) that cannot be made byte-identical across languages, and reproducing
+  one transport library's exception prose in the other is not a real
+  compatibility contract worth chasing. **Decision: accept the divergence,
+  scoped narrowly.** A dedicated `zotero-unreachable` harness fixture
+  (`harness/commands.tsv` row 97, no fake HTTP server started at all — a real
+  closed TCP port) normalizes **only** `connector_message` and
+  `local_api_message` to `<CONNECTION_REFUSED>`, and **only** for that fixture
+  state (`harness/normalize.py`). Everything else — JSON structure, both
+  reachability booleans, `http_calls: []`, exit code — is compared unweakened.
+  `app status`'s other fixtures (`local-api-off`'s real HTTP 403, etc.) are
+  untouched and stay Exact with no normalization at all. Implemented and
+  verified **Exact**: see the Migration Progress table below.
 
 | # | Command | Python module(s) | Proposed Rust module | Args / flags | Class | Notes |
 |---|---|---|---|---|---|---|
@@ -225,7 +253,7 @@ done. Real bugs found and fixed:
 | Exit codes | `results.exit_code_for`: `ok=false` → 1; `status` ∈ {partial_success, error, failed, timeout} → 1; else 0. |
 | Result envelope | `{action, ok, status, code?, error?, ...}` from `results.result_payload`. |
 | JSON encoding | `ensure_ascii=False, indent=2`; falls back to `ensure_ascii=True` when stdout cannot encode. |
-| Env vars | `ZOTERO_DATA_DIR`, `ZOTERO_PROFILE_DIR`, `ZOTERO_EXECUTABLE`, `ZOTERO_HTTP_PORT`, `ZOTERO_LOCALE`, `ZOTERO_EMBED_API`, `ZOTERO_EMBED_MODEL`, `ZOTERO_EMBED_KEY`, `ZOTERO_VECTOR_DB`, `ZOTERO_CLI_AUDIT_DIR`, `OPENAI_API_KEY`, `CLI_ANYTHING_ZOTERO_OPENAI_URL`, `CLI_ANYTHING_ZOTERO_STATE_DIR`, `CLI_ANYTHING_ZOTERO_IMPORT_TARGET`, `CLI_ANYTHING_NO_COLOR`, `NO_COLOR`, `CLI_ANYTHING_FORCE_INSTALLED` |
+| Env vars | See the 17-variable status table below |
 | Default paths | session `~/.config/cli-anything-zotero/session.json` (**all** platforms, incl. Windows); vectors `~/Zotero/cli-anything-vectors.sqlite`; data dir fallback `~/Zotero`; port fallback `23119` |
 | Binary names | `zotero-cli` (primary), `cli-anything-zotero` (alias) |
 
@@ -235,3 +263,35 @@ done. Real bugs found and fixed:
 |---|---|---|---|---|
 | 1 | Bare invocation (`zotero-cli`, no subcommand) | Enters REPL, **blocks on stdin** | Prints help, exits 0 | A blocking stdin read is the worst failure mode for a non-interactive agent. |
 | 2 | `item move-to-collection` | `--experimental` mandatory; direct SQLite write; Zotero must be **closed** | Bridge composition (`add_to_collection` + `remove_from_collection`); Zotero **running**; no flag | Verified: no bridge path exists upstream. Reimplementation is new work and strictly more usable. |
+
+## Environment variable status (17-variable inventory)
+
+Verified against the Python source directly (`grep` for each name across `cli_anything/zotero/`, not
+inferred from documentation). Two of the seventeen turned out, on inspection, to be **test-harness-only**
+— never read by `zotero_cli.py` or any `core`/`utils` module — so they are not actually part of the
+CLI's runtime compatibility contract; flagged as such rather than silently treated as pending Rust work.
+
+| Env var | Read by (Python) | Rust status | Notes |
+|---|---|---|---|
+| `ZOTERO_DATA_DIR` | `utils/zotero_paths.py` | ✅ Implemented (`paths.rs`) | Phase 3 vertical slice |
+| `ZOTERO_PROFILE_DIR` | `utils/zotero_paths.py` | ✅ Implemented (`paths.rs`) | Phase 3 vertical slice |
+| `ZOTERO_EXECUTABLE` | `utils/zotero_paths.py` | ✅ Implemented (`paths.rs`) | Phase 3 vertical slice |
+| `ZOTERO_HTTP_PORT` | `utils/zotero_paths.py` | ✅ Implemented (`paths.rs`) | Phase 3 vertical slice |
+| `CLI_ANYTHING_ZOTERO_STATE_DIR` | `core/session.py` | ✅ Implemented (`session.rs`) | Phase 3 vertical slice |
+| `ZOTERO_CLI_AUDIT_DIR` | `core/audit.py` | ⏳ Pending | Phase 5 (`audit.rs`) |
+| `ZOTERO_EMBED_API` | `core/semantic.py` | ⏳ Pending | Phase 8 |
+| `ZOTERO_EMBED_MODEL` | `core/semantic.py` | ⏳ Pending | Phase 8 |
+| `ZOTERO_EMBED_KEY` | `core/semantic.py` | ⏳ Pending | Phase 8 |
+| `ZOTERO_VECTOR_DB` | `core/semantic.py` | ⏳ Pending | Phase 8 |
+| `OPENAI_API_KEY` | `utils/openai_api.py` | ⏳ Pending | Phase 7 (`item analyze`) |
+| `CLI_ANYTHING_ZOTERO_OPENAI_URL` | `utils/openai_api.py` | ⏳ Pending | Phase 7 |
+| `ZOTERO_LOCALE` | `core/jsbridge.py` (AppleScript menu localization only) | ❌ N/A | The AppleScript bridge fallback is dropped entirely (Phase 6 decision) — this var has no remaining consumer to port |
+| `NO_COLOR` | `utils/repl_skin.py` only | ❌ N/A | REPL/branding dropped from v1 (approved decision) — no remaining consumer |
+| `CLI_ANYTHING_NO_COLOR` | `utils/repl_skin.py` only | ❌ N/A | Same as `NO_COLOR` |
+| `CLI_ANYTHING_ZOTERO_IMPORT_TARGET` | **Test-only** — `tests/test_full_e2e.py`, never in `core`/`utils`/`zotero_cli.py` | 🔹 Test-harness concern, not a CLI contract | The Rust parity harness may define its own equivalent for opt-in live-write tests; not a `zotero-cli` runtime env var |
+| `CLI_ANYTHING_FORCE_INSTALLED` | **Test-only** — `tests/test_cli_entrypoint.py`, `tests/test_full_e2e.py` | 🔹 Test-harness concern, not a CLI contract | Selects installed-vs-`python -m` subprocess resolution in Python's own test suite; has no Rust equivalent need since there's one binary, not an installed-package ambiguity |
+
+**Summary:** 5 of 17 implemented, 7 pending against named future phases (all real,
+all mapped), 3 not applicable (their only consumer was dropped from v1 by an
+approved decision), 2 reclassified as test-harness-only rather than CLI
+runtime contracts. Zero unaccounted-for.

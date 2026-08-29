@@ -11,7 +11,10 @@ pub mod session;
 use clap::{CommandFactory, Parser};
 use serde_json::Value;
 
-use cli::{AppCommands, Cli, CollectionCommands, Commands, ItemCommands};
+use cli::{
+    AppCommands, Cli, CollectionCommands, Commands, ItemCommands, LibraryCommands, SearchCommands,
+    StyleCommands, TagCommands,
+};
 
 /// Port of `dispatch()`/`entrypoint()` (`zotero_cli.py:2657-2676`).
 /// `clap`'s own usage-error handling (missing/invalid args) already exits
@@ -94,5 +97,97 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             output::emit(json_mode, &serde_json::to_value(collections)?);
             Ok(0)
         }
+        Commands::Collection(CollectionCommands::Find { query, limit }) => {
+            let collections = catalog::find_collections(&runtime, &query, limit, &session)?;
+            output::emit(json_mode, &serde_json::to_value(collections)?);
+            Ok(0)
+        }
+        Commands::Collection(CollectionCommands::Get { collection_ref }) => {
+            let collection =
+                catalog::get_collection(&runtime, collection_ref.as_deref(), &session)?;
+            output::emit(json_mode, &serde_json::to_value(collection)?);
+            Ok(0)
+        }
+        Commands::Collection(CollectionCommands::Items { collection_ref }) => {
+            let items = catalog::collection_items(&runtime, collection_ref.as_deref(), &session)?;
+            output::emit(json_mode, &serde_json::to_value(items)?);
+            Ok(0)
+        }
+        Commands::Collection(CollectionCommands::Tree) => {
+            let tree = catalog::collection_tree(&runtime, &session)?;
+            if json_mode {
+                output::emit(json_mode, &serde_json::to_value(&tree)?);
+            } else {
+                print_collection_tree(&tree, 0);
+            }
+            Ok(0)
+        }
+        Commands::Library(LibraryCommands::List) => {
+            let libraries = catalog::list_libraries(&runtime)?;
+            output::emit(json_mode, &serde_json::to_value(libraries)?);
+            Ok(0)
+        }
+        Commands::Item(ItemCommands::Children { item_ref }) => {
+            let children = catalog::item_children(&runtime, item_ref.as_deref(), &session)?;
+            output::emit(json_mode, &serde_json::to_value(children)?);
+            Ok(0)
+        }
+        Commands::Item(ItemCommands::Notes { item_ref }) => {
+            let notes = catalog::item_notes(&runtime, item_ref.as_deref(), &session)?;
+            output::emit(json_mode, &serde_json::to_value(notes)?);
+            Ok(0)
+        }
+        Commands::Item(ItemCommands::Attachments { item_ref }) => {
+            let attachments = catalog::item_attachments(&runtime, item_ref.as_deref(), &session)?;
+            output::emit(json_mode, &serde_json::to_value(attachments)?);
+            Ok(0)
+        }
+        Commands::Item(ItemCommands::File { item_ref }) => {
+            let file = catalog::item_file(&runtime, item_ref.as_deref(), &session)?;
+            output::emit(json_mode, &serde_json::to_value(file)?);
+            Ok(0)
+        }
+        Commands::Search(SearchCommands::List) => {
+            let searches = catalog::list_searches(&runtime, &session)?;
+            output::emit(json_mode, &serde_json::to_value(searches)?);
+            Ok(0)
+        }
+        Commands::Search(SearchCommands::Get { search_ref }) => {
+            let search = catalog::get_search(&runtime, Some(&search_ref), &session)?;
+            output::emit(json_mode, &serde_json::to_value(search)?);
+            Ok(0)
+        }
+        Commands::Search(SearchCommands::Items { search_ref }) => {
+            let items = catalog::search_items(&runtime, Some(&search_ref), &session)?;
+            output::emit(json_mode, &items);
+            Ok(0)
+        }
+        Commands::Tag(TagCommands::List) => {
+            let tags = catalog::list_tags(&runtime, &session)?;
+            output::emit(json_mode, &serde_json::to_value(tags)?);
+            Ok(0)
+        }
+        Commands::Tag(TagCommands::Items { tag_ref }) => {
+            let items = catalog::tag_items(&runtime, &tag_ref, &session)?;
+            output::emit(json_mode, &serde_json::to_value(items)?);
+            Ok(0)
+        }
+        Commands::Style(StyleCommands::List) => {
+            let styles = catalog::list_styles(&runtime)?;
+            output::emit(json_mode, &serde_json::to_value(styles)?);
+            Ok(0)
+        }
+    }
+}
+
+/// `_print_collection_tree()` (`zotero_cli.py:352-356`).
+fn print_collection_tree(nodes: &[db::CollectionNode], level: usize) {
+    let prefix = "  ".repeat(level);
+    for node in nodes {
+        println!(
+            "{prefix}- {} [{}]",
+            node.collection_name, node.collection_id
+        );
+        print_collection_tree(&node.children, level + 1);
     }
 }

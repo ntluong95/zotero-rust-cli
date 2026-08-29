@@ -120,7 +120,22 @@ def build_fixture(base: Path, state: str) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("output_dir", type=Path)
-    parser.add_argument("--state", default="local-api-on", choices=["local-api-on", "local-api-off", "empty-library", "group-library", "unicode-cjk"])
+    parser.add_argument(
+        "--state",
+        default="local-api-on",
+        choices=[
+            "local-api-on",
+            "local-api-off",
+            "empty-library",
+            "group-library",
+            "unicode-cjk",
+            # No dedicated data mutation (see build_fixture()) -- this
+            # state only changes capture.py's control flow (no fake
+            # HTTP server is started at all). Listed here so `--state`
+            # discovery/`--help` stays a complete inventory.
+            "zotero-unreachable",
+        ],
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 

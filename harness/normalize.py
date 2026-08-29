@@ -13,6 +13,26 @@ PID_RE = re.compile(r'"pid"\s*:\s*\d+')
 PORT_RE = re.compile(r'("port"\s*:\s*)\d+')
 SESSION_ID_RE = re.compile(r'import-(?:json|file)-[0-9a-f]{32}')
 
+# Accepted divergence, scoped to the `zotero-unreachable` fixture only
+# (see plans/reports/compatibility-matrix.md): Python's `urllib` and
+# Rust's `ureq` produce OS- and library-specific connection-refused
+# prose that cannot be made byte-identical (and chasing it would mean
+# imitating one transport library's exception text in the other
+# language, which is not a real compatibility contract). Everything
+# else about the fixture -- JSON structure, the false/false
+# reachability booleans, and the exit code -- stays a real comparison.
+# This substitution is applied only for that one fixture_state and
+# only to these two named JSON fields; it must never be widened to a
+# blanket "normalize all error text" rule.
+CONNECTOR_MESSAGE_RE = re.compile(r'("connector_message"\s*:\s*)"(?:[^"\\]|\\.)*"')
+LOCAL_API_MESSAGE_RE = re.compile(r'("local_api_message"\s*:\s*)"(?:[^"\\]|\\.)*"')
+
+
+def normalize_unreachable_transport_messages(text: str) -> str:
+    text = CONNECTOR_MESSAGE_RE.sub(r'\1"<CONNECTION_REFUSED>"', text)
+    text = LOCAL_API_MESSAGE_RE.sub(r'\1"<CONNECTION_REFUSED>"', text)
+    return text
+
 
 def normalize_text(text: str, *, roots: list[str] | None = None) -> str:
     out = text.replace("\r\n", "\n")
@@ -55,6 +75,11 @@ def normalize_capture(capture: dict[str, Any]) -> dict[str, Any]:
         roots.append(str(fixture_root))
     normalized = normalize_value(capture, roots=roots)
     normalized.pop("_normalization_roots", None)
+    if normalized.get("fixture_state") == "zotero-unreachable":
+        for field in ("stdout", "stderr"):
+            value = normalized.get(field)
+            if isinstance(value, str):
+                normalized[field] = normalize_unreachable_transport_messages(value)
     return normalized
 
 

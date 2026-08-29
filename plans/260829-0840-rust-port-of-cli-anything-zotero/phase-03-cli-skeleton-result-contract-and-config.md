@@ -37,20 +37,49 @@ at this scope and were simpler to keep exactly traceable to the Python source fi
 
 **Not yet done** (still applies to the rest of this phase's scope): `result.rs`/`ResultPayload`
 (none of the 5 landed commands use `result_payload` — all are raw-output Exact commands), the full
-17-environment-variable `config.rs` inventory (only the 4 already needed —
-`ZOTERO_DATA_DIR`/`ZOTERO_PROFILE_DIR`/`ZOTERO_EXECUTABLE`/`ZOTERO_HTTP_PORT`/
-`CLI_ANYTHING_ZOTERO_STATE_DIR` — are wired), `NOT_IMPLEMENTED` stubs for the other 91 v1 leaves,
-the deferred/dropped-command visibility inventory, and the Windows console-encoding fallback (see
-`output.rs`'s own doc comment: Rust's stdout has no `UnicodeEncodeError`-equivalent failure mode,
-so the fallback branch may not be portable/needed as originally scoped — revisit once Windows CI
-runs the real binary rather than assuming this is still required as designed below).
+17-environment-variable inventory beyond the 5 already wired (`ZOTERO_DATA_DIR`/`ZOTERO_PROFILE_DIR`/
+`ZOTERO_EXECUTABLE`/`ZOTERO_HTTP_PORT`/`CLI_ANYTHING_ZOTERO_STATE_DIR`; see the status column added to
+`compatibility-matrix.md` — the remaining 12 are wired by whichever phase actually implements the
+feature that reads them, not speculatively here), the deferred/dropped-command visibility inventory,
+and the Windows console-encoding fallback (see `output.rs`'s own doc comment: Rust's stdout has no
+`UnicodeEncodeError`-equivalent failure mode, so the fallback branch may not be portable/needed as
+originally scoped — revisit once Windows CI runs the real binary rather than assuming this is still
+required as designed below).
+
+### Superseded requirement: no `NOT_IMPLEMENTED` stubs for the other v1 leaves
+
+**Decision (2026-08-29), made directly by the user reviewing this phase's status:** the original plan
+called for stubbing all v1 command paths into the parser up front, each returning a structured
+`NOT_IMPLEMENTED` result until its real implementation landed. That requirement is **superseded** by
+the vertical-slice decision above and must not be revived.
+
+Rationale: this CLI's primary consumer is an AI agent reading `--help` output and the generated
+`SKILL.md` to decide what it can do. A command that parses successfully and returns a clean
+`{"ok": false, "code": "NOT_IMPLEMENTED"}` envelope is *more* discoverable to an agent than a command
+that doesn't exist — which is exactly backwards for 91 commands that don't actually work yet. An
+agent will find `item delete` in `--help`, reasonably conclude it is real, invoke it in a live
+workflow, and get a clean-looking JSON failure that has to be diagnosed as "not implemented" rather
+than caught by argument parsing before any Zotero state is touched.
+
+The correct behavior, already what the current code does and what must remain true going forward: **a
+command only exists in `cli.rs` once its full implementation lands in the same change.** An
+unimplemented command is simply absent from the parser; invoking it produces `clap`'s own
+"unrecognized subcommand" usage error (exit 2) — which is an honest signal ("this isn't a command"),
+not a misleading one ("this is a command that doesn't work").
+
+This is distinct from the **Deferred/Dropped command visibility** section below, which still applies:
+that section covers the 8 commands permanently or temporarily *out of v1 scope* (the DOCX zoterify
+chain, `repl`), which is a different concern from "not yet ported but will be." Deferred/dropped
+commands must stay documented in `compatibility-matrix.md` and excluded from `SKILL.md`'s normal
+examples — never exposed as fake executable CLI surfaces either.
 
 ## Requirements
 
 **Functional**
-- All v1 command paths parse and produce correct help text; deferred/dropped paths are either absent
-  from the generated agent skill or emit explicit `DEFERRED` / `DROPPED` diagnostics that cannot be
-  mistaken for available functionality
+- Only implemented commands appear in the parser (see "Superseded requirement" above); unimplemented
+  v1 commands are absent, not stubbed — `clap`'s own unrecognized-subcommand error is the correct
+  response. Deferred/dropped paths are either absent from the generated agent skill or emit explicit
+  `DEFERRED` / `DROPPED` diagnostics that cannot be mistaken for available functionality
 - `--json` accepted at root, group **and** command level
 - Root flags: `--backend {auto,sqlite,api}`, `--data-dir`, `--profile-dir`, `--executable`, `--version`
 - Result payload helper `{action, ok, status, code?, error?, ...}` with Python-identical key order
@@ -203,22 +232,28 @@ deferred or dropped functionality.
    exhaustively.
 4. Implement `error.rs` mapping every error class to `(payload, exit_code, stream)`.
 5. Implement `emit.rs`: JSON mode, human mode, list/dict/string handling, encoding fallback.
-6. Implement `config.rs` covering all 17 environment variables.
+6. Track the 17-environment-variable inventory against `compatibility-matrix.md`'s status column;
+   implement each var in the phase that actually needs it (do not add read-but-unused env handling
+   speculatively — see "Superseded requirement" above for why speculative surface is a net negative
+   for an agent-facing CLI).
 7. Port `paths.rs` with the precedence tables above.
 8. Implement bare-invocation → help + exit 0.
-9. Every unimplemented v1 leaf returns
-   `{"action": "<cmd>", "ok": false, "status": "error", "code": "NOT_IMPLEMENTED"}` with exit 1, so
-   the parity harness can distinguish "not yet ported" from "ported and wrong".
-10. Add an inventory test that classifies each command as v1, Deferred, Dropped, or Changed, and
-    asserts the generated agent skill includes only the intended public v1 surface plus warnings for
-    documented exceptions.
-11. Wire the Phase 1 harness to run against the Rust binary; expect `NOT_IMPLEMENTED` for v1 leaves and
-    **Exact** on `--help` structure and path/config resolution.
+9. ~~Every unimplemented v1 leaf returns `NOT_IMPLEMENTED`~~ — **superseded**; do not stub. A command
+   enters `cli.rs` only alongside its real implementation.
+10. Add an inventory test that classifies each *landed* command as v1, Deferred, Dropped, or Changed,
+    and asserts the generated agent skill includes only the intended public v1 surface plus warnings
+    for documented exceptions. This test's scope grows with each vertical slice — it does not need a
+    complete v1 command set to exist first.
+11. Wire the Phase 1 harness to run against the Rust binary; expect `missing` (not `mismatch`) for
+    commands that haven't landed yet, and **Exact**/**Semantic** for the ones that have, per their
+    class.
 12. Benchmark cold start; assert under 10 ms in CI.
 
 ## Success Criteria
 
-- [ ] All v1 command paths parse; deferred/dropped command visibility is explicitly classified
+- [ ] Every *landed* command parses and matches its target compatibility class; unimplemented v1
+      commands are absent from the parser (not stubbed) and deferred/dropped command visibility is
+      explicitly classified
 - [ ] `item find X --json`, `item --json find X`, and `--json item find X` all behave identically
 - [ ] Root-only flags are rejected at sub-levels, matching Python
 - [ ] Raw-output commands stay raw; result-payload commands preserve `result_payload` key order
@@ -228,7 +263,8 @@ deferred or dropped functionality.
 - [ ] Session file resolves to `~/.config/cli-anything-zotero/session.json` on Windows too
 - [ ] Bare invocation prints help and exits 0
 - [ ] Cold start under 10 ms
-- [ ] Harness runs end-to-end against the Rust binary and reports a clean `NOT_IMPLEMENTED` baseline for accepted v1 leaves
+- [ ] Harness runs end-to-end against the Rust binary and reports `missing` (never `mismatch`) for
+      not-yet-landed v1 commands
 
 ## Risk Assessment
 

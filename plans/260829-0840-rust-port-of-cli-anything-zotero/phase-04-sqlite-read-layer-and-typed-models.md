@@ -15,16 +15,67 @@ Port the read half of `utils/zotero_sqlite.py` (~600 of its 782 lines) and the r
 `core/catalog.py`. Delivers the 24 SQLite-backed commands — the bulk of the **Exact** compatibility
 class and the most frequently used commands in agent workflows.
 
-### Partial progress via the Phase 3 vertical slice
+### Progress via the vertical slice (Phase 3 slice 1, this slice 2)
 
-4 of this phase's 24 commands already landed and are verified **Exact** as part of the vertical-slice
-work described in `phase-03`: `item list`, `item get`, `item find`, `collection list`. Their SQL and
-normalization logic live in `crates/zotero-cli/src/db.rs` (not yet split into `db/mod.rs` +
-`db/read.rs` + `db/models.rs` as sketched below — flat for now, split only if/when the remaining 20
-commands make the single file unwieldy). `collection find/get/items/tree`, `item children/notes/
-attachments/file`, `library list`, `search list/get`, `tag list/items`, `style list`, and
-`session use-selected` are not yet ported. `resolve_collection` (needed by `item find --collection`)
-is also already in `db.rs`, ahead of `collection get`/`collection find` themselves.
+**23 of this phase's 24 commands are now landed and verified Exact.** Only `session use-selected`
+remains (it needs `connector/getSelectedCollection`, an HTTP call — arguably Phase 5 scope by
+dependency, kept here only because the original command inventory placed it in this phase's list).
+
+- **Slice 1** (`phase-03`'s vertical slice): `item list`, `item get`, `item find`, `collection list`.
+- **Slice 2** (this update): `library list`, `collection find/get/items/tree`, `item children/notes/
+  attachments/file`, `search list/get/items`, `tag list/items`, `style list`.
+
+All SQL and normalization logic lives in `crates/zotero-cli/src/db.rs` (flat, not yet split into
+`db/mod.rs` + `db/read.rs` + `db/models.rs` as sketched below — split only if/when this becomes
+unwieldy; at ~1000 lines with two full slices in it, still readable). New this slice: `find_collections`,
+`build_collection_tree`, `fetch_item_children/notes/attachments`, `resolve_attachment_real_path`,
+`fetch_saved_searches`, `resolve_saved_search`, `fetch_tags`, `fetch_tag_items` — plus, in
+`catalog.rs`, the domain wrappers for all of the above, `list_libraries`, `get_search`, `search_items`
+(Local API passthrough), and `list_styles` (real namespace-aware CSL XML parse via `quick-xml`,
+added as a genuine new dependency rather than a regex heuristic — see its module doc comment).
+
+**`get_collection`'s signature was corrected mid-slice**, not left as originally shipped: the Phase 3
+version took a required `&str` and skipped Python's `ref: None -> session.current_collection ->
+error` fallback, because its only caller at the time (`find_items`) always supplied `Some`. Once
+`collection get`/`collection items` needed that fallback too, `get_collection` was changed to
+`Option<&str>` with the fallback moved inside — matching `get_item`'s already-correct, established
+pattern, and Python's own `catalog.py:68-80` — rather than duplicating the fallback logic at each new
+call site.
+
+**Verification beyond the golden fixtures (repeating the Phase 3 slice's discipline, not skipping it
+because the first attempt was green):** all 15 new commands classified Exact on the first harness run
+against every existing fixture — which, per the Phase 3 slice's own lesson, proves the happy path, not
+correctness. A direct check of what those fixtures actually exercise found real gaps in the two riskiest
+new functions:
+
+- `resolve_attachment_real_path` (the highest cross-platform risk area in this phase, per the
+  Architecture section below) — the only fixture item with a `storage:` attachment path is queried by
+  every `item file`/`item attachments` golden row; the item with a `file:///C:/...` drive-letter path
+  is a *different* item that no fixture command ever queries, and no fixture attachment uses a
+  non-localhost `file://` host at all. **4 of 6 branches had zero coverage from a green harness run.**
+  Closed with 8 direct unit tests in `db.rs` covering all six branches, including the UNC and
+  drive-letter cases synthetically.
+- `build_collection_tree`'s orphan-root case (a `parentCollectionID` pointing outside the result set,
+  e.g. filtered by library scope) — the only nested collection in the fixture data has its parent in
+  the same result set, so the "orphan becomes a root" branch (`zotero_sqlite.py:216-219`) was
+  untested. Closed with 2 direct unit tests.
+- `resolve_saved_search`'s ambiguous-reference error path — no existing fixture queried a saved-search
+  key that's duplicated across libraries (`DUPSEARCH` exists for both). Manually verified against the
+  live Python reference first (`search get DUPSEARCH` → exit 1, exact error text), then added as a new
+  standing golden fixture (`harness/commands.tsv` row 99, `search get (ambiguous)`) rather than left as
+  an ad-hoc check — now part of the permanent parity suite, not one-off verification.
+
+**Known gap, not yet closed:** `resolve_collection`'s own pre-existing ambiguous-key path (duplicate
+collection keys across libraries, e.g. `DUPCOLL1`) has the same kind of untested-ambiguity gap as
+`resolve_saved_search` had — this is Phase 3 slice 1's code, not new this slice, but flagged here
+since it was found while auditing the sibling function. Not fixed in this pass; tracked for the next
+hardening round rather than silently left implicit.
+
+**Not yet verified on Windows/Linux, only unit-tested on this (macOS) dev machine:** the 8 new
+`resolve_attachment_real_path` branch tests are pure-function and platform-agnostic (no OS-specific
+API calls), so they *should* pass identically on every CI leg once pushed — but per the Phase 3
+slice's own lesson about the SQLite URI bug, "should pass" is not the same claim as "verified passing"
+until CI actually runs them on `windows-latest` and the Linux runners.
 
 ## Requirements
 
@@ -158,6 +209,7 @@ snapshot.
 ## Success Criteria
 
 - [ ] All 24 SQLite-backed commands classified **Exact** against the Phase 1 golden outputs
+      (**23/24** — only `session use-selected` remains, blocked on Phase 5's connector HTTP client)
 - [ ] `hasPdf` serializes as bool; `DOI` null→`""`; empty `fields`/`creators`/`tags` present not omitted
 - [ ] Ambiguous-key resolution reproduces Python's message and behaviour on the group-library fixture
 - [ ] `resolve_attachment_real_path` passes all six branches on macOS, Windows and Linux

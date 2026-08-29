@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -70,6 +71,73 @@ def resolve_impl(value: str) -> list[str]:
     return [value]
 
 
+def _closed_port() -> int:
+    """Reserve then immediately release a TCP port on 127.0.0.1.
+
+    Used for the `zotero-unreachable` fixture: binding then closing
+    guarantees nothing is listening on the returned port when the CLI
+    under test connects to it a moment later, producing a real
+    OS-level "connection refused" deterministically on every platform
+    -- rather than picking an arbitrary fixed port that might
+    coincidentally be in use by something else on the runner.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _run_unreachable(row: dict[str, str], *, impl: list[str], output_root: Path) -> dict[str, Any]:
+    """Runs a command against a fixture where no Zotero HTTP server is
+    listening at all, instead of the usual fake connector/Local API
+    server. Exercises the real transport-failure path (connection
+    refused) rather than an application-level error status.
+
+    See `normalize.py`'s `zotero-unreachable`-scoped substitution: the
+    resulting `connector_message`/`local_api_message` text is
+    transport-library-specific (Python `urllib` vs Rust `ureq`) and is
+    intentionally normalized to a shared token rather than chased to
+    byte-identity -- an accepted, narrowly-scoped semantic divergence
+    (see plans/reports/compatibility-matrix.md).
+    """
+    args = json.loads(row["args_json"])
+    state = row["fixture_state"]
+    with tempfile.TemporaryDirectory(prefix="zotero-harness-") as tmp:
+        tmp_path = Path(tmp)
+        paths = build_fixture(tmp_path / "fixture", state)
+        port = _closed_port()
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(REFERENCE_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+        env["ZOTERO_PROFILE_DIR"] = paths["profile_dir"]
+        env["ZOTERO_DATA_DIR"] = paths["data_dir"]
+        env["ZOTERO_EXECUTABLE"] = paths["executable"]
+        env["ZOTERO_HTTP_PORT"] = str(port)
+        env["CLI_ANYTHING_ZOTERO_STATE_DIR"] = str(tmp_path / "state")
+        env["ZOTERO_CLI_AUDIT_DIR"] = str(tmp_path / "audit")
+        env["ZOTERO_VECTOR_DB"] = str(tmp_path / "vectors.sqlite")
+        env["CLI_ANYTHING_ZOTERO_OPENAI_URL"] = f"http://127.0.0.1:{port}/v1/responses"
+        env.setdefault("OPENAI_API_KEY", "test-key")
+
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
+        full_args = substitute_args(args, paths, output_dir)
+        proc = subprocess.run(impl + full_args, cwd=REFERENCE_ROOT, env=env, text=True, capture_output=True)
+
+        capture = {
+            "command": row["command"],
+            "args": full_args,
+            "compatibility_class": row["class"],
+            "fixture_state": state,
+            "fixture_root": paths["fixture_root"],
+            "_normalization_roots": [str(tmp_path), paths["fixture_root"]],
+            "exit_code": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "http_calls": [],
+        }
+        return normalize_capture(capture)
+
+
 def run_one(row: dict[str, str], *, impl: list[str], output_root: Path) -> dict[str, Any]:
     args = json.loads(row["args_json"])
     state = row["fixture_state"]
@@ -81,6 +149,8 @@ def run_one(row: dict[str, str], *, impl: list[str], output_root: Path) -> dict[
             "skipped": True,
             "reason": row.get("notes", "live-only"),
         }
+    if state == "zotero-unreachable":
+        return _run_unreachable(row, impl=impl, output_root=output_root)
 
     fake_zotero_http_server = _import_fake_server()
     with tempfile.TemporaryDirectory(prefix="zotero-harness-") as tmp:

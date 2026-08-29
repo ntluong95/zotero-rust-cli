@@ -102,6 +102,40 @@ pub struct Item {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct SavedSearchCondition {
+    #[serde(rename = "searchConditionID")]
+    pub search_condition_id: i64,
+    pub condition: String,
+    pub operator: String,
+    pub value: Option<String>,
+    pub required: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedSearch {
+    #[serde(rename = "savedSearchID")]
+    pub saved_search_id: i64,
+    #[serde(rename = "savedSearchName")]
+    pub saved_search_name: String,
+    #[serde(rename = "clientDateModified")]
+    pub client_date_modified: String,
+    #[serde(rename = "libraryID")]
+    pub library_id: i64,
+    pub key: String,
+    pub version: i64,
+    pub conditions: Vec<SavedSearchCondition>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TagSummary {
+    #[serde(rename = "tagID")]
+    pub tag_id: i64,
+    pub name: String,
+    #[serde(rename = "itemCount")]
+    pub item_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Collection {
     #[serde(rename = "collectionID")]
     pub collection_id: i64,
@@ -115,6 +149,43 @@ pub struct Collection {
     pub version: i64,
     #[serde(rename = "itemCount")]
     pub item_count: i64,
+}
+
+/// `{**collection, "children": []}` (`zotero_sqlite.py:202-219`): dict
+/// spread preserves the original SELECT column order, with `children`
+/// appended last. Modeled as a distinct struct (not `Collection` plus a
+/// wrapper) so the field order matches exactly rather than relying on
+/// `#[serde(flatten)]` ordering, which Rust structs already preserve.
+#[derive(Debug, Clone, Serialize)]
+pub struct CollectionNode {
+    #[serde(rename = "collectionID")]
+    pub collection_id: i64,
+    pub key: String,
+    #[serde(rename = "collectionName")]
+    pub collection_name: String,
+    #[serde(rename = "parentCollectionID")]
+    pub parent_collection_id: Option<i64>,
+    #[serde(rename = "libraryID")]
+    pub library_id: i64,
+    pub version: i64,
+    #[serde(rename = "itemCount")]
+    pub item_count: i64,
+    pub children: Vec<CollectionNode>,
+}
+
+impl From<&Collection> for CollectionNode {
+    fn from(c: &Collection) -> Self {
+        CollectionNode {
+            collection_id: c.collection_id,
+            key: c.key.clone(),
+            collection_name: c.collection_name.clone(),
+            parent_collection_id: c.parent_collection_id,
+            library_id: c.library_id,
+            version: c.version,
+            item_count: c.item_count,
+            children: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -340,6 +411,352 @@ pub fn resolve_collection(
         .into());
     }
     Ok(Some(result_rows.into_iter().next().unwrap()))
+}
+
+/// `find_collections()` (`zotero_sqlite.py:164-198`).
+pub fn find_collections(
+    sqlite_path: &Path,
+    query: &str,
+    library_id: Option<i64>,
+    limit: i64,
+) -> anyhow::Result<Vec<Collection>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let needle = query.to_lowercase();
+    let like_query = format!("%{needle}%");
+    let prefix_query = format!("{needle}%");
+    let conn = connect_readonly(sqlite_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT
+            c.collectionID,
+            c.key,
+            c.collectionName,
+            c.parentCollectionID,
+            c.libraryID,
+            c.version,
+            COUNT(ci.itemID) AS itemCount
+         FROM collections c
+         LEFT JOIN collectionItems ci ON ci.collectionID = c.collectionID
+         WHERE (?1 IS NULL OR c.libraryID = ?1) AND LOWER(c.collectionName) LIKE ?2
+         GROUP BY c.collectionID, c.key, c.collectionName, c.parentCollectionID, c.libraryID, c.version
+         ORDER BY
+             CASE
+                 WHEN LOWER(c.collectionName) = ?3 THEN 0
+                 WHEN LOWER(c.collectionName) LIKE ?4 THEN 1
+                 ELSE 2
+             END,
+             INSTR(LOWER(c.collectionName), ?3),
+             c.collectionName COLLATE NOCASE,
+             c.collectionID
+         LIMIT ?5",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![library_id, like_query, needle, prefix_query, limit],
+        collection_from_row,
+    )?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// `build_collection_tree()` (`zotero_sqlite.py:202-219`): a collection
+/// whose `parentCollectionID` points outside this result set (e.g.
+/// filtered by library scope) becomes a root too, matching Python's
+/// `by_id.get(parent_id) is None -> roots.append(node)` fallback.
+pub fn build_collection_tree(collections: &[Collection]) -> Vec<CollectionNode> {
+    use std::collections::{HashMap, HashSet};
+
+    let known_ids: HashSet<i64> = collections.iter().map(|c| c.collection_id).collect();
+    let mut children_by_parent: HashMap<i64, Vec<&Collection>> = HashMap::new();
+    let mut roots: Vec<&Collection> = Vec::new();
+    for c in collections {
+        match c.parent_collection_id {
+            Some(parent_id) if known_ids.contains(&parent_id) => {
+                children_by_parent.entry(parent_id).or_default().push(c);
+            }
+            _ => roots.push(c),
+        }
+    }
+
+    fn build(
+        c: &Collection,
+        children_by_parent: &HashMap<i64, Vec<&Collection>>,
+    ) -> CollectionNode {
+        let mut node = CollectionNode::from(c);
+        if let Some(kids) = children_by_parent.get(&c.collection_id) {
+            node.children = kids.iter().map(|k| build(k, children_by_parent)).collect();
+        }
+        node
+    }
+
+    roots
+        .into_iter()
+        .map(|c| build(c, &children_by_parent))
+        .collect()
+}
+
+/// `fetch_item_children()` (`zotero_sqlite.py:535-539`).
+pub fn fetch_item_children(sqlite_path: &Path, item_ref: &str) -> anyhow::Result<Vec<Item>> {
+    let Some(item) = resolve_item(sqlite_path, item_ref, None)? else {
+        return Ok(Vec::new());
+    };
+    fetch_items(
+        sqlite_path,
+        FetchItemsFilter {
+            parent_item_id: Some(item.item_id),
+            ..Default::default()
+        },
+    )
+}
+
+/// `fetch_item_notes()` (`zotero_sqlite.py:542-544`).
+pub fn fetch_item_notes(sqlite_path: &Path, item_ref: &str) -> anyhow::Result<Vec<Item>> {
+    Ok(fetch_item_children(sqlite_path, item_ref)?
+        .into_iter()
+        .filter(|c| c.type_name == "note")
+        .collect())
+}
+
+/// `fetch_item_attachments()` (`zotero_sqlite.py:547-549`).
+pub fn fetch_item_attachments(sqlite_path: &Path, item_ref: &str) -> anyhow::Result<Vec<Item>> {
+    Ok(fetch_item_children(sqlite_path, item_ref)?
+        .into_iter()
+        .filter(|c| c.type_name == "attachment")
+        .collect())
+}
+
+/// Minimal percent-decoder matching `urllib.parse.unquote`'s default
+/// (`utf-8`, lossy on invalid sequences) closely enough for the file:
+/// URI paths this is used on. No new dependency: this is the only call
+/// site in the vertical slice, and it's ~15 lines.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Splits a `file://<netloc><path>` URI (with the `file://` prefix
+/// already stripped) into `(netloc, path)`, mirroring
+/// `urllib.parse.urlparse`'s behavior for this scheme: netloc is
+/// everything up to the first `/`, which may be empty
+/// (`file:///C:/...` -> netloc="", path="/C:/..."`).
+fn split_file_uri_authority(rest: &str) -> (&str, &str) {
+    match rest.find('/') {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, ""),
+    }
+}
+
+/// `resolve_attachment_real_path()` (`zotero_sqlite.py:552-574`) — the
+/// highest cross-platform risk area in the port (flagged in
+/// `plans/.../phase-04-*.md`). Every branch below is checked against
+/// the Python source line-for-line; see the inline comments for exactly
+/// which Python expression each block reproduces.
+pub fn resolve_attachment_real_path(
+    attachment_path: Option<&str>,
+    item_key: &str,
+    data_dir: &Path,
+) -> Option<String> {
+    let raw_path = attachment_path.filter(|s| !s.is_empty())?;
+
+    // `if raw_path.startswith("storage:"): ...` (line 558-560)
+    if let Some(filename) = raw_path.strip_prefix("storage:") {
+        let resolved = crate::paths::normalize_resolve(
+            &data_dir.join("storage").join(item_key).join(filename),
+        );
+        return Some(resolved.to_string_lossy().into_owned());
+    }
+
+    // `if raw_path.startswith("file://"): ...` (line 561-570)
+    if let Some(rest) = raw_path.strip_prefix("file://") {
+        let (netloc, encoded_path) = split_file_uri_authority(rest);
+        let decoded_path = percent_decode(encoded_path);
+
+        // `if parsed.netloc and parsed.netloc.lower() != "localhost": ...`
+        if !netloc.is_empty() && netloc.to_lowercase() != "localhost" {
+            let normalized_unc_path = decoded_path.replace('/', "\\");
+            return Some(format!("\\\\{netloc}{normalized_unc_path}"));
+        }
+
+        // `if re.match(r"^/[A-Za-z]:", decoded_path): ...`
+        let db = decoded_path.as_bytes();
+        let is_drive_letter_path =
+            db.len() >= 3 && db[0] == b'/' && db[1].is_ascii_alphabetic() && db[2] == b':';
+        if is_drive_letter_path {
+            let stripped = decoded_path.trim_start_matches('/');
+            return Some(stripped.replace('/', "\\"));
+        }
+
+        // `return decoded_path if os.name != "nt" else str(PureWindowsPath(decoded_path))`
+        if cfg!(windows) {
+            return Some(decoded_path.replace('/', "\\"));
+        }
+        return Some(decoded_path);
+    }
+
+    // `path = Path(raw_path); if path.is_absolute(): return str(path)`
+    let path = Path::new(raw_path);
+    if path.is_absolute() {
+        return Some(path.to_string_lossy().into_owned());
+    }
+    // `return str((data_dir / raw_path).resolve())`
+    let resolved = crate::paths::normalize_resolve(&data_dir.join(raw_path));
+    Some(resolved.to_string_lossy().into_owned())
+}
+
+/// `fetch_saved_searches()` (`zotero_sqlite.py:577-600`).
+pub fn fetch_saved_searches(
+    sqlite_path: &Path,
+    library_id: Option<i64>,
+) -> anyhow::Result<Vec<SavedSearch>> {
+    let conn = connect_readonly(sqlite_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT savedSearchID, savedSearchName, clientDateModified, libraryID, key, version
+         FROM savedSearches
+         WHERE (?1 IS NULL OR libraryID = ?1)
+         ORDER BY savedSearchName COLLATE NOCASE",
+    )?;
+    let mut searches: Vec<SavedSearch> = stmt
+        .query_map([library_id], |row| {
+            Ok(SavedSearch {
+                saved_search_id: row.get("savedSearchID")?,
+                saved_search_name: row.get("savedSearchName")?,
+                client_date_modified: row.get("clientDateModified")?,
+                library_id: row.get("libraryID")?,
+                key: row.get("key")?,
+                version: row.get("version")?,
+                conditions: Vec::new(),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut cond_stmt = conn.prepare(
+        "SELECT searchConditionID, condition, operator, value, required
+         FROM savedSearchConditions
+         WHERE savedSearchID = ?1
+         ORDER BY searchConditionID",
+    )?;
+    for search in &mut searches {
+        let rows = cond_stmt.query_map([search.saved_search_id], |row| {
+            Ok(SavedSearchCondition {
+                search_condition_id: row.get("searchConditionID")?,
+                condition: row.get("condition")?,
+                operator: row.get("operator")?,
+                value: row.get("value")?,
+                required: row.get("required")?,
+            })
+        })?;
+        search.conditions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    }
+    Ok(searches)
+}
+
+/// `resolve_saved_search()` (`zotero_sqlite.py:603-621`).
+pub fn resolve_saved_search(
+    sqlite_path: &Path,
+    search_ref: &str,
+    library_id: Option<i64>,
+) -> anyhow::Result<Option<SavedSearch>> {
+    let searches = fetch_saved_searches(sqlite_path, library_id)?;
+    if is_numeric_ref(search_ref) {
+        let target = search_ref.trim();
+        return Ok(searches
+            .into_iter()
+            .find(|s| s.saved_search_id.to_string() == target));
+    }
+
+    let mut matches: Vec<SavedSearch> = searches
+        .into_iter()
+        .filter(|s| s.key == search_ref)
+        .collect();
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    if matches.len() > 1 && library_id.is_none() {
+        let mut libraries: Vec<i64> = matches.iter().map(|s| s.library_id).collect();
+        libraries.sort_unstable();
+        libraries.dedup();
+        let library_text = libraries
+            .iter()
+            .map(|id| format!("L{id}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(DomainError::new(format!(
+            "Ambiguous saved search reference: {search_ref}. Matches found in {library_text}. \
+             Set the library with `session use-library <id>` and retry."
+        ))
+        .into());
+    }
+    Ok(Some(matches.remove(0)))
+}
+
+/// `fetch_tags()` (`zotero_sqlite.py:624-638`).
+pub fn fetch_tags(sqlite_path: &Path, library_id: Option<i64>) -> anyhow::Result<Vec<TagSummary>> {
+    let conn = connect_readonly(sqlite_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT t.tagID, t.name, COUNT(it.itemID) AS itemCount
+         FROM tags t
+         JOIN itemTags it ON it.tagID = t.tagID
+         JOIN items i ON i.itemID = it.itemID
+         WHERE (?1 IS NULL OR i.libraryID = ?1)
+         GROUP BY t.tagID, t.name
+         ORDER BY t.name COLLATE NOCASE",
+    )?;
+    let rows = stmt.query_map([library_id], |row| {
+        Ok(TagSummary {
+            tag_id: row.get("tagID")?,
+            name: row.get("name")?,
+            item_count: row.get("itemCount")?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// `fetch_tag_items()` (`zotero_sqlite.py:641-652`).
+pub fn fetch_tag_items(
+    sqlite_path: &Path,
+    tag_ref: &str,
+    library_id: Option<i64>,
+) -> anyhow::Result<Vec<Item>> {
+    let conn = connect_readonly(sqlite_path)?;
+    let tag_name: Option<String> = if is_numeric_ref(tag_ref) {
+        conn.query_row(
+            "SELECT name FROM tags WHERE tagID = ?1",
+            [tag_ref.trim().parse::<i64>()?],
+            |row| row.get(0),
+        )
+        .ok()
+    } else {
+        conn.query_row("SELECT name FROM tags WHERE name = ?1", [tag_ref], |row| {
+            row.get(0)
+        })
+        .ok()
+    };
+    drop(conn);
+    let Some(tag_name) = tag_name else {
+        return Ok(Vec::new());
+    };
+    fetch_items(
+        sqlite_path,
+        FetchItemsFilter {
+            library_id,
+            tag: Some(tag_name),
+            ..Default::default()
+        },
+    )
 }
 
 static BR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<br\s*/?>").unwrap());
@@ -850,5 +1267,252 @@ mod tests {
     #[test]
     fn note_preview_short_text_unchanged() {
         assert_eq!(note_preview("short"), "short");
+    }
+
+    /// Manual scratch-file helper instead of pulling in the `tempfile`
+    /// crate for one test -- keeps the project's stated small
+    /// dependency footprint. A monotonic counter plus the process id
+    /// is enough to avoid collisions between concurrent `cargo test`
+    /// threads on the same machine.
+    fn temp_sqlite_path(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "zotero-cli-test-{}-{n}-{label}.sqlite",
+            std::process::id()
+        ))
+    }
+
+    // Runtime verification (not just spec-verification) of the Windows
+    // URI fix in `connect_readonly`: a dynamic-testing pass found that
+    // it built the SQLite `file:` URI with native path separators,
+    // which is a broken URI on Windows (SQLite's URI spec requires
+    // `/`, not `\`). The fix was correct by inspection of SQLite's own
+    // documentation, but nothing actually opened a file through it on
+    // that platform -- dev and (until now) the test suite are
+    // Darwin/Linux-biased in what they exercise, even though CI's
+    // windows-latest leg already runs `cargo test --workspace`. This
+    // test uses `std::env::temp_dir()`, which on Windows is a real
+    // backslash-separated path (e.g.
+    // `C:\Users\runneradmin\AppData\Local\Temp\...`), so it forces the
+    // exact `\` -> `/` conversion to run against a real file open on
+    // that CI leg, closing the "fixed but unverified" gap.
+    #[test]
+    fn connect_readonly_opens_a_real_file_through_the_uri_it_builds() {
+        let path = temp_sqlite_path("connect-readonly");
+        {
+            let conn = Connection::open(&path).expect("create scratch sqlite file");
+            conn.execute_batch(
+                "CREATE TABLE libraries (
+                    libraryID INTEGER PRIMARY KEY, type TEXT, editable INTEGER,
+                    filesEditable INTEGER, version INTEGER, storageVersion INTEGER,
+                    lastSync INTEGER, archived INTEGER
+                );
+                INSERT INTO libraries VALUES (1, 'user', 1, 1, 1, 1, NULL, 0);",
+            )
+            .expect("seed scratch sqlite file");
+        }
+
+        let libraries = fetch_libraries(&path).expect(
+            "connect_readonly must open a real file via its file: URI on every platform, \
+             including Windows where the path contains native backslash separators",
+        );
+
+        assert_eq!(libraries.len(), 1);
+        assert_eq!(libraries[0].library_id, 1);
+        assert_eq!(libraries[0].kind, "user");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn connect_readonly_missing_file_is_a_clean_domain_error_not_a_panic() {
+        let path = temp_sqlite_path("does-not-exist");
+        let err = connect_readonly(&path).unwrap_err();
+        assert!(err.to_string().contains("Zotero database not found"));
+    }
+
+    // `resolve_attachment_real_path` is the highest cross-platform risk
+    // area flagged in the plan. The parity harness's fixture data only
+    // exercises the `storage:` branch for the item queried by every
+    // `item file`/`item attachments` golden fixture (`REG12345`) — the
+    // `file://` drive-letter path belongs to a *different* item
+    // (`REG67890`) that no golden fixture command queries, and no
+    // fixture attachment uses a non-localhost `file://` host at all.
+    // A green harness run therefore does not exercise 4 of these 6
+    // branches. Direct unit tests close that gap without needing new
+    // SQL fixture rows, since this is a pure function.
+
+    #[test]
+    fn resolve_attachment_real_path_none_when_no_path() {
+        assert_eq!(
+            resolve_attachment_real_path(None, "KEY", Path::new("/data")),
+            None
+        );
+        assert_eq!(
+            resolve_attachment_real_path(Some(""), "KEY", Path::new("/data")),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_attachment_real_path_storage_prefix() {
+        let resolved = resolve_attachment_real_path(
+            Some("storage:paper.pdf"),
+            "ATTACHKEY",
+            Path::new("/data"),
+        )
+        .unwrap();
+        // normalize_resolve canonicalizes when the path exists, else falls
+        // back to lexical `.`/`..` normalization -- assert the tail
+        // structure rather than the exact absolute prefix so this passes
+        // regardless of whether /data/storage/ATTACHKEY exists on the
+        // machine running the test.
+        assert!(resolved.ends_with(&format!(
+            "storage{}ATTACHKEY{}paper.pdf",
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        )));
+    }
+
+    #[test]
+    fn resolve_attachment_real_path_file_uri_drive_letter() {
+        // `file:///C:/Users/Public/linked.pdf` -- REG67890's attachment
+        // in the parity fixture data, but no golden fixture command
+        // queries REG67890, so this branch is otherwise untested.
+        let resolved = resolve_attachment_real_path(
+            Some("file:///C:/Users/Public/linked.pdf"),
+            "LINKATT1",
+            Path::new("/data"),
+        )
+        .unwrap();
+        assert_eq!(resolved, r"C:\Users\Public\linked.pdf");
+    }
+
+    #[test]
+    fn resolve_attachment_real_path_file_uri_unc_host() {
+        // No fixture attachment uses a non-localhost file:// host at
+        // all -- zero coverage from the harness for this branch.
+        let resolved = resolve_attachment_real_path(
+            Some("file://fileserver/share/paper.pdf"),
+            "LINKATT2",
+            Path::new("/data"),
+        )
+        .unwrap();
+        assert_eq!(resolved, r"\\fileserver\share\paper.pdf");
+    }
+
+    #[test]
+    fn resolve_attachment_real_path_file_uri_localhost_is_not_unc() {
+        // `localhost` must NOT trigger the UNC branch (Python:
+        // `parsed.netloc.lower() != "localhost"`).
+        let resolved = resolve_attachment_real_path(
+            Some("file://localhost/tmp/x.pdf"),
+            "K",
+            Path::new("/data"),
+        )
+        .unwrap();
+        assert_ne!(&resolved[..2], r"\\");
+    }
+
+    #[test]
+    fn resolve_attachment_real_path_file_uri_percent_decoded() {
+        let resolved = resolve_attachment_real_path(
+            Some("file:///tmp/my%20paper%20%28final%29.pdf"),
+            "K",
+            Path::new("/data"),
+        )
+        .unwrap();
+        assert!(resolved.contains("my paper (final).pdf"));
+    }
+
+    #[test]
+    fn resolve_attachment_real_path_absolute_bare_path_unchanged() {
+        let abs = if cfg!(windows) {
+            r"C:\already\absolute.pdf"
+        } else {
+            "/already/absolute.pdf"
+        };
+        assert_eq!(
+            resolve_attachment_real_path(Some(abs), "K", Path::new("/data")).unwrap(),
+            abs
+        );
+    }
+
+    #[test]
+    fn resolve_attachment_real_path_relative_bare_path_joins_data_dir() {
+        let resolved =
+            resolve_attachment_real_path(Some("subdir/file.pdf"), "K", Path::new("/data")).unwrap();
+        assert!(resolved.ends_with(&format!("subdir{}file.pdf", std::path::MAIN_SEPARATOR)));
+    }
+
+    // `build_collection_tree`'s orphan-root case: a `parentCollectionID`
+    // pointing outside the result set must become a root, not be
+    // silently dropped. Untested by the golden fixtures -- the base
+    // fixture's only nested collection ("Nested Collection", parent =
+    // "Sample Collection") has its parent in the same result set.
+    #[test]
+    fn build_collection_tree_orphan_parent_becomes_a_root() {
+        let collections = vec![
+            Collection {
+                collection_id: 1,
+                key: "AAAAAAAA".into(),
+                collection_name: "Root".into(),
+                parent_collection_id: None,
+                library_id: 1,
+                version: 1,
+                item_count: 0,
+            },
+            Collection {
+                collection_id: 2,
+                key: "BBBBBBBB".into(),
+                collection_name: "Orphan".into(),
+                // Parent 999 is not present in this slice (e.g.
+                // filtered out by library scope) -- must become a root,
+                // matching Python's `by_id.get(parent_id) is None`.
+                parent_collection_id: Some(999),
+                library_id: 1,
+                version: 1,
+                item_count: 0,
+            },
+        ];
+        let tree = build_collection_tree(&collections);
+        assert_eq!(
+            tree.len(),
+            2,
+            "orphan must become a second root, not vanish"
+        );
+        assert!(tree
+            .iter()
+            .any(|n| n.collection_id == 2 && n.children.is_empty()));
+    }
+
+    #[test]
+    fn build_collection_tree_nests_a_real_child_under_its_parent() {
+        let collections = vec![
+            Collection {
+                collection_id: 1,
+                key: "AAAAAAAA".into(),
+                collection_name: "Root".into(),
+                parent_collection_id: None,
+                library_id: 1,
+                version: 1,
+                item_count: 0,
+            },
+            Collection {
+                collection_id: 2,
+                key: "BBBBBBBB".into(),
+                collection_name: "Child".into(),
+                parent_collection_id: Some(1),
+                library_id: 1,
+                version: 1,
+                item_count: 0,
+            },
+        ];
+        let tree = build_collection_tree(&collections);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].children.len(), 1);
+        assert_eq!(tree[0].children[0].collection_id, 2);
     }
 }

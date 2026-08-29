@@ -86,3 +86,82 @@ pub fn session_library_id(state: &SessionState, default: i64) -> anyhow::Result<
         .into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // `session_library_id` is dead code today -- no command in the
+    // current vertical slice calls it -- but it is the exact function
+    // the first write command (Phase 5+) will depend on to know which
+    // Zotero library to write into. A silent wrong-default here would
+    // point a write at the wrong library with zero error output, so
+    // this is regression-tested now, ahead of that call site existing,
+    // rather than left to be "caught when it's wired in."
+
+    fn state_with(current_library: Option<serde_json::Value>) -> SessionState {
+        SessionState {
+            current_library,
+            ..SessionState::default()
+        }
+    }
+
+    #[test]
+    fn missing_current_library_falls_back_to_default() {
+        let state = state_with(None);
+        assert_eq!(session_library_id(&state, 7).unwrap(), 7);
+    }
+
+    #[test]
+    fn null_current_library_falls_back_to_default() {
+        let state = state_with(Some(serde_json::Value::Null));
+        assert_eq!(session_library_id(&state, 7).unwrap(), 7);
+    }
+
+    #[test]
+    fn empty_string_current_library_falls_back_to_default() {
+        // Python's `session.get("current_library", default)` alone would
+        // miss this: the default session state always sets the key with
+        // value "", so `.get` never uses the fallback. See the doc
+        // comment on this function.
+        let state = state_with(Some(json!("")));
+        assert_eq!(session_library_id(&state, 7).unwrap(), 7);
+    }
+
+    #[test]
+    fn numeric_current_library_is_used_directly() {
+        let state = state_with(Some(json!(3)));
+        assert_eq!(session_library_id(&state, 7).unwrap(), 3);
+    }
+
+    #[test]
+    fn numeric_string_current_library_parses() {
+        let state = state_with(Some(json!("3")));
+        assert_eq!(session_library_id(&state, 7).unwrap(), 3);
+    }
+
+    #[test]
+    fn corrupted_non_numeric_string_is_a_real_error_not_a_silent_default() {
+        // A hand-edited or corrupted session.json with a garbage
+        // current_library ("L1", "abc", ...) must fail loudly. Silently
+        // substituting `default` here would make write commands operate
+        // on the wrong library with no error at all -- exactly the
+        // landmine this test exists to prevent from regressing.
+        let state = state_with(Some(json!("not-a-library-id")));
+        let err = session_library_id(&state, 7).unwrap_err();
+        assert!(err.to_string().contains("Invalid current_library"));
+    }
+
+    #[test]
+    fn corrupted_object_current_library_is_a_real_error() {
+        let state = state_with(Some(json!({"unexpected": "shape"})));
+        assert!(session_library_id(&state, 7).is_err());
+    }
+
+    #[test]
+    fn corrupted_array_current_library_is_a_real_error() {
+        let state = state_with(Some(json!([1, 2, 3])));
+        assert!(session_library_id(&state, 7).is_err());
+    }
+}

@@ -219,7 +219,12 @@ pub fn find_active_profile(profile_root: &Path) -> Option<PathBuf> {
 /// Approximates Python's `Path.resolve()` in its default non-strict mode:
 /// normalizes `.`/`..` and resolves symlinks where the path exists, but
 /// unlike `std::fs::canonicalize` does not require the full path to exist.
-fn normalize_resolve(path: &Path) -> PathBuf {
+///
+/// `pub(crate)`: also used by `db::resolve_attachment_real_path`, which
+/// ports `resolve_attachment_real_path()`'s two `.resolve()` call sites
+/// (`zotero_sqlite.py:552-574`) — kept as one implementation rather than
+/// duplicated, per the project's DRY principle.
+pub(crate) fn normalize_resolve(path: &Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }

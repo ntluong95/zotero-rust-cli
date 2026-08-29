@@ -38,3 +38,8 @@ dirs = "6"
 # stripping) — item get/list/find always populate these two fields.
 regex = "1"
 html-escape = "0.2"
+# style list (core/catalog.py's list_styles): a real namespace-aware
+# parse of *.csl files, matching Python's ElementTree.iter() walk —
+# also the parser this project will need for Phase 9/12's DOCX OOXML
+# work, so bringing it in now rather than a regex-based CSL heuristic.
+quick-xml = "0.42"

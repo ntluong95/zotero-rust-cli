@@ -76,6 +76,40 @@ and are part of the contract.
 > The analysis machine had `connector_available=true` with `local_api_available=false`. This is a
 > normal, common state — not an error. Both must be first-class.
 
+### Accepted divergence: transport error text when Zotero is completely unreachable (decided)
+
+**Decision (2026-08-29), made directly by the user reviewing the Phase 3 vertical-slice journal:**
+when nothing is listening on the Zotero port at all — as opposed to Zotero running but the Local API
+disabled (403), which stays byte-identical per the table above — `connector_message` and
+`local_api_message` carry the underlying transport library's exception text (Python's
+`urllib.error.URLError` string form vs Rust's `ureq::Error` `Display`). These are OS- and
+library-specific (`Connection refused`, `WinError 10061`, errno numbers, wrapper class names) and
+**must not** be chased to byte-identity — doing so would mean reimplementing one transport library's
+exception prose inside another language's HTTP client, which is not a real compatibility contract.
+
+**Scope of the accepted divergence — narrow, not a downgrade of `app status`:**
+
+- A new standing parity fixture, `zotero-unreachable`, added to `harness/commands.tsv` and
+  `harness/fixtures/build_fixture.py`/`capture.py`: no fake HTTP server is started at all; the CLI
+  under test is pointed at a real closed TCP port, producing a genuine OS-level connection refusal
+  for both implementations.
+- `harness/normalize.py` normalizes **only** the `connector_message` and `local_api_message` JSON
+  field values, and **only** for captures whose `fixture_state == "zotero-unreachable"`, to the
+  shared token `<CONNECTION_REFUSED>`. No other field, and no other fixture state, is touched by this
+  rule — it must never be widened into a general "normalize error text" behavior.
+- Everything else about the fixture stays a real, unweakened comparison: JSON key set and order,
+  `connector_available: false` / `local_api_available: false`, `http_calls: []`, and exit code 0 are
+  all required to match exactly.
+- `app status`'s existing deterministic fixtures (`local-api-off`, etc., where a real fake server
+  responds with a real HTTP status) are **unaffected** and remain **Exact** with no normalization.
+
+Implemented and verified: `harness/golden/python/app__status__(unreachable).json` captured against
+the real Python reference, then re-captured against the Rust vertical-slice binary and confirmed
+**Exact** via `harness/compare.py` (both message fields normalize to the same token; everything else
+matches natively). This closes the divergence identified in the Phase 3 vertical-slice journal
+(`plans/journals/260829-1200-vertical-slice-read-commands-ported.md`) as a "product decision," not
+left open.
+
 ### Timeouts
 
 Transcribe Python's per-call timeouts exactly; they are behavioural:
@@ -148,7 +182,10 @@ the enclosing `.app` bundle and launch via `open`; otherwise spawn the executabl
 
 - [ ] All Phase-5 commands reach their target class against golden outputs, in **both** Local-API-on and Local-API-off fixture states
 - [ ] Connector 201-vs-200 expectations match Python exactly
-- [ ] `local_api_is_available` produces Python-identical message strings for 200 / 403 / other / unreachable
+- [ ] `local_api_is_available` produces Python-identical message strings for 200 / 403 / other (HTTP
+      response cases); the fully-unreachable transport case is an accepted, narrowly-scoped divergence
+      — see "Accepted divergence" above — verified via the `zotero-unreachable` harness fixture, not
+      chased to byte-identity
 - [ ] Group-library routing produces `/api/groups/<libraryID>` and user routing `/api/users/0`
 - [ ] `session status` and `audit path` complete without building a runtime context (asserted by test: no HTTP probe issued)
 - [ ] `session_library_id` returns the default for `None` and `""` — regression test for upstream issue #5

@@ -95,3 +95,6 @@ id	command	args_json	class	fixture_state	notes
 94	sync	["--json","sync"]	Semantic	local-api-on	Fake bridge
 95	tag items	["--json","tag","items","{tag}"]	Exact	local-api-on	SQLite fixture
 96	tag list	["--json","tag","list"]	Exact	unicode-cjk	Unicode, quotes, slashes, newline fixture
+97	app status (unreachable)	["--json","app","status"]	Exact	zotero-unreachable	No Zotero HTTP server listening; connector_message/local_api_message normalized to <CONNECTION_REFUSED> (accepted transport-library divergence, see compatibility-matrix.md)
+98	item find (sql-fallback)	["--json","item","find","Sample Title","--limit","5","--exact-title"]	Exact	local-api-on	--exact-title always forces find_items_by_title (SQLite path), bypassing Local API entirely; matches REG12345 exactly by its literal title -- item__find.json only covers the Local-API-hit branch, not this one
+99	search get (ambiguous)	["--json","search","get","DUPSEARCH"]	Exact	local-api-on	DUPSEARCH exists in both libraries 1 and 2; exercises resolve_saved_search's ambiguous-reference error path -- no other fixture reaches it
