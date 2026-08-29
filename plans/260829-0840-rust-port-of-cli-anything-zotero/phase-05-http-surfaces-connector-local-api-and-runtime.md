@@ -17,6 +17,17 @@ state and the audit log. Completes the `find_items` Local-API path deferred from
 Delivers `app *`, `session *`, `audit *`, `search items`, `export bib`, `item export|citation|bibliography`,
 `collection use-selected`.
 
+## Progress: Connector client slice landed
+
+Phase 5C adds the missing Connector API transport primitives only:
+`getSelectedCollection`, `connector/import`, `saveItems`, `saveAttachment`, and `updateSession`.
+The implementation stays below command dispatch and does not implement Phase 6 writes, JS Bridge,
+XPI, Phase 7 ingest workflows, or direct SQLite writes. Deterministic raw TCP tests verify method,
+path/query, headers, bodies, status-code expectations, object/list import response normalization,
+Python-style Connector error messages, transport-error path prefixes, and Zotero 10 header-hardening
+constraints. This completes the Connector client criterion only; the broader Phase 5 command,
+Local-API routing, latency, and stale re-resolution criteria remain open below.
+
 ## Progress: session-state slice landed, one architectural bug found and fixed
 
 **8 of the 9 `session *` commands are landed and verified Exact**: `status`, `use-library`,
@@ -273,7 +284,11 @@ the enclosing `.app` bundle and launch via `open`; otherwise spawn the executabl
 ## Success Criteria
 
 - [ ] All Phase-5 commands reach their target class against golden outputs, in **both** Local-API-on and Local-API-off fixture states
-- [ ] Connector 201-vs-200 expectations match Python exactly
+- [x] Connector 201-vs-200 expectations match Python exactly — Phase 5C transport primitives
+      implemented and covered by `crates/zotero-cli/tests/connector_http.rs`: `connector/import`
+      and `saveItems` require 201, `saveAttachment` accepts 200/201, `updateSession` requires 200,
+      and `getSelectedCollection` requires 200. No higher-level `add`/`import`/`note` command
+      dispatch is claimed here.
 - [ ] `local_api_is_available` produces Python-identical message strings for 200 / 403 / other (HTTP
       response cases); the fully-unreachable transport case is an accepted, narrowly-scoped divergence
       — see "Accepted divergence" above — verified via the `zotero-unreachable` harness fixture, not
