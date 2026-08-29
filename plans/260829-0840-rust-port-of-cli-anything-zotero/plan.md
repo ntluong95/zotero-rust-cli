@@ -138,7 +138,7 @@ harness is built first (Phase 1) and runs continuously rather than as a late gat
 | # | Phase | Delivers | Status |
 |---|-------|----------|--------|
 | 1 | [Behavioural Baseline and Parity Harness](./phase-01-start.md) | Golden fixtures + normalize/diff tooling. No Rust. | In Progress |
-| 2 | [Distribution Spine and Release Pipeline](./phase-02-distribution-spine-and-release-pipeline.md) | 5-target CI, authenticated releases, Homebrew/Scoop — proven on a trivial binary | Pending |
+| 2 | [Distribution Spine and Release Pipeline](./phase-02-distribution-spine-and-release-pipeline.md) | 5-target CI, authenticated releases, Homebrew/Scoop — proven on a trivial binary | In Progress |
 | 3 | [CLI Skeleton, Result Contract and Config](./phase-03-cli-skeleton-result-contract-and-config.md) | v1 command paths, output contracts, exit codes, `--json` anywhere, paths | Pending |
 | 4 | [SQLite Read Layer and Typed Models](./phase-04-sqlite-read-layer-and-typed-models.md) | 24 read commands (the Exact-class core) | Pending |
 | 5 | [HTTP Surfaces and Runtime](./phase-05-http-surfaces-connector-local-api-and-runtime.md) | Connector + Local API + runtime/doctor/session/audit | Pending |

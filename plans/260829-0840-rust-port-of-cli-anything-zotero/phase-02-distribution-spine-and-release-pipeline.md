@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Distribution Spine and Release Pipeline"
-status: todo
+status: in-progress
 priority: P1
 effort: "3-5d"
 dependencies: []
@@ -89,6 +89,13 @@ emitting a `release-provenance.json` or `SHA256SUMS.sig` artifact (the release-l
 above no longer lists either, since neither exists in this implementation). Verification is
 `gh attestation verify <file> --repo <owner>/<repo>`, documented in `docs/INSTALL.md`.
 
+**Repo visibility constraint discovered at `v0.1.0` release time:** GitHub Artifact Attestation is
+not available for private repositories owned by a personal (non-organization) account — the first
+release attempt failed with `Feature not available for user-owned private repositories`. The repo
+was originally created private and was made public to unblock this (decided over switching to
+GPG/minisign or shipping unauthenticated). Nothing sensitive was in the repo at the time of the
+switch: it is a clean-room port of an Apache-2.0 upstream project.
+
 ### macOS signing and notarization
 
 Unsigned binaries downloaded from GitHub are quarantined by Gatekeeper. Three options, decided in
@@ -141,17 +148,31 @@ only if direct-download demand is real.
 
 ## Success Criteria
 
-- [ ] All five targets build green in CI
-- [ ] A tagged release produces five archives plus `SHA256SUMS` and signatures/provenance
-- [ ] Verification instructions succeed for at least one direct-download artifact
-- [ ] `brew install <tap>/zotero-cli` works on macOS ARM64 and Intel
-- [ ] `scoop install zotero-cli` works on Windows
-- [ ] Linux tarball extracts and runs on a clean container with no toolchain
-- [ ] Verified on a machine with **no Rust, Cargo, Python or pip**: install succeeds and `--version` prints
-- [ ] Binary under 15 MB per target
-- [ ] No unexpected dynamic library dependencies (`otool -L` / `ldd` clean)
-- [ ] macOS install path produces no Gatekeeper dead-end; the chosen approach is documented
-- [ ] `LICENSE`, `NOTICE-CHANGES.md` and `THIRD-PARTY-LICENSES.md` present in every archive
+- [x] All five targets build green in CI — including `x86_64-apple-darwin` on `macos-15-intel`
+      after `macos-13` proved unschedulable; see the target-matrix note above. A non-blocking
+      `cross-compile-validation` job also proves the ARM64->x86_64 cross-compilation fallback.
+- [x] A tagged release produces five archives plus `SHA256SUMS` and signatures/provenance — `v0.1.0`
+      shipped: https://github.com/ntluong95/zotero-rust-cli/releases/tag/v0.1.0
+- [x] Verification instructions succeed for at least one direct-download artifact — verified locally:
+      `shasum -a 256 -c SHA256SUMS` and `gh attestation verify` both passed on the downloaded
+      `aarch64-apple-darwin` archive; extracted and ran both binaries.
+- [ ] `brew install <tap>/zotero-cli` works on macOS ARM64 and Intel — formula scaffolded with real
+      v0.1.0 checksums and passes `brew style`, but not yet tested against a real tap repo (creating
+      `ntluong95/homebrew-zotero-rust-cli` is a separate scope decision, not yet made).
+- [ ] `scoop install zotero-cli` works on Windows — manifest scaffolded with real checksums, same
+      caveat: needs a real bucket repo to test end-to-end.
+- [x] Linux tarball extracts and runs on a clean container with no toolchain — validated by CI's
+      "Verify binaries run" step on fresh `ubuntu-latest`/`ubuntu-24.04-arm` runners.
+- [ ] Verified on a machine with **no Rust, Cargo, Python or pip**: install succeeds and `--version`
+      prints — not literally verified; the local verification machine has all of these installed.
+- [x] Binary under 15 MB per target — actual size ~140-320 KB; enforced as a CI gate, not just
+      informational.
+- [x] No unexpected dynamic library dependencies (`otool -L` / `ldd` clean) — enforced as a CI gate.
+- [x] macOS install path produces no Gatekeeper dead-end; the chosen approach is documented — ad-hoc
+      codesign + Homebrew-primary + `xattr` fallback, documented in `docs/INSTALL.md`.
+- [x] `LICENSE`, `NOTICE-CHANGES.md` and `THIRD-PARTY-LICENSES.md` present in every archive —
+      confirmed in the extracted `v0.1.0` archive; `THIRD-PARTY-LICENSES.md` now bundles full license
+      text via `cargo-about`, not just an SPDX-id summary.
 
 ## Risk Assessment
 
