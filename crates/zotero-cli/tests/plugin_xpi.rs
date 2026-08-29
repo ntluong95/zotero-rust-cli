@@ -69,38 +69,55 @@ fn test_build_xpi_contains_valid_files() {
 }
 
 #[test]
-fn test_plugin_install_and_uninstall_in_temp_dir() {
+fn test_xpi_staging_and_removal_in_temp_dir() {
     let test_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let temp_profile = std::env::temp_dir().join(format!("zotero_profile_test_{test_id}"));
-    std::fs::create_dir_all(&temp_profile).expect("create temp profile dir");
+    std::fs::create_dir_all(temp_profile.join("extensions")).expect("create temp extensions dir");
 
     let profile_path = &temp_profile;
 
-    // 1. Install
-    let installed_path = install_plugin(profile_path).expect("installation succeeds");
-    assert!(installed_path.exists());
-    assert_eq!(installed_path.file_name().unwrap(), XPI_FILENAME);
+    // Place an unrelated file in extensions to prove remove_staged_xpi leaves it untouched
+    let unrelated_file = temp_profile
+        .join("extensions")
+        .join("unrelated-plugin@example.com.xpi");
+    std::fs::write(&unrelated_file, b"dummy plugin content").expect("write unrelated extension");
 
-    // 2. Status when installed but offline
+    // 1. Stage XPI
+    let staged_path = stage_xpi(profile_path).expect("staging succeeds");
+    assert!(staged_path.exists());
+    assert_eq!(staged_path.file_name().unwrap(), XPI_FILENAME);
+
+    // 2. Status when staged on disk: file presence alone does NOT claim active runtime registration
     let status = plugin_status(Some(profile_path), 59999);
-    assert!(status.installed_on_disk);
-    assert!(status.installed_xpi_path.is_some());
-    assert!(!status.upstream_installed_on_disk);
-    assert!(!status.is_active);
+    assert!(status.staged_on_disk);
+    assert_eq!(
+        status.staged_xpi_path.as_deref(),
+        Some(staged_path.to_str().unwrap())
+    );
+    assert!(!status.upstream_staged_on_disk);
+    assert!(
+        !status.is_active,
+        "staging XPI on disk must not claim active runtime registration"
+    );
     assert_eq!(status.ownership_status, OwnershipStatus::Inactive);
 
-    // 3. Uninstall
-    let removed = uninstall_plugin(profile_path).expect("uninstall succeeds");
+    // 3. Remove staged XPI
+    let removed = remove_staged_xpi(profile_path).expect("removal succeeds");
     assert!(removed);
-    assert!(!installed_path.exists());
+    assert!(!staged_path.exists());
+    // Assert unrelated file in extensions/ was untouched
+    assert!(
+        unrelated_file.exists(),
+        "remove_staged_xpi must leave unrelated extension files untouched"
+    );
 
-    // 4. Status after uninstall
+    // 4. Status after removal
     let status_after = plugin_status(Some(profile_path), 59999);
-    assert!(!status_after.installed_on_disk);
-    assert!(status_after.installed_xpi_path.is_none());
+    assert!(!status_after.staged_on_disk);
+    assert!(status_after.staged_xpi_path.is_none());
 
     let _ = std::fs::remove_dir_all(&temp_profile);
 }

@@ -110,8 +110,8 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     // 3. Stop running Zotero before touching extensions on disk
     stop_zotero();
 
-    // 4. Install XPI into profile
-    let xpi_path = install_plugin(&profile).expect("Install XPI into profile");
+    // 4. Stage XPI into profile
+    let xpi_path = stage_xpi(&profile).expect("Stage XPI into profile");
     assert!(xpi_path.exists());
     assert_eq!(xpi_path.file_name().unwrap(), XPI_FILENAME);
 
@@ -200,12 +200,12 @@ fn test_live_zotero10_xpi_load_and_ownership() {
 
     // 10. Verify plugin_status reporting
     let status = plugin_status(Some(&profile), 23119);
-    assert!(status.installed_on_disk);
+    assert!(status.staged_on_disk);
     assert_eq!(
-        status.installed_xpi_path.as_deref(),
+        status.staged_xpi_path.as_deref(),
         Some(xpi_path.to_str().unwrap())
     );
-    assert!(!status.upstream_installed_on_disk);
+    assert!(!status.upstream_staged_on_disk);
     assert!(status.is_active);
     assert_eq!(
         status.ownership_status,
@@ -219,16 +219,16 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     let foreign_response = OwnershipStatus::ActiveUpstreamPlugin { version: None };
     assert_ne!(status.ownership_status, foreign_response);
 
-    // 12. Clean uninstall
+    // 12. Clean removal of staged XPI
     stop_zotero();
-    let uninstalled = uninstall_plugin(&profile).expect("uninstall plugin");
+    let uninstalled = remove_staged_xpi(&profile).expect("remove staged XPI");
     assert!(uninstalled);
     assert!(!xpi_path.exists());
 
-    // 13. Verify that after uninstall and restart, the endpoint is inactive and uninstalled
+    // 13. Verify that after removal and restart, the endpoint is inactive and uninstalled
     start_zotero(&profile);
     let post_status = plugin_status(Some(&profile), 23119);
-    assert!(!post_status.installed_on_disk);
+    assert!(!post_status.staged_on_disk);
     assert!(!post_status.is_active);
     stop_zotero();
 }

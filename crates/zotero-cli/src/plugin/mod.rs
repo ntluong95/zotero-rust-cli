@@ -39,8 +39,13 @@ pub fn build_xpi() -> Result<Vec<u8>> {
     Ok(buffer.into_inner())
 }
 
-/// Installs the XPI plugin into the specified Zotero profile directory.
-pub fn install_plugin(profile_dir: &Path) -> Result<PathBuf> {
+/// Stages the fork-owned XPI plugin file into the specified Zotero profile's `extensions/` directory.
+///
+/// NOTE: Staging the XPI on disk writes the `.xpi` file but DOES NOT imply Zotero has activated or
+/// installed it in Gecko's AddonManager, and DOES NOT imply `plugin_status` will be active.
+/// In modern Zotero (7+ / 10+), active runtime registration requires explicit user installation
+/// through Zotero's Add-ons manager UI.
+pub fn stage_xpi(profile_dir: &Path) -> Result<PathBuf> {
     let extensions_dir = profile_dir.join("extensions");
     if !extensions_dir.exists() {
         std::fs::create_dir_all(&extensions_dir).with_context(|| {
@@ -59,8 +64,12 @@ pub fn install_plugin(profile_dir: &Path) -> Result<PathBuf> {
     Ok(xpi_path)
 }
 
-/// Uninstalls the XPI plugin from the specified Zotero profile directory.
-pub fn uninstall_plugin(profile_dir: &Path) -> Result<bool> {
+/// Removes only the fork-owned staged XPI file from the specified Zotero profile directory.
+///
+/// NOTE: This only removes the staged `.xpi` file on disk. It does NOT claim to unregister an
+/// extension that was installed/activated through Zotero's Add-ons manager UI. Manual uninstall
+/// through Zotero's own Add-ons UI remains the standard removal path for an activated add-on.
+pub fn remove_staged_xpi(profile_dir: &Path) -> Result<bool> {
     let xpi_path = profile_dir.join("extensions").join(XPI_FILENAME);
     if xpi_path.exists() {
         std::fs::remove_file(&xpi_path)
@@ -159,20 +168,20 @@ pub fn verify_ownership(port: u16, timeout: Duration) -> OwnershipStatus {
     }
 }
 
-/// Comprehensive report on plugin installation and active endpoint ownership status.
+/// Comprehensive report on plugin XPI staging on disk and active endpoint ownership status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginStatusReport {
-    pub installed_on_disk: bool,
-    pub installed_xpi_path: Option<String>,
-    pub upstream_installed_on_disk: bool,
+    pub staged_on_disk: bool,
+    pub staged_xpi_path: Option<String>,
+    pub upstream_staged_on_disk: bool,
     pub ownership_status: OwnershipStatus,
     pub is_active: bool,
     pub message: String,
 }
 
-/// Generate a plugin status report checking both filesystem and runtime endpoint.
+/// Generate a plugin status report checking both filesystem staging and runtime endpoint.
 pub fn plugin_status(profile_dir: Option<&Path>, port: u16) -> PluginStatusReport {
-    let (installed_on_disk, installed_xpi_path, upstream_installed_on_disk) = match profile_dir {
+    let (staged_on_disk, staged_xpi_path, upstream_staged_on_disk) = match profile_dir {
         Some(p) => {
             let our_xpi = p.join("extensions").join(XPI_FILENAME);
             let up_xpi = p.join("extensions").join(UPSTREAM_XPI_FILENAME);
@@ -200,18 +209,18 @@ pub fn plugin_status(profile_dir: Option<&Path>, port: u16) -> PluginStatusRepor
             "CLI Bridge active (upstream plugin detected)".to_string()
         }
         OwnershipStatus::Inactive => {
-            if installed_on_disk {
-                "Plugin installed on disk but bridge endpoint is inactive (restart Zotero to activate)".to_string()
+            if staged_on_disk {
+                "Plugin XPI staged on disk but bridge endpoint is inactive (install via Tools > Add-ons > Install Add-on From File in Zotero, then restart)".to_string()
             } else {
-                "CLI Bridge plugin is not installed".to_string()
+                "CLI Bridge plugin is not active and XPI is not staged".to_string()
             }
         }
     };
 
     PluginStatusReport {
-        installed_on_disk,
-        installed_xpi_path,
-        upstream_installed_on_disk,
+        staged_on_disk,
+        staged_xpi_path,
+        upstream_staged_on_disk,
         ownership_status: ownership,
         is_active,
         message,
