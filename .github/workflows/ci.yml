@@ -98,7 +98,10 @@ jobs:
           bin="target/${{ matrix.target }}/release/zotero-cli"
           if [[ "${{ runner.os }}" == "macOS" ]]; then
             otool -L "$bin"
-            unexpected=$(otool -L "$bin" | tail -n +2 | grep -v -E '/usr/lib/libSystem' || true)
+            # libiconv ships with every macOS install (like libSystem) and
+            # gets linked transitively by several crates (e.g. regex's
+            # locale-aware dependency chain) — not an install-cost concern.
+            unexpected=$(otool -L "$bin" | tail -n +2 | grep -v -E '/usr/lib/libSystem|/usr/lib/libiconv' || true)
           else
             ldd "$bin"
             unexpected=$(ldd "$bin" | grep -v -E 'linux-vdso|ld-linux|libc\.so|libm\.so|libpthread\.so|libdl\.so|libgcc_s\.so' || true)
