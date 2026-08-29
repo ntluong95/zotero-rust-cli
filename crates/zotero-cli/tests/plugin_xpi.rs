@@ -33,22 +33,36 @@ fn test_build_xpi_contains_valid_files() {
     assert_eq!(app["strict_min_version"].as_str().unwrap(), "6.999");
     assert_eq!(app["strict_max_version"].as_str().unwrap(), "10.0.*");
 
-    // Enforce: NO update_url in Phase 6 manifest (must not point to nonexistent or upstream update.json)
-    assert!(
-        app.get("update_url").is_none(),
-        "Phase 6 manifest must not declare update_url"
+    // Enforce: update_url must point at this fork's own merged, live update.json --
+    // never absent, never HTTP, never an upstream/fake URL.
+    const EXPECTED_UPDATE_URL: &str =
+        "https://raw.githubusercontent.com/ntluong95/zotero-rust-cli/main/update.json";
+    let update_url = app
+        .get("update_url")
+        .and_then(|v| v.as_str())
+        .expect("Phase 6 manifest must declare update_url");
+    assert_eq!(
+        update_url, EXPECTED_UPDATE_URL,
+        "update_url must be the exact repository-owned update.json URL"
     );
     assert!(
-        !manifest_str.contains("update_url"),
-        "manifest.json must not contain update_url key"
+        update_url.starts_with("https://"),
+        "update_url must use HTTPS"
     );
     assert!(
-        !manifest_str.contains("update.json"),
-        "manifest.json must not reference update.json"
+        update_url.starts_with("https://raw.githubusercontent.com/ntluong95/zotero-rust-cli/"),
+        "update_url must be owned by this fork's own repository"
     );
     assert!(
-        !manifest_str.contains("cli-anything-zotero"),
+        !manifest_str.contains("cli-anything.dev") && !manifest_str.contains("cli-anything-zotero"),
         "manifest.json must not contain upstream URLs or repo references"
+    );
+    // update_link is Zotero's binary-update-download field, distinct from update_url --
+    // this compatibility-only update.json intentionally omits it (SS3.12/update.json scope),
+    // and manifest.json itself never declares it either.
+    assert!(
+        !manifest_str.contains("update_link"),
+        "manifest.json must not declare update_link"
     );
 
     let bootstrap_str = {

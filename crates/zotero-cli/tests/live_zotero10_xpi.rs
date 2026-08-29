@@ -108,13 +108,17 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     assert_eq!(app["id"].as_str().unwrap(), ADDON_ID);
     assert_eq!(app["strict_min_version"].as_str().unwrap(), "6.999");
     assert_eq!(app["strict_max_version"].as_str().unwrap(), "10.0.*");
-    assert!(
-        app.get("update_url").is_none(),
-        "Phase 6 manifest must not declare update_url"
+    let update_url = app
+        .get("update_url")
+        .and_then(|v| v.as_str())
+        .expect("Phase 6 manifest must declare update_url");
+    assert_eq!(
+        update_url, "https://raw.githubusercontent.com/ntluong95/zotero-rust-cli/main/update.json",
+        "update_url must be the exact repository-owned update.json URL"
     );
     assert!(
-        !MANIFEST_JSON.contains("update_url"),
-        "manifest.json must not contain update_url"
+        update_url.starts_with("https://"),
+        "update_url must use HTTPS"
     );
 
     // 2. Audit bootstrap.js invariants
