@@ -104,19 +104,39 @@ crates/zotero-cli/src/
   catalog.rs         # port of core/catalog.py
 ```
 
-### Connection semantics (D4)
+### Connection semantics (D4) — **SUPERSEDED by Phase 14, see note**
+
+> **[RECONSTRUCTED 2026-08-29 — not a verbatim recovery.]** The paragraphs below replace this
+> section's original `--strict-read`-based decision, which is cancelled. They are rebuilt from
+> `plan.md`'s D4 entry and `phase-14-zotero-10-compatibility-gate.md` §1 (both recovered verbatim
+> from session context), not from this file's own lost diff — the exact original wording of this
+> section's Zotero-10 update is not recoverable. Treat `phase-14-zotero-10-compatibility-gate.md` as
+> the authoritative spec for `connect_readonly`; this section is a pointer, not a duplicate source of
+> truth.
 
 Python opens `file:{path}?mode=ro&immutable=1` with a 1 s timeout
 (`zotero_sqlite.py:25-32`). `immutable=1` tells SQLite the file cannot change, so it skips WAL
-recovery and locking entirely. That is what lets reads succeed while Zotero holds the database —
-and it is also why reads can observe stale or torn state during a Zotero write.
+recovery and locking entirely. That is what lets reads succeed while Zotero holds the database on
+Zotero ≤9 (rollback-journal mode) — and on a rollback-journal database that is a safe trade, since
+there is no separate `-wal` file for it to miss.
 
-**Decision: preserve the default behaviour** (removing it would break the core use case), **but**:
-- document it in `docs/ARCHITECTURE.md` and in `app doctor` output;
-- add an opt-in `--strict-read` global flag that opens `mode=ro` **without** `immutable=1`, which
-  will fail cleanly under lock contention rather than returning inconsistent data.
+**Zotero 10 defaults to WAL journal mode**, which changes the trade-off's shape entirely: reads
+against a WAL database opened with `immutable=1` can silently return **only the last-checkpointed
+snapshot**, missing any committed-but-uncheckpointed row with no error and exit code 0 (reproduced:
+1 of 5 rows returned). This is `plan.md`'s Defect D4, superseded — see there for the full writeup —
+and it retroactively affects every one of this phase's 24 already-landed read commands, since they
+all go through `connect_readonly`.
 
-`--strict-read` is a new flag, additive, and does not change any default — it is compatible.
+**Original decision here (`--strict-read` opt-in flag) is CANCELLED.** It assumed the only cost of
+dropping `immutable=1` was "fails under lock contention instead of returning inconsistent data" —
+i.e. that WAL's normal reader/writer concurrency model would apply. Phase 14 must verify this
+empirically against a live Zotero 10 before it can be assumed (see Phase 14's Open Question 1 — this
+is flagged there as the single highest-risk unknown in the whole Zotero 10 adaptation, precisely
+because SQLite's WAL concurrency guarantees do not automatically survive a writer that holds its own
+connection in exclusive locking mode). The fix — dropping `immutable=1` unconditionally to `mode=ro`
+as the *default*, with no flag to opt into — is owned by **Phase 14**, executes before Phase 6, and
+retro-fixes this phase's landed code without changing its command surface. Do not reintroduce
+`--strict-read`; there is nothing left to opt into once `mode=ro` is the default.
 
 ### Typed models
 
@@ -214,10 +234,10 @@ snapshot.
 - [ ] `resolve_attachment_real_path` passes all six branches on macOS, Windows and Linux
 - [ ] `note_preview` truncation is character-identical, including the `…` and the off-by-one
 - [ ] Reads succeed against a **live, running** Zotero with a 112 MB database
-- [ ] `--strict-read` fails cleanly under lock contention instead of returning torn data
+- [ ] ~~`--strict-read` fails cleanly under lock contention instead of returning torn data~~ **cancelled — superseded by Phase 14's `mode=ro`-by-default fix; see Connection semantics (D4) above**
 - [ ] Local-API/SQLite mixed-surface stale-read behavior has an explicit fixture and does not produce a silent false-negative result
 - [ ] Query latency within 2× of the Python baseline
-- [ ] `immutable=1` trade-off documented in `docs/ARCHITECTURE.md` and surfaced by `app doctor`
+- [ ] `immutable=1` / WAL trade-off documented in `docs/ZOTERO-COMPATIBILITY.md` (Phase 14) and surfaced by `app doctor`
 
 ## Risk Assessment
 

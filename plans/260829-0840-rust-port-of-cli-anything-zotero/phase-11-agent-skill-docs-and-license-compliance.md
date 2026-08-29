@@ -66,6 +66,7 @@ The skill must state explicitly:
 | `docs/ARCHITECTURE.md` | The four backend surfaces; the `immutable=1` trade-off (D4) |
 | `docs/SECURITY.md` | The XPI eval endpoint; loopback binding; threat model |
 | `docs/COMPATIBILITY.md` | Generated from `PARITY-REPORT.md` |
+| `docs/ZOTERO-COMPATIBILITY.md` | Zotero version support matrix (7/8/9 vs. 10+) and the WAL rationale — authored in Phase 14 (`<!-- reconstructed 2026-08-29: this row and its cross-reference are rebuilt from plan.md/phase-14 citations; the original ~3-line diff here was lost and is not recoverable verbatim -->`); this phase links to it, does not duplicate it |
 
 `docs/MIGRATION.md` must be blunt about the five deltas:
 

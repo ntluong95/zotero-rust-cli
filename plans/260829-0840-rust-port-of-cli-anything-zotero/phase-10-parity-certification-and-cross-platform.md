@@ -98,6 +98,31 @@ CLI_ANYTHING_ZOTERO_IMPORT_TARGET=<collection-key>
 Read-only live tests run whenever a real Zotero is detected. Write tests remain opt-in. Run both
 implementations against the **same** live library, sequentially, and compare.
 
+### Zotero-version-specific re-baselining (saved searches)
+
+> **[RECONSTRUCTED 2026-08-29 — not a verbatim recovery.]** Rebuilt from `plan.md`'s Zotero 10 impact
+> table, Finding 8 ("FTS5 rewrite; `fulltextWords`/`fulltextItemWords` dropped; saved searches
+> auto-migrate" → "MEDIUM → No landed code reads those tables (verified). Re-baseline `search
+> list/get` per Zotero version in P10"), recovered verbatim from session context. The original diff
+> for this file (+23 lines per the pre-loss `git diff --stat`) is not recoverable.
+
+Zotero 10 rewrites full-text search storage (FTS5) and drops the `fulltextWords`/`fulltextItemWords`
+tables outright — verified during the Zotero 10 impact assessment that no landed Rust code reads
+either table, so this alone is not a regression. Separately, Zotero 10 auto-migrates saved searches
+on database upgrade (e.g. `childNote` condition type becomes `note` + a `resultLevel` condition, per
+Open Question 10). Because `search list`/`search get` serialize a saved search's `conditions` array
+directly from `savedSearchConditions` (Phase 4's `fetch_saved_searches`), a library that has gone
+through Zotero 10's migration can legitimately produce a **different, correct** JSON shape than the
+same library captured against the Python reference on Zotero ≤9 — this is not a Rust bug, but the
+existing golden fixtures were captured pre-migration and would falsely read as a Mismatch.
+
+Certification must therefore re-baseline `search list`/`search get` goldens **per Zotero version**
+(a Zotero ≤9 golden and a separate Zotero 10-migrated golden), and record which evidence class
+(`fixture`/`live-read`/etc., per the taxonomy above) backs each. Do not silently merge the two into
+one golden or treat the Zotero 10 shape as a divergence to "fix" — Open Question 10 in `plan.md`
+must be answered against a real migrated library before this can be finalized, and this phase should
+capture that answer as part of the drift check below rather than treating it as a separate task.
+
 ### Upstream drift check
 
 Upstream was active as recently as one month before this analysis. Before certifying:

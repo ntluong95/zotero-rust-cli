@@ -110,11 +110,13 @@ AI Agent / Human
       ▼
   zotero-cli  (single native binary, clap, synchronous)
       │
-      ├── db::read   → zotero.sqlite  (rusqlite, mode=ro&immutable=1)
+      ├── db::read   → zotero.sqlite  (rusqlite, mode=ro — WAL-safe; NOT immutable=1)
       │
       ├── http       → 127.0.0.1:23119 ─┬── /connector/*     Connector API
-      │                                 ├── /api/*           Local API (Zotero-API-Version: 3)
+      │                                 ├── /api/*           Local API — reads (all versions)
+      │                                 │                    Local API — WRITES (Zotero 10+)
       │                                 └── /cli-bridge/eval CLI Bridge XPI (generated JS)
+      │                                                      ≤9: all writes · 10+: privileged only
       │
       ├── paths      → profile discovery, prefs.js/user.js, storage/, styles/, XPI build
       ├── net        → Crossref · Unpaywall · EuropePMC · NCBI PMC · bioRxiv/medRxiv
@@ -142,7 +144,7 @@ harness is built first (Phase 1) and runs continuously rather than as a late gat
 | 3 | [CLI Skeleton, Result Contract and Config](./phase-03-cli-skeleton-result-contract-and-config.md) | v1 command paths, output contracts, exit codes, `--json` anywhere, paths | In Progress |
 | 4 | [SQLite Read Layer and Typed Models](./phase-04-sqlite-read-layer-and-typed-models.md) | 24 read commands (the Exact-class core) | In Progress |
 | 5 | [HTTP Surfaces and Runtime](./phase-05-http-surfaces-connector-local-api-and-runtime.md) | Connector + Local API + runtime/doctor/session/audit | In Progress |
-| 6 | [JS Bridge and Injection Hardening](./phase-06-js-bridge-and-injection-hardening.md) | 33 bridge commands; fixes D1; XPI packaging | Pending |
+| 6 | [Write Backends: Local-API-First](./phase-06-js-bridge-and-injection-hardening.md) | **Redesigned.** Local API writes (Zotero 10+) + JS Bridge for ~10 privileged ops; fixes D1; XPI | Pending |
 | 7 | [Ingest, Attachments and PDF Cascade](./phase-07-ingest-attachments-and-pdf-cascade.md) | `add`/`import`/`note`/PDF cascade/hygiene/metrics | Pending |
 | 8 | [Semantic Search Vector Store](./phase-08-semantic-search-vector-store.md) | 3 commands; fixes D2; ~50× cosine speedup | Pending |
 | 9 | [Pure OOXML DOCX Commands](./phase-09-pure-ooxml-docx-commands.md) | 4 subprocess-free DOCX commands | Pending |
@@ -150,19 +152,52 @@ harness is built first (Phase 1) and runs continuously rather than as a late gat
 | 11 | [Agent Skill, Docs and License Compliance](./phase-11-agent-skill-docs-and-license-compliance.md) | Regenerated SKILL.md, migration guide, Apache-2.0 compliance | Pending |
 | 12 | [DOCX Zoterify Chain (deferred, gated)](./phase-12-docx-zoterify-chain-deferred-gated.md) | The 7 external-process DOCX commands | Pending |
 | 13 | [Python Retirement](./phase-13-python-retirement.md) | Criteria-driven decommission | Pending |
+| 14 | [**Zotero 10 Compatibility Gate**](./phase-14-zotero-10-compatibility-gate.md) | **BLOCKS P6.** WAL-safe reads, WAL fixture, XPI 10.0.*, capability detection | **Pending — next** |
 
 ### Dependency graph
 
 ```
-P1 ──┬─→ P3 ──┬─→ P4 ──→ P5 ──┬─→ P6 ──→ P7 ──→ P10 ──→ P11 ──→ P13
-     │        │               │                  ↑              ↑
-P2 ──┘        └─→ P9 ─────────┴─→ P8 ────────────┘              │
-                                                    P12 ────────┘
+P1 ──┬─→ P3 ──┬─→ P4 ──→ P5 ──→ ⟦P14⟧ ──→ P6 ──→ P7 ──→ P10 ──→ P11 ──→ P13
+     │        │                                            ↑              ↑
+P2 ──┘        └─→ P9 ──────────────────→ P8 ───────────────┘              │
+                                                              P12 ────────┘
 ```
 
+- **Phase number ≠ execution order.** P14 was appended by the plan CLI but executes **between P5 and
+  P6**. This graph is authoritative. (P8 already shipped before P5–P7 by the same principle.)
+- **⟦P14⟧ is a hard gate.** P6 must not start until its success criteria pass. It also retro-fixes a
+  CRITICAL defect in already-landed P4 code — see Zotero 10 section below.
 - **P1 and P2 are independent** and may run concurrently.
 - **P3 blocks everything downstream** — it defines the result contract.
 - **P12 is optional** for reaching P13 only if its commands are formally deprecated instead.
+- **Parallelisable right now, independent of P14:** P9 (pure-OOXML DOCX) depends only on P4's read
+  layer and touches no Zotero surface Zotero 10 changed.
+
+## Zotero 10 impact (assessed 2026-08-29)
+
+Zotero 10 shipped **2026-08-17**, after this plan was written and after 31 commands landed. Full
+analysis: [`plans/research/zotero-10-impact-on-rust-port.md`](../../research/zotero-10-impact-on-rust-port.md).
+
+**Decision: PLAN ADAPTATION REQUIRED BEFORE PHASE 6.**
+
+| # | Finding | Class | Effect on this plan |
+|---|---|---|---|
+| 1 | **WAL mode enabled.** `mode=ro&immutable=1` makes SQLite ignore `-wal` → reproduced **1 of 5 rows returned**, exit 0, no warning | **CRITICAL** | Retro-fixes **landed** P4 code. D4 superseded, `--strict-read` cancelled. New `wal-mode` fixture (P1). Owned by **P14**. |
+| 2 | **XPI `strict_max_version: 9.0.*`** → plugin won't load on Zotero 10 | **CRITICAL** | P6's "reuse the XPI byte-for-byte" premise fails. Manifest bump owned by **P14**. |
+| 3 | **Local API gained write support** (POST/PUT/PATCH/DELETE + tag delete, full-text, file upload) | **OPPORTUNITY** | **P6 redesigned Local-API-first.** JS Bridge shrinks ~33 → ~10 commands. D1 scope shrinks with it. |
+| 4 | Local API key + user consent dialog; `Zotero-Server-ID` required on writes; local version semantics decoupled from sync | HIGH | New auth/key-storage requirements in **P6**; Server-ID capture in **P5**. |
+| 5 | HTTP hardening: `Host` allowlist; `Mozilla/` UA or any `Origin` dropped | HIGH | Conformance test in **P5**. We pass today by luck, not design. |
+| 6 | Singular `ZoteroPane.getSelected*()` removed → plural; multi-selection of collections/searches/libraries | MEDIUM | `use-selected` semantics defined in **P5**, pending Open Question 3. |
+| 7 | Attachment stored-paths must be bare filenames; `setType` conversions throw | HIGH | **P7** validation + error handling. |
+| 8 | FTS5 rewrite; `fulltextWords`/`fulltextItemWords` dropped; saved searches auto-migrate | MEDIUM | No landed code reads those tables (verified). Re-baseline `search list/get` per Zotero version in **P10**. |
+| 9 | Port, read-auth, `Zotero.Server.Endpoints`, Firefox 140 ESR base, core schema | **NO CHANGE** | Existing design valid. |
+
+**Backward compatibility:** Local API writes are **10+ only**. Zotero 7/8/9 keep the JS Bridge write
+path. The port detects capability at runtime (`Zotero-Server-ID` header presence) rather than
+assuming — so this is a dual-backend design, not a cutover.
+
+**Already-landed work is not invalidated.** All 31 commands remain logically correct; one connection
+-string change plus a WAL fixture restores their correctness on Zotero 10.
 
 ## Cross-cutting technical decisions
 
@@ -204,7 +239,7 @@ Full env-var list and the complete matrix live in
 | D1 | JS built by string concatenation escaping only `'` — breaks on `\`, newlines, quotes in titles/tags/collection names | Serialize params with `serde_json`, pass via `JSON.parse` inside the generated JS | 6 |
 | D2 | f-string SQL interpolation of `language` / `exclude_key` in `semantic.py` | Bound parameters | 8 |
 | D3 | `execute_js` probes `bridge_endpoint_active()` before every call — doubles round trips on 33 commands | Cache successful probe; retry after install/launch/register | 6 |
-| D4 | SQLite reads use `immutable=1`; can return stale/torn data while Zotero writes | Keep behaviour (needed for concurrent access) but **document it** and surface a `--strict-read` opt-out | 4 |
+| D4 | ~~SQLite reads use `immutable=1`; can return stale/torn data~~ **— SUPERSEDED.** Under Zotero 10's WAL mode this is not "possibly stale", it is **silent data loss**: reproduced returning 1 of 5 committed rows, exit 0. | ~~Remove `immutable=1`; open `mode=ro`.~~ **Corrected 2026-08-29 after live testing** (see `phase-14` and the research report §7.1): `mode=ro` reliably fails with `SQLITE_BUSY` while Zotero holds the DB (exclusive locking mode, true on every Zotero version). Detect via the open attempt itself; use `mode=ro` when it succeeds (Zotero not running, or no `-wal`); refuse by default when it doesn't, opt-in via `--allow-stale-sqlite` for `immutable=1`. `--strict-read` cancelled either way — there is nothing to opt into once refusal is the safe default. | **14** |
 | D5 | 112 MB full-file backup before every experimental write | N/A — write path excluded from v1 | — |
 | D6 | JSON-mode errors go to stdout | **Preserve deliberately.** Agents depend on it. Document as intentional. | 3 |
 
@@ -249,6 +284,25 @@ Full env-var list and the complete matrix live in
 4. **Phase 12 go/no-go.** Whether to port the LibreOffice/Java/AppleScript DOCX chain at all, or
    formally deprecate those 7 commands. Decide after Phase 10 with real usage data.
 
+### Zotero 10 open questions — all require a live Zotero 10 instance (blocking Phase 14)
+
+The dev machine runs **Zotero 9.0.6** (rollback journal, no `-wal`). None of these can be answered
+from documentation. They are listed in full in
+[`plans/research/zotero-10-impact-on-rust-port.md`](../../research/zotero-10-impact-on-rust-port.md) §6.
+
+5. **Does `mode=ro` (no `immutable`) open a live Zotero 10 DB** while Zotero holds it? WAL readers
+   must map `-shm`; a read-only open can fail `SQLITE_CANTOPEN`. Determines which rung of Phase 14's
+   fallback ladder we land on. **Highest-risk unknown in the whole adaptation.**
+6. **Does `Host: 127.0.0.1:23119` (with port) pass** Zotero 10's new Host allowlist?
+7. **Does `/connector/getSelectedCollection` still exist in 10, and what does it return under
+   multi-selection?** Determines `use-selected` semantics (Phase 5 decision matrix).
+8. **Does `/cli-bridge/eval` still pass** the hardened browser-origin check without
+   `allowRequestsFromUnsafeWebContent`?
+9. **Does "Always Allow" survive a Zotero restart, and where is the key stored?** Determines whether
+   unattended agent writes are viable at all on Zotero 10.
+10. **Do 10-migrated saved searches** (`childNote` → `note`+`resultLevel`) change `search list/get`
+    JSON versus the Python baseline on the same library?
+
 ## Red Team Review
 
 ### Session — 2026-08-29
@@ -277,6 +331,48 @@ Full env-var list and the complete matrix live in
 - Finding 5 verified by `utils/zotero_sqlite.py:735-775` versus `core/jsbridge.py:607-629`: upstream move is transactional; bridge primitives are separate saves.
 - Finding 6 verified by `plugin/zotero-cli-bridge/bootstrap.js:41-67` and `manifest.json:6-11`: addon ids differ, but both register/delete the same endpoint key.
 - Finding 10 is a certification wording issue, not a command cut: fixture, live, manual, and accepted-divergence evidence must be separated in `PARITY-REPORT.md`.
+
+### Session — 2026-08-29 (Zotero 10 adaptation)
+**Findings:** 5 (4 accepted, 1 withdrawn on review)
+**Severity breakdown:** 2 Critical, 3 High
+**Reviewer:** inline adversarial pass, not a spawned subagent (per standing instruction). Stated so the
+provenance of this review is not overclaimed.
+
+| # | Finding | Severity | Disposition | Applied To |
+|---|---|---|---|---|
+| 15 | WAL + `immutable=1` silently drops uncheckpointed rows in **already-landed, already-"Exact"** read commands | Critical | Accept | plan.md (D4), Phase 4, Phase 14 |
+| 16 | XPI `strict_max_version: 9.0.*` makes the plugin unloadable on Zotero 10, invalidating Phase 6's premise | Critical | Accept | Phase 6, Phase 14 |
+| 17 | ~~Local-API-first knowingly downgrades ~10 write commands Exact → Semantic~~ **— finding withdrawn, superseded by 17b** | High | **Rejected on review** | — |
+| 17b | Finding 17 conflated *backend returns different bytes* with *CLI must emit different bytes*. Parity is a property of the observable CLI contract. Exact remains achievable behind a compatibility renderer; the real risk is the opposite — a renderer that makes two backends print identical JSON while leaving Zotero in **different states** | High | Accept | Phase 6 §C2 |
+| 18 | Local API consent dialog may make unattended agent writes impossible if "Always Allow" doesn't persist — would reverse the redesign | High | Accept, gate on OQ9 | Phase 6 §C1, Phase 14 |
+
+#### Adjudication Notes
+- Finding 15 verified **empirically**, not from documentation alone: a WAL database with uncheckpointed
+  commits returned **1 of 5 rows** under `mode=ro&immutable=1` versus 5 of 5 under `mode=ro`
+  (reproduction in `plans/research/zotero-10-impact-on-rust-port.md` §1.1). Vendor doc independently
+  confirms WAL is enabled in Zotero 10.
+  **Nuance worth stating:** SQLite auto-checkpoints (~1000 pages), so the corruption window is
+  intermittent rather than constant. That makes it *worse* for an agent tool, not better — an
+  intermittently-wrong read is harder to detect than a consistently-wrong one.
+- Finding 16 verified against `plugin/zotero-cli-bridge/manifest.json` (`strict_max_version: "9.0.*"`)
+  and the Zotero 10 developer guidance to bump it to `10.0.*`.
+- **Finding 17 was withdrawn on review.** It asserted that changing the write backend forces a
+  parity downgrade. It does not: parity describes the **observable CLI contract**, not the transport.
+  Python is `item update → JS Bridge → Zotero → construct JSON`; Rust can be
+  `item update → Local API → Zotero → construct the SAME JSON`. With a compatibility renderer in
+  front, Exact stays achievable for keys, types, status fields, stdout/stderr, exit codes and
+  semantics. The correct rule — **attempt Exact first, downgrade only on demonstrated evidence** —
+  replaces it, and an adapter is required for correctness anyway, since Zotero 10's local object
+  `version` deliberately means something different from the Web API's.
+- **Finding 17b** is the inverted, real risk that survives: forcing output parity can mask a genuine
+  behavioural difference. Mitigated by requiring **post-write state parity**, not just output parity.
+- **Finding 18 (C1) is the only genuine reversal trigger.** If "Always Allow" does not persist across
+  a Zotero restart, unattended agent writes are impossible via Local API and bridge-first is correct
+  again. Gated on Open Question 9 in Phase 14.
+- **Not accepted as a finding:** "Phase 14's number is out of execution order." Real, but cosmetic —
+  the plan CLI appends sequentially and the dependency graph is already authoritative (P8 shipped
+  before P5–P7 under the same rule). Renumbering 8 phase files to fix presentation would risk more
+  than it clarifies.
 
 ### Whole-Plan Consistency Sweep
 - Files reread: plan.md, phase-01 through phase-13.

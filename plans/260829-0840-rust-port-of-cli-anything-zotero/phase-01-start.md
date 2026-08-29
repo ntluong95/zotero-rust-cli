@@ -55,6 +55,7 @@ harness/
       empty-library/
       group-library/
       unicode-cjk/          # titles/tags with CJK, quotes, backslashes, newlines  → D1 regression
+      wal-mode/             # journal_mode=WAL with a row left uncheckpointed in -wal → Zotero 10 regression, owned by Phase 14 [reconstructed 2026-08-29, see note below]
   capture.py                # run <impl> <command> --json  → golden/<state>/<command>.json
   normalize.py              # strip non-deterministic fields
   compare.py                # classify Exact | Semantic | Mismatch
@@ -82,6 +83,24 @@ compared strictly for Exact-class commands.
 
 > Key order matters. Python `json.dumps` preserves dict insertion order; the Rust port uses
 > `serde_json` with `preserve_order`. Capturing order now is what makes that verifiable later.
+
+> **[RECONSTRUCTED 2026-08-29 — not a verbatim recovery.]** This `wal-mode` fixture-state row and the
+> paragraph below were lost to an uncoordinated concurrent git operation before being committed, and
+> are rebuilt here from cross-references still present in `plan.md` and
+> `phase-14-zotero-10-compatibility-gate.md` (which cite it as "New `wal-mode` fixture (P1)"), not
+> from the original file content. Treat the specifics (exact row insert, exact assertions) as
+> Phase 14's responsibility to finalize against `phase-14`'s own fixture spec, not as settled history.
+
+### `wal-mode` fixture state (owned by Phase 14)
+
+Zotero 10 defaults `zotero.sqlite` to WAL journal mode. The three existing fixture states above are
+all built with Python's `sqlite3.connect()`, which defaults to rollback-journal mode — no `-wal` file
+is ever produced, so no existing fixture can exercise WAL-specific read behavior. `wal-mode` closes
+that gap: it enables `PRAGMA journal_mode=WAL` on the fixture database and leaves at least one
+committed row **uncheckpointed** in `-wal` (see `phase-14-zotero-10-compatibility-gate.md` §2 for the
+mechanics and the "must demonstrably fail under the old `immutable=1` behavior" gate criterion). This
+is a regression fixture, not a general-purpose one — it exists specifically to make Finding 15 (WAL
+silently drops uncheckpointed rows under `immutable=1`) permanently testable, not just documented.
 
 ## Related Code Files
 

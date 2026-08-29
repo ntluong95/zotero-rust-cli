@@ -111,6 +111,35 @@ All external calls must:
   block private, link-local, multicast, and metadata-service IP ranges unless an explicit unsafe
   flag is provided for local testing
 
+### Zotero 10 attachment path validation
+
+> **[RECONSTRUCTED 2026-08-29 — not a verbatim recovery.]** Rebuilt from `plan.md`'s Zotero 10 impact
+> table, Finding 7 ("Attachment stored-paths must be bare filenames; `setType` conversions throw" →
+> "HIGH → P7 validation + error handling"), recovered verbatim from session context. The original
+> diff for this file (+30 lines per the pre-loss `git diff --stat`) is not recoverable; this section
+> states the requirement `plan.md` names but does not claim to reproduce the original's specifics
+> (exact error message text, exact validation call sites).
+
+Zotero 10 tightens two behaviors this phase's ingest/attachment paths touch directly:
+
+- **Stored attachment paths must be bare filenames.** `db::resolve_attachment_real_path`'s `storage:`
+  branch (Phase 4) already assumes this shape (`data_dir/storage/<item.key>/<filename>`), so existing
+  *reads* are unaffected. What changes is the *write* side this phase owns: any code path in
+  `imports.rs`/`add.rs` that constructs or rewrites a stored attachment's `path` field must not persist
+  a path containing directory components — Zotero 10 does not merely warn on this, it is a correctness
+  requirement for the stored file to resolve at all under the tightened contract.
+- **`setType` conversions between link/stored/embedded attachment types throw** where the pre-10
+  behavior may have silently no-opped or produced a different attachment shape. Any bridge- or
+  Local-API-routed attachment-type change this phase performs (e.g. as part of `add`'s
+  `--if-exists file` handling, or `item attach`) must catch and surface this as a clean, actionable
+  error rather than letting an unhandled JS/Local-API exception propagate as an opaque bridge failure.
+
+Add a fixture/test case for both: a stored-attachment write with a path containing a directory
+separator (must be rejected or normalized before it reaches Zotero, not merely reproduced), and an
+attachment-type conversion attempt against a live-shaped fixture (must produce a clean error, not a
+raw bridge exception). Exact validation call sites and error message text need fresh design during
+this phase's implementation — not specified further here.
+
 ### `item analyze`
 
 Requires `OPENAI_API_KEY`; endpoint overridable via `CLI_ANYTHING_ZOTERO_OPENAI_URL`. When the key
