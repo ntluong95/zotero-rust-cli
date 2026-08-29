@@ -648,7 +648,7 @@ whoever picks up the deferred §3.8 future-work item, or by Phase 7's planning.
 
 | Slice | Owner | Depends on | Delivers |
 |---|---|---|---|
-| 0 | Agent B | Phase 14 merged | Disposable write-consent spike; answers OQ9/OQ5, 401/403/revocation, `Zotero-Server-ID` stability, dialog-stacking behavior (§3.2 finding 7) |
+| 0 | Agent B | Phase 14 merged | **COMPLETE 2026-08-29** — Disposable write-consent spike; answers OQ9/OQ5, 401/403/revocation, `Zotero-Server-ID` stability. Dialog-stacking behavior (§3.2 finding 7) remains untested — see `plans/research/zotero-10-impact-on-rust-port.md` §8.3 item 7. Full evidence: §8 of that document. Outcome: **SLICE 0 PASSED — LOCAL-API-FIRST REMAINS VALID** |
 | 1 | Agent A | — | Bridge transport, D1/D3 fixes, JS template extraction infrastructure |
 | 1b | Agent A | 1 | The ≤9 JS-Bridge CRUD template set (§3.8a) — baseline scope, independent of Slice 0's outcome |
 | 2 | Agent A | 1 | XPI packaging/fork changes: create `manifest.json`/`bootstrap.js` from scratch, set `strict_max_version: 10.0.*`, implement §3.12's ownership marker (resolved decision, not single-plugin policy); OQ4 resolved against a real Zotero 10 |
