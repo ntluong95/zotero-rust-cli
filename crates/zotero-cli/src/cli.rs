@@ -86,6 +86,9 @@ pub enum Commands {
     /// CSL citation style commands.
     #[command(subcommand)]
     Style(StyleCommands),
+    /// Session state commands (current library/collection/item, history).
+    #[command(subcommand)]
+    Session(SessionCommands),
 }
 
 #[derive(Subcommand, Debug)]
@@ -262,4 +265,27 @@ pub enum TagCommands {
 pub enum StyleCommands {
     /// List installed CSL citation styles.
     List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionCommands {
+    /// Show current session status.
+    Status,
+    /// Set the current library for this and future commands.
+    UseLibrary { library_ref: String },
+    /// Set the current collection for this and future commands.
+    UseCollection { collection_ref: String },
+    /// Set the current item for this and future commands.
+    UseItem { item_ref: String },
+    /// Clear the current library.
+    ClearLibrary,
+    /// Clear the current collection.
+    ClearCollection,
+    /// Clear the current item.
+    ClearItem,
+    /// Show recent command history.
+    History {
+        #[arg(long, default_value_t = 10)]
+        limit: i64,
+    },
 }

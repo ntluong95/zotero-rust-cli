@@ -71,11 +71,10 @@ collection keys across libraries, e.g. `DUPCOLL1`) has the same kind of untested
 since it was found while auditing the sibling function. Not fixed in this pass; tracked for the next
 hardening round rather than silently left implicit.
 
-**Not yet verified on Windows/Linux, only unit-tested on this (macOS) dev machine:** the 8 new
-`resolve_attachment_real_path` branch tests are pure-function and platform-agnostic (no OS-specific
-API calls), so they *should* pass identically on every CI leg once pushed — but per the Phase 3
-slice's own lesson about the SQLite URI bug, "should pass" is not the same claim as "verified passing"
-until CI actually runs them on `windows-latest` and the Linux runners.
+**Cross-platform verification closed the same day:** pushed as `05b4649`; CI run `33249509720`
+completed green on all 5 targets, including `x86_64-pc-windows-msvc`. The 8 new
+`resolve_attachment_real_path` branch tests — including the UNC and drive-letter branches — are now
+genuinely verified on real Windows, not just unit-tested on macOS and assumed portable.
 
 ## Requirements
 

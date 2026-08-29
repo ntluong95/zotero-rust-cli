@@ -191,5 +191,8 @@ data the command under test actually touches, not just reading the diff.
   session but still dead code) becomes load-bearing for the first time.
 - `session use-selected` needs Phase 5's connector HTTP client (`getSelectedCollection`) before it can
   land — it's the one Phase 4 command still open, blocked by dependency rather than left undone.
-- Windows/Linux CI has not yet run the 10 new tests added this session; they're platform-agnostic pure
-  functions so should pass, but "should" isn't "verified" until CI actually runs them.
+- ~~Windows/Linux CI has not yet run the 10 new tests~~ — **closed same day**: pushed as `05b4649`,
+  CI run `33249509720` completed green on all 5 targets including `x86_64-pc-windows-msvc`, so the
+  `resolve_attachment_real_path` UNC/drive-letter branches are now genuinely cross-platform verified,
+  not just spec-verified — the same "should pass" -> "verified passing" gap the previous session's
+  Windows URI fix was left with is closed here within the same push.

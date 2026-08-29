@@ -46,12 +46,45 @@ moves to **Migrated** when `compare.py` classifies it **Exact** (or
 | `tag list` | Exact | **Exact** (byte-identical) | `catalog`, `db` | — |
 | `tag items` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Resolves tag name/id then reuses `fetch_items`'s tag filter |
 | `style list` | Exact | **Exact** (byte-identical) | `catalog` | Real namespace-aware `*.csl` XML parse via `quick-xml` (new dependency — see module doc comment for why a regex heuristic was rejected) |
-| `item build-index` | Semantic | **Semantic** | `semantic` | Indexing from `zotero.sqlite`, text chunking (2000 chars), batch commits, D2 fix |
-| `item semantic-search` | Semantic | **Semantic** | `semantic` | Cosine similarity ranking, language filter, min-score threshold, float rounding (4dp), deterministic item_key tie-breaking, D2 fix |
-| `item similar` | Semantic | **Semantic** | `semantic` | Target item lookup, self-exclusion, similarity ranking, float rounding (4dp), deterministic item_key tie-breaking, D2 fix |
+| `item build-index` | Semantic | **Semantic** | `semantic` | Indexing from `zotero.sqlite`, text chunking (2000 chars), batch commits, D2 fix. Landed in parallel with the session slice below; needed a post-merge fix to add the (previously missing) `let runtime = build_runtime();` call once the lazy-runtime refactor landed — see the merge note under "Reconciling concurrent work" |
+| `item semantic-search` | Semantic | **Semantic** | `semantic` | Cosine similarity ranking, language filter, min-score threshold, float rounding (4dp), deterministic item_key tie-breaking, D2 fix. Never touches `RuntimeContext` (matches Python: reads the vector DB directly via env vars) |
+| `item similar` | Semantic | **Semantic** | `semantic` | Target item lookup, self-exclusion, similarity ranking, float rounding (4dp), deterministic item_key tie-breaking, D2 fix. Same as `semantic-search`: no `RuntimeContext` |
+| `session status` | Exact | **Exact** (byte-identical) | `session` | Zero `http_calls` — the fixture that caught the lazy-runtime bug below |
+| `session use-library` | Exact | **Exact** (byte-identical) | `catalog`, `db`, `session` | Only `session *` command that legitimately needs the runtime (SQLite lookup) |
+| `session use-collection` | Exact | **Exact** (byte-identical) | `session` | Pure local state, zero `http_calls` |
+| `session use-item` | Exact | **Exact** (byte-identical) | `session` | Pure local state, zero `http_calls` |
+| `session clear-library` | Exact | **Exact** (byte-identical) | `session` | — |
+| `session clear-collection` | Exact | **Exact** (byte-identical) | `session` | — |
+| `session clear-item` | Exact | **Exact** (byte-identical) | `session` | — |
+| `session history` | Exact | **Exact** (byte-identical) | `session` | `python_negative_tail_slice` — `[-limit:]`, not `[:limit]`; `limit == 0` returns the whole list |
 
-**23 of 96 total CLI commands implemented.** (20 catalog/read commands classified Exact on main + 3 Phase 8 vector store commands classified Semantic).
-23 of 24 Phase 4 commands are Exact (only `session use-selected` remains for Phase 5), and all 3 Phase 8 commands are complete.
+**31 of 96 total CLI commands implemented**: 20 catalog/read commands (Exact) + 3 Phase 8 vector
+store commands (Semantic) + 8 Phase 5 `session *` commands (Exact). 23 of 24 Phase 4 commands are
+Exact (only `session use-selected` remains), all 3 Phase 8 commands are complete, and 8 of 9 Phase 5
+`session *` commands are Exact (`session use-selected` also remains, same connector-client blocker).
+
+**Reconciling concurrent work.** The Phase 8 semantic slice (`0529cb8`) and the session-state slice
+(this document's own account below) were built in parallel on separate machines/sessions and landed
+on `main` within an hour of each other, diverging from a shared parent. Reconciled via
+`git rebase origin/main`, which auto-merged `cli.rs`/`lib.rs` cleanly but left one genuine
+compile-breaking gap: `item build-index`'s dispatch arm was written against the *pre-lazy-runtime*
+`dispatch_command` (i.e. against a `runtime` variable that existed unconditionally at the top of the
+function) and never picked up the `let runtime = build_runtime();` pattern the session slice
+introduced to every other runtime-needing arm, because that refactor didn't exist yet when the
+semantic arm was written. Fixed as part of the rebase, verified against Python source
+(`item_build_index_command`, `zotero_cli.py:1211-1215`, is the only one of the three semantic
+handlers that calls `current_runtime(ctx)` — confirms `semantic-search`/`similar` correctly have no
+runtime construction at all, and `build-index` correctly needs one).
+
+**8 of 9 Phase 5 `session *` commands now Exact.** Only `session use-selected` remains (same
+connector-client blocker). This slice found a real architectural bug, not just new commands: every
+command handler built `RuntimeContext` — including its 2-call HTTP probe — unconditionally, which was
+invisible through 23 previously-landed commands (all of which legitimately needed it) until the first
+runtime-free commands (`session status` etc.) landed and immediately produced an `http_calls`
+`Mismatch` against Python's `[]`. Fixed by making runtime construction a lazy closure called only by
+the handlers that need it. See `phase-05-http-surfaces-connector-local-api-and-runtime.md` for the
+full account, including manual cross-process persistence verification the harness's one-command-per-
+fixture design can't prove on its own.
 
 Runtime foundation landed alongside these five (not independently
 command-tested, but exercised by all of them): `paths` (Zotero

@@ -43,3 +43,8 @@ html-escape = "0.2"
 # also the parser this project will need for Phase 9/12's DOCX OOXML
 # work, so bringing it in now rather than a regex-based CSL heuristic.
 quick-xml = "0.42"
+# session::save_session_state's cross-platform advisory lock, matching
+# Python's best-effort fcntl.flock (session.py: silently continues when
+# unavailable, e.g. on Windows). A small, focused crate rather than the
+# broader fs2, per the project's small-dependency-footprint principle.
+fd-lock = "4"

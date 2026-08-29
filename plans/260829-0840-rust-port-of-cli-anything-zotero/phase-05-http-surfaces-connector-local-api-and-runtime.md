@@ -17,6 +17,50 @@ state and the audit log. Completes the `find_items` Local-API path deferred from
 Delivers `app *`, `session *`, `audit *`, `search items`, `export bib`, `item export|citation|bibliography`,
 `collection use-selected`.
 
+## Progress: session-state slice landed, one architectural bug found and fixed
+
+**8 of the 9 `session *` commands are landed and verified Exact**: `status`, `use-library`,
+`use-collection`, `use-item`, `clear-library`, `clear-collection`, `clear-item`, `history`. Only
+`session use-selected` remains, blocked on this phase's connector `getSelectedCollection` client
+(same blocker as `collection use-selected`, Phase 4's `session use-selected` note, and this phase's
+own Related Code Files list).
+
+`session.rs` gained `save_session_state` (locked write via `fd-lock`, a new dependency — small,
+focused, matches Python's best-effort `fcntl.flock` semantics exactly: a lock failure does not fail
+the write, only skips the mutual exclusion it would have provided), `append_command_history`
+(reloads state from disk rather than using a caller-supplied copy, matching Python — each CLI
+invocation is a fresh process, so "current state" only ever means "what's on disk right now"), and
+`build_session_payload`. Added `python_negative_tail_slice` for `session history`'s `[-limit:]` slice
+shape — a *different* shape from `python_slice_to_limit`'s `[:limit]` (used by `item find`/`item
+list`), with its own three-way behavior (`limit == 0` returns the entire list, since `-0 == 0` in
+Python) — 6 unit tests.
+
+**A real architectural bug was found and fixed, not just new commands added.** `dispatch_command`
+built `RuntimeContext` — including the 2-call connector/Local-API HTTP probe — unconditionally for
+*every* command, before this slice. This was invisible through 23 previously-landed commands because
+every one of them legitimately needed the runtime (SQLite path or HTTP). The first commands that
+don't (`session status`, `use-collection`, `use-item`, `clear-*`, `history` — pure local-state
+operations with zero Zotero dependency in Python) immediately surfaced it as a real harness
+`Mismatch`: Rust emitted 2 `http_calls` where Python's golden shows `http_calls: []`. Fixed by making
+`runtime` construction a lazy closure (`build_runtime`) called only inside the match arms that
+actually use it — 20 call sites now call it explicitly, matching Python's `current_runtime(ctx)`
+being invoked per-command-handler rather than unconditionally at the top of dispatch. All 23
+previously-landed commands re-verified Exact after the fix (zero regressions); `session use-library`
+correctly still shows 2 `http_calls` (it needs SQLite lookup via `catalog::resolve_library_id`,
+routed through the same runtime as everything else).
+
+**Verified beyond the golden fixtures, again, on purpose:** the harness runs one command per fresh
+fixture — it cannot prove that a *separate* subsequent process reads back what an earlier process
+wrote. Manually verified real cross-process persistence: `session use-library 2` in one invocation,
+then a fresh `session status` invocation against the same `CLI_ANYTHING_ZOTERO_STATE_DIR` correctly
+shows `current_library: 2`; a sequence of `use-collection`/`use-item`/`status` correctly accumulates
+`history_count`; a failing `use-library 999` (library not found) correctly leaves prior state
+untouched rather than partially corrupting it (the SQLite lookup errors via `?` before any field
+assignment or save happens); `history_count` in a write command's *own* response reflects the count
+*before* that command's own history line is appended (matching Python's exact ordering — `state` is
+saved and returned as a local copy, while `append_command_history` reloads-and-re-saves internally,
+so the write's own echoed payload doesn't yet include its own history entry).
+
 ## Requirements
 
 **Functional**
@@ -187,9 +231,16 @@ the enclosing `.app` bundle and launch via `open`; otherwise spawn the executabl
       — see "Accepted divergence" above — verified via the `zotero-unreachable` harness fixture, not
       chased to byte-identity
 - [ ] Group-library routing produces `/api/groups/<libraryID>` and user routing `/api/users/0`
-- [ ] `session status` and `audit path` complete without building a runtime context (asserted by test: no HTTP probe issued)
-- [ ] `session_library_id` returns the default for `None` and `""` — regression test for upstream issue #5
-- [ ] Session file locking degrades gracefully on Windows without failing the command
+- [x] `session status` completes without building a runtime context — verified the hard way: an
+      earlier version built it unconditionally, and this exact criterion is what the resulting
+      `http_calls` harness `Mismatch` caught. Fixed (`build_runtime` lazy closure); `audit path` not
+      yet ported, so only half this criterion's named commands exist yet.
+- [x] `session_library_id` returns the default for `None` and `""`, and errors (not silently
+      defaults) on a corrupted value — regression test for upstream issue #5, added the prior session
+- [x] Session file locking degrades gracefully without failing the command — 2 direct tests
+      (`save_and_load_and_append_history_round_trip_through_a_real_locked_file`,
+      `append_command_history_caps_at_50_entries`) exercise the real `fd-lock`-backed write path
+      through `cargo test`, so CI's Windows leg proves this, not just documents the intent
 - [ ] `command_history` capped at 50
 - [ ] Probe latency within 2× of the Python baseline
 - [ ] `find_items` Local-API path and SQLite fallback both exercised and Exact
