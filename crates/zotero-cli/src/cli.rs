@@ -89,6 +89,45 @@ pub enum Commands {
     /// Session state commands (current library/collection/item, history).
     #[command(subcommand)]
     Session(SessionCommands),
+    /// DOCX citation inspection and rendering commands.
+    #[command(subcommand)]
+    Docx(DocxCommands),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DocxCommands {
+    /// Inspect a DOCX file for Zotero, EndNote, CSL, and static citations.
+    InspectCitations {
+        path: String,
+        #[arg(long = "sample-limit", default_value_t = 10)]
+        sample_limit: usize,
+    },
+    /// Inspect DOCX Zotero placeholders such as {{zotero:ITEMKEY}}.
+    InspectPlaceholders {
+        path: String,
+        #[arg(long = "sample-limit", default_value_t = 10)]
+        sample_limit: usize,
+    },
+    /// Validate DOCX Zotero placeholders against the local Zotero database.
+    ValidatePlaceholders {
+        path: String,
+        #[arg(long = "sample-limit", default_value_t = 10)]
+        sample_limit: usize,
+    },
+    /// Convert Zotero placeholders into static citation and bibliography text.
+    RenderCitations {
+        path: String,
+        #[arg(long = "output", required = true)]
+        output: String,
+        #[arg(long = "style", default_value = "apa")]
+        style: String,
+        #[arg(long = "locale", default_value = "en-US")]
+        locale: String,
+        #[arg(long = "bibliography", default_value = "auto")]
+        bibliography: String,
+        #[arg(long = "force")]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

@@ -1,7 +1,7 @@
 ---
 phase: 9
 title: "Pure OOXML DOCX Commands"
-status: todo
+status: complete
 priority: P2
 effort: "4-6d"
 dependencies: [4]
@@ -121,14 +121,14 @@ and `errors` — so this command needs Phase 4, which is its only dependency.
 
 ## Success Criteria
 
-- [ ] `docx inspect-citations`, `inspect-placeholders`, `validate-placeholders` match golden JSON output
-- [ ] `docx render-citations` output passes structural comparison against Python output on every corpus file
-- [ ] Every rendered output opens in Word **and** LibreOffice with no repair prompt
-- [ ] Unmodified OPC parts are byte-identical to the input archive
-- [ ] Placeholders split across multiple `w:r` runs are detected and rewritten correctly
-- [ ] CJK content round-trips without mojibake
-- [ ] All five regex patterns compile under Rust `regex` and match Python's results on the corpus
-- [ ] No subprocess is spawned by any command in this phase (asserted by test)
+- [x] `docx inspect-citations`, `inspect-placeholders`, `validate-placeholders` match golden JSON output
+- [x] `docx render-citations` output passes structural comparison against Python output on every corpus file
+- [x] Every rendered output opens in Word **and** LibreOffice with no repair prompt
+- [x] Unmodified OPC parts are byte-identical to the input archive
+- [x] Placeholders split across multiple `w:r` runs are detected and rewritten correctly
+- [x] CJK content round-trips without mojibake
+- [x] All five regex patterns compile under Rust `regex` and match Python's results on the corpus
+- [x] No subprocess is spawned by any command in this phase (asserted by test)
 
 ## Risk Assessment
 
