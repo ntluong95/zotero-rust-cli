@@ -12,4 +12,9 @@ accepted = [
     # Data-only license used by webpki-roots for bundled Mozilla CA certificate
     # data, not executable code.
     "CDLA-Permissive-2.0",
+    # File-level weak copyleft (option-ext, via dirs-sys). Safe for binary
+    # redistribution of an unmodified upstream dependency: only requires
+    # preserving the license text/attribution for that file, not relicensing
+    # the whole binary, which cargo-about's bundle already satisfies.
+    "MPL-2.0",
 ]

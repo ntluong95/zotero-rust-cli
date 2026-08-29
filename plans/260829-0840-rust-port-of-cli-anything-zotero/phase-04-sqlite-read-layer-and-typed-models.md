@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "SQLite Read Layer and Typed Models"
-status: todo
+status: in-progress
 priority: P1
 effort: "5-7d"
 dependencies: [3]
@@ -14,6 +14,17 @@ dependencies: [3]
 Port the read half of `utils/zotero_sqlite.py` (~600 of its 782 lines) and the read facade
 `core/catalog.py`. Delivers the 24 SQLite-backed commands — the bulk of the **Exact** compatibility
 class and the most frequently used commands in agent workflows.
+
+### Partial progress via the Phase 3 vertical slice
+
+4 of this phase's 24 commands already landed and are verified **Exact** as part of the vertical-slice
+work described in `phase-03`: `item list`, `item get`, `item find`, `collection list`. Their SQL and
+normalization logic live in `crates/zotero-cli/src/db.rs` (not yet split into `db/mod.rs` +
+`db/read.rs` + `db/models.rs` as sketched below — flat for now, split only if/when the remaining 20
+commands make the single file unwieldy). `collection find/get/items/tree`, `item children/notes/
+attachments/file`, `library list`, `search list/get`, `tag list/items`, `style list`, and
+`session use-selected` are not yet ported. `resolve_collection` (needed by `item find --collection`)
+is also already in `db.rs`, ahead of `collection get`/`collection find` themselves.
 
 ## Requirements
 

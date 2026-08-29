@@ -32,6 +32,20 @@ Delivers `app *`, `session *`, `audit *`, `search items`, `export bib`, `item ex
 - Probe cost within 2× of Python's measured 1.2–3.4 ms
 - Runtime context built lazily — commands that need no runtime must not pay for probes
 
+  **Clarified during the Phase 3 vertical slice:** verified against both Python source
+  (`current_runtime()`, `zotero_cli.py:235-244`) and every golden fixture in `harness/golden/python/`
+  that "lazily" means *built on first access, not eagerly at process startup* — not *skipped for
+  commands that don't use the HTTP result*. Every command handler calls `current_runtime(ctx)`
+  unconditionally as its first action (even pure-SQLite ones like `item list`/`item get`/
+  `collection list`, because they need `environment.sqlite_path`), so the two probes fire on every
+  real command invocation in Python, confirmed by `http_calls` always containing exactly
+  `[connector/ping, /api/]` regardless of command. The Rust vertical slice (`runtime.rs`) replicates
+  this exactly — probes run once per invocation for any real command, skipped only for `--help`/
+  bare invocation, which never build a runtime at all. Making probes conditional on whether a command
+  *uses* the HTTP result would diverge from Python's observed `http_calls` and break the Exact-class
+  parity bar (`compare.py` treats `http_calls` as part of the equality check), so that reading of
+  "lazy" is not implemented and should not be for Exact-class commands.
+
 ## Architecture
 
 ```

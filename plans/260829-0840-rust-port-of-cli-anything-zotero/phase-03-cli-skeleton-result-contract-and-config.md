@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "CLI Skeleton, Result Contract and Config"
-status: todo
+status: in-progress
 priority: P1
 effort: "5-7d"
 dependencies: [1, 2]
@@ -15,6 +15,35 @@ Build the complete command tree (all 96 paths as stubs), the result envelope, ex
 output/encoding rules, error routing, environment/config resolution, and Zotero path discovery.
 
 **This phase defines the contract every later phase must satisfy.** It blocks everything downstream.
+
+### Sequencing deviation: vertical slice, not stub-everything-first
+
+Decided after Phase 2 shipped: rather than stubbing all 96 command paths before any real behavior
+lands (this phase's original plan), Phases 3-5 are being built as a **vertical slice** — the runtime
+foundation plus a minimal read-only command set, each command proven against the Python oracle via
+the Phase 1 harness before being marked migrated. Rationale: surfaces integration risk (path
+discovery, SQLite queries, JSON key order, HTTP client behavior) against real, verified end-to-end
+behavior immediately, instead of discovering it late across 96 simultaneously-stubbed commands.
+
+**Landed so far** (verified **Exact** via `harness/compare.py` — see
+`plans/reports/compatibility-matrix.md`'s "Migration Progress" section for the authoritative,
+per-command tracker): `app status`, `item list`, `item get`, `item find`, `collection list`.
+
+Runtime foundation landed as flat modules in `crates/zotero-cli/src/` (not the `cli/mod.rs` +
+`cli/global.rs` + `cli/emit.rs` submodule split originally sketched below — flat files were sufficient
+at this scope and were simpler to keep exactly traceable to the Python source file each one ports):
+`paths.rs`, `session.rs` (read path only — no `save`/`append` yet), `http.rs`, `db.rs`, `catalog.rs`,
+`runtime.rs`, `output.rs` (the `emit.rs` equivalent), `error.rs`, `cli.rs`.
+
+**Not yet done** (still applies to the rest of this phase's scope): `result.rs`/`ResultPayload`
+(none of the 5 landed commands use `result_payload` — all are raw-output Exact commands), the full
+17-environment-variable `config.rs` inventory (only the 4 already needed —
+`ZOTERO_DATA_DIR`/`ZOTERO_PROFILE_DIR`/`ZOTERO_EXECUTABLE`/`ZOTERO_HTTP_PORT`/
+`CLI_ANYTHING_ZOTERO_STATE_DIR` — are wired), `NOT_IMPLEMENTED` stubs for the other 91 v1 leaves,
+the deferred/dropped-command visibility inventory, and the Windows console-encoding fallback (see
+`output.rs`'s own doc comment: Rust's stdout has no `UnicodeEncodeError`-equivalent failure mode,
+so the fallback branch may not be portable/needed as originally scoped — revisit once Windows CI
+runs the real binary rather than assuming this is still required as designed below).
 
 ## Requirements
 
