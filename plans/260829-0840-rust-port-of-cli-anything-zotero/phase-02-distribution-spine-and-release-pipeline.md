@@ -38,7 +38,7 @@ Runs concurrently with Phase 1.
 | Target triple | Runner | Notes |
 |---|---|---|
 | `aarch64-apple-darwin` | `macos-14` | Primary target |
-| `x86_64-apple-darwin` | `macos-13` | Worth shipping: Intel Macs still common in research labs |
+| `x86_64-apple-darwin` | `macos-15-intel` | Worth shipping: Intel Macs still common in research labs. `macos-13` was the original pick but is being phased down; `macos-15-intel` is GitHub's current dedicated Intel-hosted label. GitHub has announced Intel-hosted runner discontinuation after August 2027 — `ci.yml` carries a non-blocking `cross-compile-validation` job proving ARM64->x86_64 cross-compilation from a `macos-14` runner as the migration path when that happens. |
 | `x86_64-pc-windows-msvc` | `windows-latest` | Upstream's own validation platform was Windows |
 | `x86_64-unknown-linux-gnu` | `ubuntu-latest` | Build against an old glibc or use `musl` |
 | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | Worth shipping for ARM servers/Raspberry Pi |
@@ -63,8 +63,6 @@ zotero-cli-v0.1.0-x86_64-pc-windows-msvc.zip
 zotero-cli-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
 zotero-cli-v0.1.0-aarch64-unknown-linux-gnu.tar.gz
 SHA256SUMS
-SHA256SUMS.sig          # required signing or Sigstore bundle
-release-provenance.json # required when using Sigstore/GitHub provenance
 ```
 
 Each archive contains: the binary, the alias binary (or a documented symlink/shim), `LICENSE`,
@@ -83,6 +81,13 @@ choose one shippable path before release automation is considered complete:
 
 Success requires a user-verifiable authentication path. If signing credentials are unavailable,
 direct-download releases are not production-ready.
+
+**Decided:** Sigstore/GitHub provenance, via `actions/attest-build-provenance` — free, keyless,
+requires no signing credentials to manage. This is a GitHub-hosted attestation service, not a
+locally-generated file: it registers provenance against GitHub's transparency log rather than
+emitting a `release-provenance.json` or `SHA256SUMS.sig` artifact (the release-layout diagram
+above no longer lists either, since neither exists in this implementation). Verification is
+`gh attestation verify <file> --repo <owner>/<repo>`, documented in `docs/INSTALL.md`.
 
 ### macOS signing and notarization
 
@@ -107,7 +112,7 @@ only if direct-download demand is real.
 - Create: `.github/workflows/release.yml` (tag-triggered)
 - Create: `packaging/homebrew/zotero-cli.rb`
 - Create: `packaging/scoop/zotero-cli.json`
-- Create: `packaging/generate-third-party-licenses.sh` (`cargo-about` or `cargo-license`)
+- Create: `packaging/generate-third-party-licenses.sh` (`cargo-about`, full license-text bundling — decided over `cargo-license`'s SPDX-id-only summary) and `about.toml` (accepted-license allowlist)
 - Create: `rust-toolchain.toml` (pinned stable)
 - Create: `NOTICE-CHANGES.md`
 - Create: `docs/INSTALL.md`

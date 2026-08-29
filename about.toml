@@ -1,0 +1,15 @@
+# cargo-about config. Only permissive licenses compatible with binary
+# redistribution are accepted; a new copyleft/unknown license in the
+# dependency tree fails the release build instead of shipping silently.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "0BSD",
+    # Data-only license used by webpki-roots for bundled Mozilla CA certificate
+    # data, not executable code.
+    "CDLA-Permissive-2.0",
+]

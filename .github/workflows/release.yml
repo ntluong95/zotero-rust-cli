@@ -24,8 +24,12 @@ jobs:
           - target: aarch64-apple-darwin
             runner: macos-14
             archive: tar.gz
+          # Native Intel build, kept intentionally (see the matching note
+          # in ci.yml). GitHub has announced Intel-hosted runner
+          # discontinuation after August 2027, at which point this needs
+          # to switch to cross-compiling from a macos-14 (ARM) runner.
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-15-intel
             archive: tar.gz
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
@@ -52,8 +56,8 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cargo-license
-        run: cargo install cargo-license --locked
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --features cli
 
       - name: Generate third-party license bundle
         shell: bash
