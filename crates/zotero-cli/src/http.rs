@@ -1,14 +1,23 @@
-//! Port of `utils/zotero_http.py`'s connector/Local API client (only the
-//! read paths needed by the vertical slice: availability probes and
-//! `local_api_get_json`, used by `item find`'s Local-API-first branch).
+//! Port of `utils/zotero_http.py`'s connector/Local API client.
 
 use std::time::Duration;
 
 use serde_json::Value;
 
+pub mod connector;
+pub mod local_write;
+
+pub use connector::{
+    connector_import_text, connector_save_attachment, connector_save_items,
+    connector_update_session, get_selected_collection,
+};
+pub use local_write::{
+    local_api_authorize, local_api_delete, local_api_patch, local_api_post, LocalWriteResponse,
+};
+
 pub const LOCAL_API_VERSION: &str = "3";
 
-fn base_url(port: u16, path: &str) -> String {
+pub(crate) fn base_url(port: u16, path: &str) -> String {
     let path = if path.starts_with('/') {
         path.to_string()
     } else {
@@ -17,9 +26,20 @@ fn base_url(port: u16, path: &str) -> String {
     format!("http://127.0.0.1:{port}{path}")
 }
 
+pub(crate) fn read_response_body(
+    response: &mut ureq::http::Response<ureq::Body>,
+) -> anyhow::Result<String> {
+    let raw = response
+        .body_mut()
+        .read_to_vec()
+        .map_err(|err| anyhow::anyhow!("Failed to read response body: {err}"))?;
+    Ok(String::from_utf8_lossy(&raw).into_owned())
+}
+
 /// `connector_is_available()` (`zotero_http.py:87-94`).
 pub fn connector_is_available(port: u16, timeout: Duration) -> (bool, String) {
     match ureq::get(&base_url(port, "/connector/ping"))
+        .header("Accept", "*/*")
         .config()
         .timeout_global(Some(timeout))
         .http_status_as_error(false)
@@ -140,13 +160,38 @@ pub fn local_api_get_json(
     // never fails on invalid UTF-8 (substitutes replacement characters),
     // but a genuine I/O failure still propagates instead of silently
     // becoming an empty body.
-    let raw = response
-        .body_mut()
-        .read_to_vec()
+    let body = read_response_body(&mut response)
         .map_err(|err| anyhow::anyhow!("Failed to read response body for {path}: {err}"))?;
-    let body = String::from_utf8_lossy(&raw).into_owned();
     if status != 200 {
         anyhow::bail!("Local API returned HTTP {status} for {path}: {body}");
     }
     Ok(serde_json::from_str(&body)?)
+}
+
+/// Status/body-preserving counterpart to [`local_api_get_json`], for `write_router`'s
+/// post-write verification primitives (§Blocker 3). Unlike `local_api_get_json`, this never
+/// `bail!`s on a non-200 status -- a `404` after a `DELETE` is the *expected* success case for
+/// an absence check, not an error to be swallowed into a generic transport failure.
+pub fn local_api_get_raw(
+    port: u16,
+    path: &str,
+    timeout: Duration,
+) -> anyhow::Result<LocalWriteResponse> {
+    let mut response = ureq::get(&base_url(port, path))
+        .header("Zotero-API-Version", LOCAL_API_VERSION)
+        .header("Accept", "application/json")
+        .config()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .map_err(|err| anyhow::anyhow!("HTTP request failed for {path}: {err}"))?;
+    let status = response.status().as_u16();
+    let body = read_response_body(&mut response)
+        .map_err(|err| anyhow::anyhow!("Failed to read response body for {path}: {err}"))?;
+    Ok(LocalWriteResponse {
+        status,
+        body,
+        last_modified_version: None,
+    })
 }
