@@ -1,0 +1,25 @@
+{
+  "command": "item get (wal-mode)",
+  "args": [
+    "--json",
+    "item",
+    "get",
+    "WALFIX01"
+  ],
+  "compatibility_class": "Changed",
+  "fixture_state": "wal-mode",
+  "fixture_root": "<ROOT>/fixture",
+  "exit_code": 1,
+  "stdout": "{\n  \"error\": \"Item not found: WALFIX01\"\n}\n",
+  "stderr": "",
+  "http_calls": [
+    {
+      "method": "GET",
+      "path": "/connector/ping"
+    },
+    {
+      "method": "GET",
+      "path": "/api/"
+    }
+  ]
+}
