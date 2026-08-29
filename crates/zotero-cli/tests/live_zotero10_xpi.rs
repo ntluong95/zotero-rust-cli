@@ -11,24 +11,17 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-fn find_default_profile() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let zotero_dir = PathBuf::from(home).join("Library/Application Support/Zotero");
-    let profiles_ini = zotero_dir.join("profiles.ini");
-    if !profiles_ini.exists() {
+fn get_explicit_test_profile() -> Option<PathBuf> {
+    let raw = std::env::var("ZOTERO_CLI_LIVE_TEST_PROFILE").ok()?;
+    let path = PathBuf::from(raw.trim());
+    if path.as_os_str().is_empty() || !path.exists() {
+        eprintln!(
+            "ZOTERO_CLI_LIVE_TEST_PROFILE is set to '{}' but the path does not exist",
+            path.display()
+        );
         return None;
     }
-    let content = std::fs::read_to_string(profiles_ini).ok()?;
-    for line in content.lines() {
-        if line.starts_with("Path=") {
-            let rel = line.trim_start_matches("Path=").trim();
-            let path = zotero_dir.join(rel);
-            if path.exists() {
-                return Some(path);
-            }
-        }
-    }
-    None
+    Some(path)
 }
 
 fn stop_zotero() {
@@ -75,25 +68,28 @@ fn start_zotero() {
 }
 
 #[test]
-#[ignore = "requires running desktop Zotero instance"]
+#[ignore = "requires running desktop Zotero instance with ZOTERO_CLI_LIVE_TEST_PROFILE set"]
 fn test_live_zotero10_xpi_load_and_ownership() {
-    let profile = match find_default_profile() {
+    let profile = match get_explicit_test_profile() {
         Some(p) => p,
         None => {
-            println!("Skipping live test: No Zotero profile found");
+            println!(
+                "SKIPPING live test: ZOTERO_CLI_LIVE_TEST_PROFILE environment variable is not set \
+                 to an explicit disposable test profile. The default user profile will never be targeted."
+            );
             return;
         }
     };
 
-    println!("Targeting test profile: {}", profile.display());
+    println!("Targeting explicit test profile: {}", profile.display());
 
     // 1. Audit manifest before installation
     let manifest_val: serde_json::Value =
         serde_json::from_str(MANIFEST_JSON).expect("manifest.json is valid JSON");
     let app = &manifest_val["applications"]["zotero"];
     assert_eq!(app["id"].as_str().unwrap(), ADDON_ID);
-    assert_eq!(app["strict_min_version"].as_str().unwrap(), "7.0");
-    assert_eq!(app["strict_max_version"].as_str().unwrap(), "10.*");
+    assert_eq!(app["strict_min_version"].as_str().unwrap(), "6.999");
+    assert_eq!(app["strict_max_version"].as_str().unwrap(), "10.0.*");
     assert!(
         app.get("update_url").is_none(),
         "Phase 6 manifest must not declare update_url"

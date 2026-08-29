@@ -187,6 +187,32 @@ fn test_ownership_rejections_and_eval_bypass_prevention() {
         );
         let _ = handle.join();
     }
+
+    // 4. WRONG ID: HTTP 200 with correct fork but wrong id must be rejected
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let body = r#"{"pong":true,"fork":"zotero-rust-cli","id":"wrong-addon-id"}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+
+        let client = JSBridgeClient::new(port);
+        assert!(
+            !client.bridge_endpoint_active(),
+            "Wrong id must be rejected even if fork matches"
+        );
+        let _ = handle.join();
+    }
 }
 
 #[test]

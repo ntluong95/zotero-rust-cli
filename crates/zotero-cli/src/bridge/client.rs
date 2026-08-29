@@ -107,7 +107,10 @@ impl JSBridgeClient {
                 if response.status().as_u16() == 200 {
                     if let Ok(bytes) = response.body_mut().read_to_vec() {
                         if let Ok(val) = serde_json::from_slice::<Value>(&bytes) {
-                            if val.get("fork").and_then(|v| v.as_str()) == Some("zotero-rust-cli") {
+                            if val.get("fork").and_then(|v| v.as_str()) == Some("zotero-rust-cli")
+                                && val.get("id").and_then(|v| v.as_str())
+                                    == Some("cli-bridge@cli-anything-rust.dev")
+                            {
                                 if let Ok(mut guard) = POSITIVE_PROBES.lock() {
                                     guard.insert(self.port);
                                 }

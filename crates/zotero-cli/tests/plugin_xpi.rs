@@ -30,8 +30,8 @@ fn test_build_xpi_contains_valid_files() {
         serde_json::from_str(&manifest_str).expect("manifest.json is valid JSON");
     let app = &manifest_val["applications"]["zotero"];
     assert_eq!(app["id"].as_str().unwrap(), ADDON_ID);
-    assert_eq!(app["strict_min_version"].as_str().unwrap(), "7.0");
-    assert_eq!(app["strict_max_version"].as_str().unwrap(), "10.*");
+    assert_eq!(app["strict_min_version"].as_str().unwrap(), "6.999");
+    assert_eq!(app["strict_max_version"].as_str().unwrap(), "10.0.*");
 
     // Enforce: NO update_url in Phase 6 manifest (must not point to nonexistent or upstream update.json)
     assert!(
