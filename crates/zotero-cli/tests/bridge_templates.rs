@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 #[test]
 fn test_all_templates_include_non_empty_js() {
+    // Slice 1b: 10 CRUD fallback templates
     assert!(!T_ITEM_UPDATE.is_empty());
     assert!(!T_ITEM_TAG.is_empty());
     assert!(!T_ITEM_DELETE.is_empty());
@@ -16,14 +17,10 @@ fn test_all_templates_include_non_empty_js() {
     assert!(!T_COLLECTION_RENAME.is_empty());
     assert!(!T_COLLECTION_DELETE.is_empty());
     assert!(!T_COLLECTION_REMOVE_ITEM.is_empty());
-    assert!(!T_COLLECTION_STATS.is_empty());
-    assert!(!T_FIND_PDF.is_empty());
-    assert!(!T_FIND_PDF_FALLBACK.is_empty());
+
+    // Slice 7: 3 confirmed privileged Bridge-only templates
     assert!(!T_FIND_DUPLICATES.is_empty());
     assert!(!T_ITEM_MERGE.is_empty());
-    assert!(!T_GET_ANNOTATIONS.is_empty());
-    assert!(!T_SEARCH_FULLTEXT.is_empty());
-    assert!(!T_SEARCH_ANNOTATIONS.is_empty());
     assert!(!T_SYNC.is_empty());
 }
 

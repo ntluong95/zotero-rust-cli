@@ -1,6 +1,8 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+// In-scope JS templates for Phase 6:
+// Slice 1b: CRUD Fallback set (≤9 templates)
 pub const T_ITEM_UPDATE: &str = include_str!("js/item_update.js");
 pub const T_ITEM_TAG: &str = include_str!("js/item_tag.js");
 pub const T_ITEM_DELETE: &str = include_str!("js/item_delete.js");
@@ -11,14 +13,10 @@ pub const T_COLLECTION_CREATE: &str = include_str!("js/collection_create.js");
 pub const T_COLLECTION_RENAME: &str = include_str!("js/collection_rename.js");
 pub const T_COLLECTION_DELETE: &str = include_str!("js/collection_delete.js");
 pub const T_COLLECTION_REMOVE_ITEM: &str = include_str!("js/collection_remove_item.js");
-pub const T_COLLECTION_STATS: &str = include_str!("js/collection_stats.js");
-pub const T_FIND_PDF: &str = include_str!("js/find_pdf.js");
-pub const T_FIND_PDF_FALLBACK: &str = include_str!("js/find_pdf_fallback.js");
+
+// Slice 7: Confirmed privileged Bridge-only operations
 pub const T_FIND_DUPLICATES: &str = include_str!("js/find_duplicates.js");
 pub const T_ITEM_MERGE: &str = include_str!("js/item_merge.js");
-pub const T_GET_ANNOTATIONS: &str = include_str!("js/get_annotations.js");
-pub const T_SEARCH_FULLTEXT: &str = include_str!("js/search_fulltext.js");
-pub const T_SEARCH_ANNOTATIONS: &str = include_str!("js/search_annotations.js");
 pub const T_SYNC: &str = include_str!("js/sync.js");
 
 /// Renders a JavaScript snippet by binding `params` safely via `JSON.parse`
@@ -168,38 +166,6 @@ pub fn render_collection_remove_item(
     render(T_COLLECTION_REMOVE_ITEM, &params)
 }
 
-pub fn render_collection_stats(
-    library_id: u32,
-    collection_key: &str,
-) -> Result<String, serde_json::Error> {
-    let params = json!({
-        "libraryID": library_id,
-        "collectionKey": collection_key,
-    });
-    render(T_COLLECTION_STATS, &params)
-}
-
-pub fn render_find_pdf(library_id: u32, key: &str) -> Result<String, serde_json::Error> {
-    let params = json!({
-        "libraryID": library_id,
-        "key": key,
-    });
-    render(T_FIND_PDF, &params)
-}
-
-pub fn render_find_pdf_fallback(
-    library_id: u32,
-    key: &str,
-    timeout: u64,
-) -> Result<String, serde_json::Error> {
-    let params = json!({
-        "libraryID": library_id,
-        "key": key,
-        "timeout": timeout,
-    });
-    render(T_FIND_PDF_FALLBACK, &params)
-}
-
 pub fn render_find_duplicates(library_id: u32, limit: usize) -> Result<String, serde_json::Error> {
     let params = json!({
         "libraryID": library_id,
@@ -219,42 +185,6 @@ pub fn render_item_merge(
         "otherKeys": other_keys,
     });
     render(T_ITEM_MERGE, &params)
-}
-
-pub fn render_get_annotations(library_id: u32, key: &str) -> Result<String, serde_json::Error> {
-    let params = json!({
-        "libraryID": library_id,
-        "key": key,
-    });
-    render(T_GET_ANNOTATIONS, &params)
-}
-
-pub fn render_search_fulltext(
-    library_id: u32,
-    query: &str,
-    limit: usize,
-) -> Result<String, serde_json::Error> {
-    let params = json!({
-        "libraryID": library_id,
-        "query": query,
-        "limit": limit,
-    });
-    render(T_SEARCH_FULLTEXT, &params)
-}
-
-pub fn render_search_annotations(
-    library_id: u32,
-    query: Option<&str>,
-    colors: Option<&[String]>,
-    limit: usize,
-) -> Result<String, serde_json::Error> {
-    let params = json!({
-        "libraryID": library_id,
-        "query": query,
-        "colors": colors,
-        "limit": limit,
-    });
-    render(T_SEARCH_ANNOTATIONS, &params)
 }
 
 pub fn render_sync() -> &'static str {

@@ -206,7 +206,7 @@ impl JSBridgeClient {
         self.execute_http(code, timeout_secs)
     }
 
-    /// Execute raw JavaScript and return the parsed result.
+    /// Execute raw JavaScript and return the parsed result (Command 76 `js`).
     pub fn execute_raw_js(&self, code: &str, timeout_secs: u64) -> Result<Value> {
         let resp = self.execute_js(code, timeout_secs);
         let data = resp.require_data()?;
@@ -490,7 +490,7 @@ impl JSBridgeClient {
         }
     }
 
-    // ── Slice 7: Privileged JS Bridge Operations ──────────────────────────
+    // ── Slice 7: Confirmed Independent Privileged JS Bridge Operations ────
 
     pub fn trigger_sync(&self) -> Result<String> {
         let code = templates::render_sync();
@@ -532,56 +532,5 @@ impl JSBridgeClient {
                 affected_key: target_key.to_string(),
             })
         }
-    }
-
-    pub fn find_pdf(&self, library_id: u32, key: &str, timeout_secs: u64) -> Result<String> {
-        let code = templates::render_find_pdf(library_id, key)?;
-        let resp = self.execute_js(&code, timeout_secs);
-        if resp.ok {
-            if let Some(val) = &resp.data {
-                if let Some(text) = val.as_str() {
-                    return Ok(text.to_string());
-                }
-            }
-        }
-        // Fallback check
-        let fallback_code = templates::render_find_pdf_fallback(library_id, key, timeout_secs)?;
-        let fallback_resp = self.execute_js(&fallback_code, 10);
-        let data = fallback_resp.require_data()?;
-        Ok(data.as_str().unwrap_or("").to_string())
-    }
-
-    pub fn get_annotations(&self, library_id: u32, key: &str) -> Result<Value> {
-        let code = templates::render_get_annotations(library_id, key)?;
-        let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        Ok(data.clone())
-    }
-
-    pub fn collection_stats(&self, library_id: u32, collection_key: &str) -> Result<Value> {
-        let code = templates::render_collection_stats(library_id, collection_key)?;
-        let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        Ok(data.clone())
-    }
-
-    pub fn search_fulltext(&self, library_id: u32, query: &str, limit: usize) -> Result<Value> {
-        let code = templates::render_search_fulltext(library_id, query, limit)?;
-        let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        Ok(data.clone())
-    }
-
-    pub fn search_annotations(
-        &self,
-        library_id: u32,
-        query: Option<&str>,
-        colors: Option<&[String]>,
-        limit: usize,
-    ) -> Result<Value> {
-        let code = templates::render_search_annotations(library_id, query, colors, limit)?;
-        let resp = self.execute_js(&code, 10);
-        let data = resp.require_data()?;
-        Ok(data.clone())
     }
 }
