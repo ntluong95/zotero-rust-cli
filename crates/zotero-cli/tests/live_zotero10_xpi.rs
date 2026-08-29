@@ -48,11 +48,13 @@ fn stop_zotero() {
     thread::sleep(Duration::from_millis(2500));
 }
 
-fn start_zotero() {
+fn start_zotero(profile_dir: &std::path::Path) {
     bridge::clear_probe_cache();
     let app_path = "/Applications/Zotero.app/Contents/MacOS/zotero";
     if std::path::Path::new(app_path).exists() {
         let _ = Command::new(app_path)
+            .arg("-profile")
+            .arg(profile_dir)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
@@ -113,8 +115,8 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     assert!(xpi_path.exists());
     assert_eq!(xpi_path.file_name().unwrap(), XPI_FILENAME);
 
-    // 5. Start Zotero
-    start_zotero();
+    // 5. Start Zotero with the disposable test profile
+    start_zotero(&profile);
 
     // 6. Verify Connector ping is 200 and running Zotero 10
     let resp = ureq::get("http://127.0.0.1:23119/connector/ping")
@@ -222,4 +224,11 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     let uninstalled = uninstall_plugin(&profile).expect("uninstall plugin");
     assert!(uninstalled);
     assert!(!xpi_path.exists());
+
+    // 13. Verify that after uninstall and restart, the endpoint is inactive and uninstalled
+    start_zotero(&profile);
+    let post_status = plugin_status(Some(&profile), 23119);
+    assert!(!post_status.installed_on_disk);
+    assert!(!post_status.is_active);
+    stop_zotero();
 }
