@@ -42,20 +42,44 @@ fn resolve(server_id: &str) -> (Option<LocalApiCredential>, CredentialSource) {
 }
 
 /// LIVE VERIFIED body-text discriminators (`zotero-10-impact-on-rust-port.md` §8.1 finding 10):
-/// the two `401` rejections share a status code but not a body.
+/// the two `401` rejections share a status code but not a body. Deliberately an exact,
+/// conservative substring match, not fuzzy/normalized matching -- collapsing "API key required"
+/// and "Invalid or expired API key" together would turn an unrecognized `401` body into an
+/// automatic credential deletion, which is exactly the failure mode this must not introduce
+/// (reviewer non-blocking hardening note).
 fn is_revoked_body(body: &str) -> bool {
     body.contains("Invalid or expired API key")
+}
+
+/// Strips any occurrence of `secret` from `text`, so a `TransportError`/error detail built from
+/// a raw transport-layer error message can never leak an API key even if some future `ureq`
+/// version ever echoes request state into its error `Display` output (it doesn't today, but this
+/// is cheap insurance the reviewer explicitly asked for -- Blocker 1).
+fn redact_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(secret, "<redacted>")
+    }
 }
 
 /// Maps a raw `LocalWriteResponse` to a `WriteOutcome`, given which credential source (if any)
 /// was used. Does not itself mutate credential storage -- callers do that based on the returned
 /// `AuthorizationFailed { reason: Revoked, source: Store, .. }` case (§3.4a: only ever invalidate
 /// a `Store`-sourced credential, never `Environment`).
+///
+/// Never panics on an unexpected status: `patch_item`/`delete_item`/`post_create` only reach
+/// this after their own explicit success check, but `post_create`'s per-object `failed[...].code`
+/// (§Blocker 2) is server-controlled data that could in principle claim a "success" code inside a
+/// failure entry -- that must degrade to a safe `TransportError`, never crash the CLI.
 fn classify(response: &LocalWriteResponse, source: CredentialSource) -> WriteOutcome {
     match response.status {
-        200 | 201 | 204 => {
-            unreachable!("success statuses are handled by the caller before classify() is called")
-        }
+        200 | 201 | 204 => WriteOutcome::TransportError {
+            detail: format!(
+                "unexpected success-shaped status {} encountered while classifying a failure: {}",
+                response.status, response.body
+            ),
+        },
         428 => WriteOutcome::PreconditionFailed {
             detail: response.body.clone(),
         },
@@ -129,7 +153,11 @@ pub fn patch_item(
         });
     };
 
-    let response = http::local_api_patch(
+    // Transport/body-read failures must become a machine-distinguishable `TransportError`, never
+    // an opaque `anyhow::Err` -- an ambiguous connection failure must never be conflated with
+    // "not committed" (§Blocker 1), and must never trigger an automatic retry of this
+    // non-idempotent write. Exactly one request is attempted either way.
+    let response = match http::local_api_patch(
         runtime.environment.port,
         path,
         server_id,
@@ -137,7 +165,14 @@ pub fn patch_item(
         if_unmodified_since_version,
         fields,
         DEFAULT_TIMEOUT,
-    )?;
+    ) {
+        Ok(response) => response,
+        Err(err) => {
+            return Ok(WriteOutcome::TransportError {
+                detail: redact_secret(&err.to_string(), &credential.key),
+            });
+        }
+    };
 
     let outcome = if response.status == 204 || response.status == 200 {
         WriteOutcome::Applied {
@@ -171,18 +206,47 @@ pub fn delete_item(
         });
     };
 
-    let response = http::local_api_delete(
+    let response = match http::local_api_delete(
         runtime.environment.port,
         path,
         server_id,
         &credential.key,
         if_unmodified_since_version,
         DEFAULT_TIMEOUT,
-    )?;
+    ) {
+        Ok(response) => response,
+        Err(err) => {
+            return Ok(WriteOutcome::TransportError {
+                detail: redact_secret(&err.to_string(), &credential.key),
+            });
+        }
+    };
 
     let outcome = if response.status == 204 {
-        WriteOutcome::Applied {
-            affected_key: affected_key.to_string(),
+        // §3.5's delete sub-rule, and §Blocker 3: "nothing to re-read" is not an excuse to skip
+        // verification -- assert absence via the Local API itself, never SQLite (which cannot be
+        // trusted to see a write made moments earlier by this same process, per
+        // `zotero-10-impact-on-rust-port.md` §1/§7.1).
+        match verify_absent(runtime, path) {
+            PresenceCheck::Absent => WriteOutcome::Applied {
+                affected_key: affected_key.to_string(),
+            },
+            PresenceCheck::Present(_) => WriteOutcome::TransportError {
+                detail: format!(
+                    "DELETE returned 204 for {path} but an immediate readback still shows it present"
+                ),
+            },
+            PresenceCheck::Unexpected { status, detail } => WriteOutcome::TransportError {
+                detail: format!(
+                    "DELETE returned 204 for {path} but the absence-verification GET returned \
+                     an unexpected HTTP {status}: {detail}"
+                ),
+            },
+            PresenceCheck::TransportError { detail } => WriteOutcome::TransportError {
+                detail: format!(
+                    "DELETE returned 204 for {path} but absence verification itself failed: {detail}"
+                ),
+            },
         }
     } else {
         classify(&response, source)
@@ -191,12 +255,73 @@ pub fn delete_item(
     Ok(outcome)
 }
 
+/// Result of extracting index `"0"`'s outcome from a Zotero Web API v3 / Local API batch-write
+/// response (`{"successful": {"0": <saved object>}, "unchanged": {"0": "<key>"}, "failed":
+/// {"0": {"key", "code", "message"}}}` -- Zotero's documented Write Requests contract; the Local
+/// API mirrors this shape, DOC-VERIFIED, not live-verified in Slice 0).
+enum BatchWriteResult {
+    Created(String),
+    Failed { code: u16, message: String },
+    Malformed(String),
+}
+
+fn parse_batch_write_response(path: &str, body: &str) -> BatchWriteResult {
+    let parsed: Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(err) => {
+            return BatchWriteResult::Malformed(format!(
+                "create response for {path} was not valid JSON: {err}"
+            ));
+        }
+    };
+
+    if let Some(failed_entry) = parsed.get("failed").and_then(|failed| failed.get("0")) {
+        let code = failed_entry
+            .get("code")
+            .and_then(Value::as_u64)
+            .and_then(|code| u16::try_from(code).ok())
+            .unwrap_or(0);
+        let message = failed_entry
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("create request failed")
+            .to_string();
+        return BatchWriteResult::Failed { code, message };
+    }
+
+    if let Some(unchanged_key) = parsed
+        .get("unchanged")
+        .and_then(|unchanged| unchanged.get("0"))
+        .and_then(Value::as_str)
+    {
+        return BatchWriteResult::Created(unchanged_key.to_string());
+    }
+
+    let successful_entry = parsed.get("successful").and_then(|s| s.get("0"));
+    let created_key = successful_entry.and_then(|entry| {
+        entry
+            .get("key")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            // Defensive fallback: the documented shape is always the full "saved object," but
+            // tolerate a bare key string too rather than only ever accepting one exact shape.
+            .or_else(|| entry.as_str().map(str::to_string))
+    });
+
+    match created_key {
+        Some(key) if !key.is_empty() => BatchWriteResult::Created(key),
+        _ => BatchWriteResult::Malformed(format!(
+            "create response for {path} had no recognizable successful/unchanged/failed[\"0\"] \
+             entry with a usable key: {body}"
+        )),
+    }
+}
+
 /// `POST <path>` against the Local API (creation, e.g. `/api/users/0/collections`). Not
-/// live-verified in Slice 0 -- only PATCH was exercised. Same credential handling as
-/// [`patch_item`]; `affected_key` is not known until the response is parsed, so callers extract
-/// it from the returned raw body on success (left to the caller: this function reports only
-/// whether the create-class request was accepted, per the neutral `WriteOutcome` contract, since
-/// key-extraction is response-shape-specific per command).
+/// live-verified in Slice 0 -- only PATCH was exercised. Same credential/transport-safety
+/// handling as [`patch_item`]. Parses the actual Zotero batch-write response shape to extract the
+/// created object's real key -- never fabricates or infers one (§Blocker 2); a success status
+/// with no parseable key is reported as `TransportError`, not `Applied`.
 pub fn post_create(
     runtime: &RuntimeContext,
     path: &str,
@@ -217,21 +342,42 @@ pub fn post_create(
         ));
     };
 
-    let response = http::local_api_post(
+    let response = match http::local_api_post(
         runtime.environment.port,
         path,
         server_id,
         &credential.key,
         body,
         DEFAULT_TIMEOUT,
-    )?;
-
-    let outcome = if response.status == 200 || response.status == 201 {
-        WriteOutcome::Applied {
-            affected_key: String::new(),
+    ) {
+        Ok(response) => response,
+        Err(err) => {
+            return Ok((
+                WriteOutcome::TransportError {
+                    detail: redact_secret(&err.to_string(), &credential.key),
+                },
+                String::new(),
+            ));
         }
-    } else {
-        classify(&response, source)
+    };
+
+    if response.status != 200 && response.status != 201 {
+        let outcome = classify(&response, source);
+        invalidate_if_store_revoked(&outcome, server_id);
+        return Ok((outcome, response.body));
+    }
+
+    let outcome = match parse_batch_write_response(path, &response.body) {
+        BatchWriteResult::Created(key) => WriteOutcome::Applied { affected_key: key },
+        BatchWriteResult::Failed { code, message } => classify(
+            &LocalWriteResponse {
+                status: code,
+                body: message,
+                last_modified_version: None,
+            },
+            source,
+        ),
+        BatchWriteResult::Malformed(detail) => WriteOutcome::TransportError { detail },
     };
     invalidate_if_store_revoked(&outcome, server_id);
     Ok((outcome, response.body))
@@ -246,12 +392,22 @@ pub fn authorize_interactive(
     app_name: &str,
 ) -> anyhow::Result<WriteOutcome> {
     let server_id = ensure_local_api_writes_available(runtime)?;
-    let response = http::local_api_authorize(
+    // Transport failure here must stay distinguishable from an authorization-state outcome too
+    // (§Blocker 1) -- nothing secret exists yet at this point (no credential has been issued),
+    // so no redaction is needed on this particular error path.
+    let response = match http::local_api_authorize(
         runtime.environment.port,
         server_id,
         app_name,
         Duration::from_secs(120),
-    )?;
+    ) {
+        Ok(response) => response,
+        Err(err) => {
+            return Ok(WriteOutcome::TransportError {
+                detail: err.to_string(),
+            });
+        }
+    };
 
     if response.status != 200 {
         return Ok(classify(&response, CredentialSource::None));
@@ -418,6 +574,70 @@ pub fn verify_write(
         }
     }
     Ok((summary, mismatches))
+}
+
+/// The outcome of checking whether a Local API object exists at `path` right now (§Blocker 3).
+/// `verify_present`/`verify_absent` below are both thin, intent-naming wrappers over the same
+/// underlying check -- deliberately, so a future merge-verification caller can compose multiple
+/// checks uniformly ("survivor present" + "each removed source absent") without needing two
+/// different result shapes.
+#[derive(Debug, Clone)]
+pub enum PresenceCheck {
+    /// A `200` with a parseable item -- the object exists.
+    Present(LocalApiItemSummary),
+    /// A `404` -- the object does not exist (the expected shape immediately after a delete).
+    Absent,
+    /// Neither `200` nor `404` -- e.g. a `403`/`500`/malformed body. Not itself a "the object
+    /// might still be there" claim; the caller treats this as inconclusive, never as success.
+    Unexpected { status: u16, detail: String },
+    /// The verification `GET` itself failed at the transport layer.
+    TransportError { detail: String },
+}
+
+/// Core check shared by [`verify_present`]/[`verify_absent`]: `GET path` via the Local API --
+/// **never** SQLite, for the same staleness reason as [`verify_write`] -- preserving status/body
+/// via [`http::local_api_get_raw`] rather than the bail-on-non-200 [`http::local_api_get_json`],
+/// since a `404` here is an expected, meaningful outcome, not an error to discard.
+fn check_presence(runtime: &RuntimeContext, path: &str) -> PresenceCheck {
+    let response = match http::local_api_get_raw(runtime.environment.port, path, DEFAULT_TIMEOUT) {
+        Ok(response) => response,
+        Err(err) => {
+            return PresenceCheck::TransportError {
+                detail: err.to_string(),
+            }
+        }
+    };
+    match response.status {
+        200 => {
+            let parsed: anyhow::Result<Value> =
+                serde_json::from_str(&response.body).map_err(|err| {
+                    anyhow::anyhow!("verification GET for {path} returned invalid JSON: {err}")
+                });
+            match parsed.and_then(|json| normalize_local_item(&json)) {
+                Ok(summary) => PresenceCheck::Present(summary),
+                Err(err) => PresenceCheck::Unexpected {
+                    status: 200,
+                    detail: err.to_string(),
+                },
+            }
+        }
+        404 => PresenceCheck::Absent,
+        other => PresenceCheck::Unexpected {
+            status: other,
+            detail: response.body,
+        },
+    }
+}
+
+/// Confirms an object exists (post-create/post-update verification composability -- see
+/// `verify_write` for the field-diff variant already used by [`patch_item`]'s callers).
+pub fn verify_present(runtime: &RuntimeContext, path: &str) -> PresenceCheck {
+    check_presence(runtime, path)
+}
+
+/// Confirms an object no longer exists (post-delete verification, used by [`delete_item`]).
+pub fn verify_absent(runtime: &RuntimeContext, path: &str) -> PresenceCheck {
+    check_presence(runtime, path)
 }
 
 #[cfg(test)]

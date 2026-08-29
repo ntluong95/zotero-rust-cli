@@ -1349,5 +1349,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "ureq",
+ "windows-sys 0.61.2",
  "zip",
 ]

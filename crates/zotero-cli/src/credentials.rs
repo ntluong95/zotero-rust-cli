@@ -98,28 +98,103 @@ fn ensure_private_dir(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn read_credential_file() -> anyhow::Result<CredentialFile> {
+/// Whether the credential store file exists at all -- distinct from "exists but is malformed"
+/// (§Blocker 5: a corrupt/unreadable existing file must fail closed, never be silently treated
+/// as equivalent to "no file yet" and overwritten).
+enum CredentialFileState {
+    Missing,
+    Loaded(CredentialFile),
+}
+
+/// Distinguishes three states precisely, per the operator-mandated fail-closed semantics:
+/// - no file at that path yet -> `Missing` (safe to treat as an empty store)
+/// - file exists, reads and parses, matches the schema version -> `Loaded`
+/// - file exists but can't be read, isn't valid JSON, or is a schema version this build doesn't
+///   understand -> `Err`, and the caller (`store_credential`/`invalidate_stored`) must propagate
+///   that error rather than proceed to write, so a malformed store is never silently replaced.
+fn read_credential_file() -> anyhow::Result<CredentialFileState> {
     let path = credentials_path();
     if !path.exists() {
-        return Ok(CredentialFile {
-            version: SCHEMA_VERSION,
-            credentials: HashMap::new(),
-        });
+        return Ok(CredentialFileState::Missing);
     }
-    let raw = std::fs::read_to_string(&path)?;
+    let raw = std::fs::read_to_string(&path).map_err(|err| {
+        anyhow::anyhow!(
+            "failed to read credential store at {}: {err}",
+            path.display()
+        )
+    })?;
     if raw.trim().is_empty() {
-        return Ok(CredentialFile {
-            version: SCHEMA_VERSION,
-            credentials: HashMap::new(),
-        });
+        return Ok(CredentialFileState::Missing);
     }
-    Ok(serde_json::from_str(&raw)?)
+    let file: CredentialFile = serde_json::from_str(&raw).map_err(|err| {
+        anyhow::anyhow!(
+            "credential store at {} is malformed and will not be overwritten: {err}",
+            path.display()
+        )
+    })?;
+    if file.version != SCHEMA_VERSION {
+        anyhow::bail!(
+            "credential store at {} has unsupported schema version {} (this build understands \
+             version {SCHEMA_VERSION}) and will not be overwritten",
+            path.display(),
+            file.version
+        );
+    }
+    Ok(CredentialFileState::Loaded(file))
+}
+
+/// Replaces `final_path`'s contents with `tmp_path`'s, atomically and without ever deleting
+/// `final_path` first (a delete-then-rename sequence has a real window where a crash or
+/// concurrent read leaves neither file in place -- explicitly rejected by the design review).
+/// Unix's `rename(2)` is POSIX-guaranteed atomic replace-of-destination, so `std::fs::rename` is
+/// sufficient there. On Windows, `std::fs::rename`'s exact replace-existing behavior depends on
+/// OS version and an internal fallback path (per the Rust standard library's own documented
+/// caveat), so this calls `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` explicitly rather than
+/// relying on that.
+#[cfg(unix)]
+fn atomic_replace(tmp_path: &Path, final_path: &Path) -> anyhow::Result<()> {
+    std::fs::rename(tmp_path, final_path).map_err(anyhow::Error::from)
+}
+
+#[cfg(windows)]
+fn atomic_replace(tmp_path: &Path, final_path: &Path) -> anyhow::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn to_wide_null_terminated(path: &Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let from = to_wide_null_terminated(tmp_path);
+    let to = to_wide_null_terminated(final_path);
+    // SAFETY: `from`/`to` are valid, null-terminated UTF-16 buffers kept alive for the duration
+    // of this call; no other invariants for this FFI call beyond passing well-formed pointers.
+    let succeeded = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if succeeded == 0 {
+        anyhow::bail!(
+            "MoveFileExW failed replacing the credential store: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(())
 }
 
 /// Atomic, private-from-creation write: a uniquely-named temp file in the same directory (never
-/// world-readable at any point, no create-then-chmod window), then `rename` over the final path.
-/// `rename` replaces the destination directory entry itself rather than following it, so this
-/// does not follow a symlink planted at `credentials_path()` the way an in-place `write` would.
+/// world-readable at any point, no create-then-chmod window), then [`atomic_replace`]d over the
+/// final path. On failure, the temp file is cleaned up and `final_path`'s previous contents are
+/// left completely untouched -- this function never deletes `final_path` before the replace
+/// succeeds.
 fn write_credential_file(file: &CredentialFile) -> anyhow::Result<()> {
     let path = credentials_path();
     let dir = path
@@ -153,17 +228,19 @@ fn write_credential_file(file: &CredentialFile) -> anyhow::Result<()> {
         std::fs::write(&tmp_path, body.as_bytes())?;
     }
 
-    let rename_result = std::fs::rename(&tmp_path, &path);
-    if rename_result.is_err() {
+    let result = atomic_replace(&tmp_path, &path);
+    if result.is_err() {
         let _ = std::fs::remove_file(&tmp_path);
     }
-    rename_result.map_err(anyhow::Error::from)
+    result
 }
 
 /// Priority: `ZOTERO_LOCAL_API_KEY` env var, then the file store scoped to `server_id`, then
 /// nothing. Never combines the two, never validates the env value against `server_id` (the
 /// operator injecting it is responsible for correctness; a mismatched key simply fails the write
-/// with a normal `401`, reported without mutating the environment).
+/// with a normal `401`, reported without mutating the environment). A malformed store file is
+/// treated as "no credential found" here (a read path -- safe, non-destructive); contrast with
+/// `store_credential`/`invalidate_stored`, which must fail closed instead (§Blocker 5).
 pub fn resolve_credential(server_id: &str) -> (Option<LocalApiCredential>, CredentialSource) {
     if let Ok(raw) = std::env::var(ENV_KEY) {
         let trimmed = raw.trim();
@@ -181,7 +258,8 @@ pub fn resolve_credential(server_id: &str) -> (Option<LocalApiCredential>, Crede
     }
 
     match read_credential_file() {
-        Ok(file) => match file.credentials.get(server_id) {
+        Ok(CredentialFileState::Missing) => (None, CredentialSource::None),
+        Ok(CredentialFileState::Loaded(file)) => match file.credentials.get(server_id) {
             Some(cred) => (Some(cred.clone()), CredentialSource::Store),
             None => (None, CredentialSource::None),
         },
@@ -190,13 +268,18 @@ pub fn resolve_credential(server_id: &str) -> (Option<LocalApiCredential>, Crede
 }
 
 /// Persists a newly-issued credential for `server_id`, keeping every other server's entry
-/// untouched (§3.4a: "the credential-store schema may support multiple server IDs").
+/// untouched (§3.4a: "the credential-store schema may support multiple server IDs"). **Fails
+/// closed** (§Blocker 5): if an existing store file can't be read/parsed, this returns `Err`
+/// without ever calling `write_credential_file` -- an operator must not lose unrelated
+/// `server_id` entries because one write attempt tried to save a new key over a corrupt file.
 pub fn store_credential(server_id: &str, credential: &LocalApiCredential) -> anyhow::Result<()> {
-    let mut file = read_credential_file().unwrap_or(CredentialFile {
-        version: SCHEMA_VERSION,
-        credentials: HashMap::new(),
-    });
-    file.version = SCHEMA_VERSION;
+    let mut file = match read_credential_file()? {
+        CredentialFileState::Missing => CredentialFile {
+            version: SCHEMA_VERSION,
+            credentials: HashMap::new(),
+        },
+        CredentialFileState::Loaded(file) => file,
+    };
     file.credentials
         .insert(server_id.to_string(), credential.clone());
     write_credential_file(&file)
@@ -204,11 +287,13 @@ pub fn store_credential(server_id: &str, credential: &LocalApiCredential) -> any
 
 /// Removes only the entry for `server_id`, leaving every other stored credential untouched. Must
 /// only ever be called when the rejected credential's source was `CredentialSource::Store` --
-/// never for an environment-sourced credential, which this module never mutates.
+/// never for an environment-sourced credential, which this module never mutates. **Fails closed**
+/// (§Blocker 5): a missing file is a legitimate no-op, but a malformed existing file returns
+/// `Err` rather than silently proceeding as if there were nothing to invalidate.
 pub fn invalidate_stored(server_id: &str) -> anyhow::Result<()> {
-    let mut file = match read_credential_file() {
-        Ok(file) => file,
-        Err(_) => return Ok(()),
+    let mut file = match read_credential_file()? {
+        CredentialFileState::Missing => return Ok(()),
+        CredentialFileState::Loaded(file) => file,
     };
     if file.credentials.remove(server_id).is_some() {
         write_credential_file(&file)?;
@@ -391,5 +476,136 @@ mod tests {
             "Debug output must never contain the raw key: {debug_output}"
         );
         assert!(debug_output.contains("redacted"));
+    }
+
+    #[test]
+    fn store_credential_fails_closed_on_malformed_existing_file_without_overwriting_it() {
+        let _state_guard = STATE_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_guard = ENV_KEY_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_state_dir("malformed-store");
+        unsafe {
+            std::env::set_var(STATE_DIR_ENV, &dir);
+            std::env::remove_var(ENV_KEY);
+        }
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let path = dir.join(CREDENTIALS_FILE_NAME);
+        let corrupt_bytes = b"{ this is not valid json at all";
+        std::fs::write(&path, corrupt_bytes).expect("seed corrupt file");
+
+        let result = store_credential("server-a", &sample_credential("app-a"));
+        assert!(
+            result.is_err(),
+            "store_credential must fail closed on a malformed existing file"
+        );
+
+        let on_disk = std::fs::read(&path).expect("credentials file must still exist");
+        assert_eq!(
+            on_disk, corrupt_bytes,
+            "a failed store attempt must leave the malformed file byte-for-byte untouched"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+        unsafe {
+            std::env::remove_var(STATE_DIR_ENV);
+        }
+    }
+
+    #[test]
+    fn invalidate_stored_fails_closed_on_malformed_existing_file() {
+        let _state_guard = STATE_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_guard = ENV_KEY_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_state_dir("malformed-invalidate");
+        unsafe {
+            std::env::set_var(STATE_DIR_ENV, &dir);
+            std::env::remove_var(ENV_KEY);
+        }
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let path = dir.join(CREDENTIALS_FILE_NAME);
+        std::fs::write(&path, b"not json").expect("seed corrupt file");
+
+        let result = invalidate_stored("server-a");
+        assert!(
+            result.is_err(),
+            "invalidate_stored must fail closed on a malformed existing file, not silently no-op"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+        unsafe {
+            std::env::remove_var(STATE_DIR_ENV);
+        }
+    }
+
+    #[test]
+    fn unsupported_schema_version_fails_closed() {
+        let _state_guard = STATE_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_guard = ENV_KEY_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_state_dir("unsupported-version");
+        unsafe {
+            std::env::set_var(STATE_DIR_ENV, &dir);
+            std::env::remove_var(ENV_KEY);
+        }
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let path = dir.join(CREDENTIALS_FILE_NAME);
+        std::fs::write(&path, br#"{"version": 999, "credentials": {}}"#)
+            .expect("seed future-version file");
+
+        let result = store_credential("server-a", &sample_credential("app-a"));
+        assert!(
+            result.is_err(),
+            "an unsupported/future schema version must fail closed, not be silently rewritten"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+        unsafe {
+            std::env::remove_var(STATE_DIR_ENV);
+        }
+    }
+
+    #[test]
+    fn store_credential_round_trip_survives_atomic_replace_on_a_second_write() {
+        // Exercises `atomic_replace` on a path that already has a *valid* existing file (unlike
+        // the malformed-file tests above), proving the second write actually replaces the first
+        // rather than merely creating-once. Runs on every CI target this crate builds for
+        // (`atomic_replace` has a `#[cfg(unix)]`/`#[cfg(windows)]` split, so Windows CI exercises
+        // the `MoveFileExW` path here, not just Unix's `rename`).
+        let _state_guard = STATE_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_guard = ENV_KEY_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_state_dir("replace-round-trip");
+        unsafe {
+            std::env::set_var(STATE_DIR_ENV, &dir);
+            std::env::remove_var(ENV_KEY);
+        }
+
+        store_credential("server-a", &sample_credential("first")).expect("first store");
+        store_credential("server-a", &sample_credential("second")).expect("second store");
+
+        let (credential, source) = resolve_credential("server-a");
+        assert_eq!(source, CredentialSource::Store);
+        assert_eq!(
+            credential.unwrap().app_name,
+            "second",
+            "the second store_credential call must replace the first entry's value"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+        unsafe {
+            std::env::remove_var(STATE_DIR_ENV);
+        }
     }
 }
