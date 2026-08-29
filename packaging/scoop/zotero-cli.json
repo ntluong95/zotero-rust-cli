@@ -6,7 +6,7 @@
   "architecture": {
     "64bit": {
       "url": "https://github.com/ntluong95/zotero-rust-cli/releases/download/v0.1.0/zotero-cli-v0.1.0-x86_64-pc-windows-msvc.zip",
-      "hash": "REPLACE_WITH_X86_64_PC_WINDOWS_MSVC_SHA256",
+      "hash": "9bb7110dad90c684d46fa257baf9c9f4494243fc2aa4a611b51167e8ade7ae1a",
       "extract_dir": "zotero-cli-v0.1.0-x86_64-pc-windows-msvc"
     }
   },
