@@ -50,3 +50,12 @@ quick-xml = "0.42"
 fd-lock = "4"
 # Native ZIP/OOXML handling for Phase 9 DOCX commands.
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
+
+[target.'cfg(windows)'.dependencies]
+# credentials.rs's atomic credential-file replacement: std::fs::rename's exact Windows
+# replace-existing semantics are OS-version-dependent (MoveFileExW with a
+# SetFileInformationByHandle fallback -- see std docs), so the write-capable API key store calls
+# MoveFileExW with MOVEFILE_REPLACE_EXISTING explicitly rather than relying on that. Already a
+# transitive dependency via other crates' Windows backends (rustls/ring, errno), so this adds no
+# new weight to the dependency graph -- only a narrow feature slice for the one FFI call used.
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }

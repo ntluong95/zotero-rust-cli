@@ -164,7 +164,10 @@ for a contradiction during the cross-document consistency review.
    least one authorization existing, confirming *some* persistence mechanism exists. What exactly
    survives a restart, and where it's stored, still requires driving the consent dialog via an
    actual write, which was deliberately not attempted (real production library, writes out of
-   scope for this pass).**
+   scope for this pass).** **Fully answered 2026-08-29, Phase 6 Slice 0 spike — see §8: yes, an
+   "Always Allow" key survives a full Zotero quit/relaunch and requires no re-authorization; "where
+   it's stored" remains externally opaque beyond "with the user's profile" (Zotero's own documented
+   language), but its lifecycle is now fully characterized behaviorally.**
 6. **Do Zotero-10-migrated saved searches** (e.g. `childNote` → `note` + `resultLevel`) change
    `search list`/`search get` JSON versus the Python baseline on the same library? Not yet answered;
    requires a library that has actually gone through Zotero's migration, not merely a fresh Zotero 10
@@ -293,3 +296,203 @@ Full detail in `docs/ZOTERO-COMPATIBILITY.md` and `phase-14-zotero-10-compatibil
 
 **Not re-attempted:** OQ4 (still no XPI in this repo to test) and OQ6 (no migrated saved-search
 library available). Both remain open for the same reasons §6 already states.
+
+## §8. Phase 6 Slice 0 — Disposable write-consent spike (2026-08-29, `phase6-localapi-consent` branch)
+
+Live-tested against a real, running Zotero 10.0.1 instance, per `phase-06-js-bridge-and-injection-
+hardening.md` §3.2's design. Executed as a guided, human-in-the-loop walkthrough: the operator
+performed all GUI actions (profile setup, dialog clicks, app restart) and confirmed each UI
+observation in real time; every HTTP request/response and readback below was captured live.
+
+**Isolation.** A dedicated Zotero profile (`cli-spike`) with its own data directory was created
+via Zotero's Profile Manager, entirely separate from the operator's production `~/Zotero`. The
+library was confirmed empty before the spike began. Exactly one item was created by hand as the
+scratch marker (key `WYEVLS74`, type `document`, title `ZOTERO-CLI-SPIKE-MARKER-8f3a1c`) and its
+identity was positively re-verified by `GET` (exact key, exact title, `Total-Results: 1`) before
+every subsequent write attempt in the sequence — per §3.2's corrected method, isolation was proven
+by content, not inferred from an environment variable or a checked assumption. Sync was disabled
+for the scratch profile for the duration.
+
+**Security handling.** Two distinct Local API keys were issued during this spike (one before, one
+after a revocation). Neither raw key value was written to git, this document, any committed test
+fixture, or any final report — both were used only within ephemeral shell-session variables and
+scratch `/tmp` files that were deleted immediately after use. Key identity comparisons ("is this
+the same key as before") were performed programmatically without printing either value.
+
+### §8.1 The discovered authorization state machine — LIVE VERIFIED
+
+This is a materially different shape than `phase-06`'s §3.2 anticipated (a single "bare write
+triggers a dialog" gate). It is actually a layered precondition chain:
+
+1. Every write request must echo the `Zotero-Server-ID` header value obtained from a prior `GET`.
+   Omitting it fails **before** any auth/consent check runs.
+2. Missing `Zotero-Server-ID` → `HTTP 428`, body `Zotero-Server-ID not provided`.
+3. `Zotero-Server-ID` present but no `Zotero-API-Key` → `HTTP 401`, body
+   `API key required -- POST /api/local/authorize to obtain one`,
+   `WWW-Authenticate: Zotero-API-Key realm="Zotero Local API"`.
+4. **`POST /api/local/authorize` is the actual trigger for Zotero's human consent dialog** — not a
+   bare write, as the original plan assumed. The dialog names the requesting `appName` and offers
+   Allow / Always Allow / Deny.
+5. Selecting "Always Allow" returns `HTTP 200`, body `{"key":"<32-char>","remember":true}`.
+6. The returned key, sent via `Zotero-API-Key` on a subsequent write, is accepted **silently** — no
+   further dialog for that write.
+7. The "Always Allow" key **survives a full Zotero quit/relaunch** of the same profile with zero
+   re-authorization required.
+8. `Zotero-Server-ID` **remained stable** across the one restart tested in this spike
+   (`lymS36QrVfGC` before and after) — a single data point, not proof of permanent stability under
+   all conditions (e.g. profile corruption, version upgrade).
+9. Zotero's Settings → Advanced → General → **"Clear Write Authorizations"** immediately and fully
+   invalidates the previously-issued key.
+10. A write using a revoked key → `HTTP 401`, body `Invalid or expired API key` — same status code
+    as finding 3's pre-consent 401, but a **distinguishable body string**, so a caller parsing the
+    body (not just the status) can tell "never authorized" from "was authorized, now revoked."
+11. Re-running `POST /api/local/authorize` after revocation shows a **fresh** consent dialog and,
+    on "Always Allow," issues **a new key distinct from the revoked one** — Zotero does not
+    resurrect a revoked key's value.
+12. None of the tested rejection paths (428, either flavor of 401) committed any write — every
+    readback after a rejected attempt showed the pre-attempt title/version unchanged.
+
+### §8.2 Live request/response evidence (exact values)
+
+All requests below targeted `http://127.0.0.1:23119`, item `WYEVLS74` in library `users/0`, headers
+`Zotero-API-Version: 3` unless noted. Sequence numbers correspond to §8.1's findings.
+
+| Step | Request | Response | Readback after |
+|---|---|---|---|
+| Unauthorized write, no `Zotero-Server-ID` | `PATCH /api/users/0/items/WYEVLS74`, `If-Unmodified-Since-Version: 3`, body `{"title":"...PENDING-A..."}` | `428`, `Zotero-Server-ID not provided` | title/version unchanged (`...MARKER...`, v3) |
+| Unauthorized write, with `Zotero-Server-ID` | same + `Zotero-Server-ID: lymS36QrVfGC` | `401`, `API key required -- POST /api/local/authorize to obtain one`, `WWW-Authenticate: Zotero-API-Key realm="Zotero Local API"` | unchanged |
+| `POST /api/local/authorize` | `{"appName":"zotero-cli-phase6-spike"}` + `Zotero-Server-ID` header | `200`, `{"key":"<redacted>","remember":true}` — human confirmed a real dialog appeared and "Always Allow" was clicked exactly once | n/a |
+| Authenticated write | `PATCH` + `Zotero-API-Key: <key>`, `If-Unmodified-Since-Version: 3` | `204 No Content`, `Last-Modified-Version: 4` | title `...AUTHORIZED...`, v4 — committed, no new dialog |
+| Post-restart re-probe | `GET /api/` | `200`, `Zotero-Server-ID: lymS36QrVfGC` (unchanged) | — |
+| Post-restart write, same pre-restart key, no re-auth | `PATCH` + same key, `If-Unmodified-Since-Version: 4` | `204`, `Last-Modified-Version: 5` | title `...RESTART...`, v5 — committed, no dialog |
+| Post-"Clear Write Authorizations" write, revoked key | `PATCH` + revoked key, `If-Unmodified-Since-Version: 5` | `401`, `Invalid or expired API key` | unchanged (v5) |
+| Reauthorize after revocation | `POST /api/local/authorize`, same `appName` | `200`, `{"key":"<new, different>","remember":true}` — human confirmed a **fresh** dialog appeared, "Always Allow" clicked | n/a |
+| Write with new post-revocation key | `PATCH` + new key, `If-Unmodified-Since-Version: 5` | `204`, `Last-Modified-Version: 6` | title `...REAUTHORIZED...`, v6 — committed, no dialog |
+
+### §8.3 Answers to `phase-06` §3.2's seven original questions
+
+1. **Does "Always Allow" survive restart?** LIVE VERIFIED — yes (§8.1 finding 7, §8.2 row 6).
+2. **Where does authorization live?** DOC-VERIFIED only, from outside observation: "stored with the
+   user's profile" (official Zotero Local API docs). No more precise location is observable from
+   the HTTP surface alone; this was not independently probed at the filesystem level and should not
+   be treated as confirmed beyond the vendor's own documentation of the fact.
+3. **Status before consent?** LIVE VERIFIED, and more layered than expected — two distinct
+   rejections depending on what's missing: `428` (no `Zotero-Server-ID`) or `401` with
+   `API key required...` (`Zotero-Server-ID` present, no key). §3.3's design assumed a single
+   "not yet authorized" status; the actual surface is a two-stage precondition chain.
+4. **Status after revocation?** LIVE VERIFIED — `401`, body `Invalid or expired API key`, distinct
+   text from the pre-consent `401` despite the identical status code (§8.1 finding 10).
+5. **Does `Zotero-Server-ID` stay constant across restart?** LIVE VERIFIED for this one test —
+   stable, did not rotate. Single data point (one restart, one profile); not proof of permanent
+   stability under all conditions.
+6. **Does one grant authorize all writes, or is it scoped per request/endpoint?** DOC-VERIFIED only
+   — official docs state a key "allows writes to any library the user can edit" (global, not
+   per-endpoint or per-request-shape). Per explicit operator instruction, this was **not**
+   independently re-proven with additional live writes beyond what §8.2 already exercised, to avoid
+   destructive testing purely to re-confirm a documented fact.
+7. **Does a repeated pending-consent attempt stack, dedupe, or replace a dialog?** **BLOCKED / NOT
+   TESTED.** This experiment was planned (originally "Experiment B") but the live walkthrough's
+   actual sequence diverged after the first unauthorized-write attempt revealed the key-based
+   `/api/local/authorize` mechanism (§8.1 finding 4), and the dialog-stacking test was never
+   subsequently executed. This remains open and must be resolved before Slice 3 designs any
+   agent-facing retry behavior that could plausibly re-trigger a pending consent request.
+
+### §8.4 Additional questions from this session's own follow-up (labeled F/G/H)
+
+- **F — authorization scope:** DOC-VERIFIED (see §8.3 item 6 above; not independently live-proven
+  beyond the documented claim, by deliberate operator decision to avoid unnecessary destructive
+  testing).
+- **G — can an ambiguous/failed request nevertheless commit?** BLOCKED / DEFERRED. This spike
+  positively verified that `428`, the no-key `401`, and the revoked-key `401` all do **not**
+  commit (§8.1 finding 12). It did **not** and could not safely establish behavior for a genuine
+  transport-level failure (e.g. a connection drop) occurring *after* Zotero has begun processing an
+  otherwise-valid, authorized write — deliberately inducing that condition was out of scope per
+  operator instruction. **Production consequence: write code must treat an ambiguous transport
+  failure as an unknown-commit-state, and must never automatically retry a non-idempotent write
+  without first re-reading the target to check whether it already landed.**
+- **H — is a mixed-validity multi-field PATCH atomic?** BLOCKED / DEFERRED. Not tested; no known-
+  invalid field/value pair was deliberately constructed against the scratch item, per operator
+  instruction not to manufacture unsafe test conditions solely to answer this. **Production
+  consequence: the requested-vs-observed field diff already required by `phase-06` §3.5 remains the
+  actual safety net for this class of bug — it must not be weakened on the assumption that PATCH is
+  atomic, since that assumption is unverified.**
+
+### §8.5 Process notes
+
+- A shell-script bug (POSIX `[ ... == ... ]` instead of `[ ... = ... ]`) aborted the reauthorization
+  script partway through, after the `POST /api/local/authorize` call had already completed and its
+  response was captured to a local temp file. The remaining verification steps (target re-check,
+  authenticated `PATCH`, readback) were re-run immediately afterward using the already-issued
+  credential from that same authorization — the bug affected script flow only, not the validity or
+  sequencing of the underlying experiment.
+- No raw API key material was committed to git, printed in full in any report, or left in any
+  repository-tracked file. Temporary files that briefly held a raw key were deleted after use.
+
+### §8.6 Slice 0 verdict
+
+**SLICE 0 PASSED — LOCAL-API-FIRST REMAINS VALID.** The single highest-stakes open item
+(`plan.md` red-team Finding 18 / this report's OQ5) is resolved affirmatively: an "Always Allow"
+grant survives a full Zotero restart with no re-authorization, `Zotero-Server-ID` stayed stable
+across that restart, and revocation behaves as a clean, immediately-effective, fully-reversible
+gate (revoke → 401 → reauthorize → fresh dialog → new key → writes resume). Phase 6 may proceed
+past §3.2's outcome gate to Slice 3 (Local API write client) — pending separate operator review of
+this report, per the operator's explicit instruction not to begin Slice 3 in this session.
+
+**Remaining open items before Slice 3's design should be finalized:**
+- §8.3 item 7 (dialog-stacking/dedup behavior under repeated pending-consent attempts) — genuinely
+  untested, not merely under-documented.
+- §8.4 items G and H (ambiguous-transport-failure commit state; mixed-validity PATCH atomicity) —
+  intentionally deferred as unsafe to test destructively; §3.3's non-idempotent-retry caution and
+  §3.5's requested-vs-observed diff must both be implemented defensively against these unknowns
+  rather than assuming either resolves favorably.
+- The precise two-stage precondition chain (`428` vs. two flavors of `401`) found in §8.1/§8.2
+  should be reflected explicitly in Slice 3/5's `WriteOutcome` mapping (`phase-06` §3.13) — the
+  original design's single `AuthorizationDenied` variant is still adequate as an outcome type, but
+  the CLI's error message/`needs_human_action` signal (§3.3) should be able to distinguish "never
+  authorized" from "revoked" using the body-text difference documented in §8.1 finding 10, not just
+  the shared `401` status code.
+- **See §8.7 — a follow-up test run immediately before Slice 3 design found a materially new
+  architectural requirement (client-side credential persistence) not anticipated by §3.1/§3.4 of
+  the original plan.**
+
+### §8.7 Follow-up test — does a fresh CLI process need a locally-persisted credential?
+
+**Question:** §3.1 assumes every `zotero-cli` invocation is a stateless, fresh process with no
+daemon. §8.1-§8.6 verified that a key obtained via `POST /api/local/authorize` remains valid
+indefinitely (survives restart, works until revoked) — but every test so far reused a key value
+already held in the *same* shell session. This test asks: if a fresh process has **no memory of
+that key at all** and calls `/api/local/authorize` again — with the prior "Always Allow" grant
+still valid, not revoked — does Zotero silently return the same key with no dialog (making
+persistence merely an optimization), or does it show a fresh dialog every time (making persistence
+mandatory for unattended operation)?
+
+**Method:** simulated a fresh process by not reusing any previously-captured key value. Fetched the
+current `Zotero-Server-ID` via a read-only `GET /api/`, then issued exactly one
+`POST /api/local/authorize` with the same `appName` ("zotero-cli-phase6-spike") used throughout
+this spike, timed the round trip, and asked the operator to confirm on-screen behavior rather than
+inferring from timing alone.
+
+**Result — LIVE VERIFIED:**
+```
+POST /api/local/authorize  (appName unchanged, existing grant still valid, not revoked)
+-> HTTP 200, body {"key":"<new, ephemeral>","remember":true}
+-> elapsed: 2s (curl-side)
+-> Operator-confirmed: a Zotero Local API Authorization dialog DID appear and required a manual click
+```
+
+**REPEAT AUTHORIZE PROMPTS — KEY PERSISTENCE REQUIRED.** A fresh/stateless `zotero-cli` process
+**cannot** silently recover a previously-granted write credential by calling
+`/api/local/authorize` again — Zotero re-prompts for human consent on every call to that endpoint,
+regardless of any existing "Always Allow" state. (Per-write-attempt caching within a single already-
+authenticated process, as exercised in §8.2, remains unaffected — this finding is specifically
+about calling `/api/local/authorize` itself again, not about reusing an already-known key.)
+
+**Architecture consequence:** unattended writes across separate CLI invocations are only possible
+if the CLI itself persists the write-capable API key locally (or receives it from an explicit
+external credential source) and reuses it directly on writes — **never** calling
+`/api/local/authorize` as an automatic part of a write command's happy path, since that call blocks
+on a human GUI decision and would silently reintroduce exactly the blocking-on-a-dialog behavior
+§3.3 already rejected ("no polling loop... A polling/wait flag is explicit YAGNI scope creep").
+This was not anticipated by §3.1/§3.4 of the original plan, which assumed no new persisted state
+was needed. See the Phase 6 plan file's own updated Architecture section for the resulting design
+requirements.

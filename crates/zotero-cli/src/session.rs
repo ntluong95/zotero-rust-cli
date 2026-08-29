@@ -14,6 +14,15 @@ const COMMAND_HISTORY_LIMIT: usize = 50;
 const STATE_DIR_ENV: &str = "CLI_ANYTHING_ZOTERO_STATE_DIR";
 const APP_NAME: &str = "cli-anything-zotero";
 
+/// Shared across every test in this crate that mutates `STATE_DIR_ENV` (a process-global env
+/// var; Rust's default test runner runs tests in parallel threads within the same process). Not
+/// just this file's own tests -- `credentials.rs`'s tests also resolve their file path through
+/// `session_state_dir()` and must serialize against these via the *same* lock, since two
+/// independent `Mutex`es would each individually be "held" without being mutually exclusive with
+/// each other.
+#[cfg(test)]
+pub(crate) static STATE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SessionState {
     pub current_library: Option<serde_json::Value>,
@@ -351,9 +360,10 @@ mod tests {
     // which was false the moment the second test was added. `cargo test`
     // in debug mode didn't catch it -- timing happened not to overlap --
     // but `cargo test --release` did, which is why CI runs release.)
-    // Every test that touches `STATE_DIR_ENV` must hold this lock for its
+    // Every test that touches `STATE_DIR_ENV` -- in this file or
+    // `credentials.rs` -- must hold `super::STATE_DIR_ENV_LOCK` for its
     // entire duration.
-    static STATE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use super::STATE_DIR_ENV_LOCK;
 
     fn temp_state_dir(label: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
