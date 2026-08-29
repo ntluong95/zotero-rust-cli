@@ -451,3 +451,48 @@ this report, per the operator's explicit instruction not to begin Slice 3 in thi
   the CLI's error message/`needs_human_action` signal (§3.3) should be able to distinguish "never
   authorized" from "revoked" using the body-text difference documented in §8.1 finding 10, not just
   the shared `401` status code.
+- **See §8.7 — a follow-up test run immediately before Slice 3 design found a materially new
+  architectural requirement (client-side credential persistence) not anticipated by §3.1/§3.4 of
+  the original plan.**
+
+### §8.7 Follow-up test — does a fresh CLI process need a locally-persisted credential?
+
+**Question:** §3.1 assumes every `zotero-cli` invocation is a stateless, fresh process with no
+daemon. §8.1-§8.6 verified that a key obtained via `POST /api/local/authorize` remains valid
+indefinitely (survives restart, works until revoked) — but every test so far reused a key value
+already held in the *same* shell session. This test asks: if a fresh process has **no memory of
+that key at all** and calls `/api/local/authorize` again — with the prior "Always Allow" grant
+still valid, not revoked — does Zotero silently return the same key with no dialog (making
+persistence merely an optimization), or does it show a fresh dialog every time (making persistence
+mandatory for unattended operation)?
+
+**Method:** simulated a fresh process by not reusing any previously-captured key value. Fetched the
+current `Zotero-Server-ID` via a read-only `GET /api/`, then issued exactly one
+`POST /api/local/authorize` with the same `appName` ("zotero-cli-phase6-spike") used throughout
+this spike, timed the round trip, and asked the operator to confirm on-screen behavior rather than
+inferring from timing alone.
+
+**Result — LIVE VERIFIED:**
+```
+POST /api/local/authorize  (appName unchanged, existing grant still valid, not revoked)
+-> HTTP 200, body {"key":"<new, ephemeral>","remember":true}
+-> elapsed: 2s (curl-side)
+-> Operator-confirmed: a Zotero Local API Authorization dialog DID appear and required a manual click
+```
+
+**REPEAT AUTHORIZE PROMPTS — KEY PERSISTENCE REQUIRED.** A fresh/stateless `zotero-cli` process
+**cannot** silently recover a previously-granted write credential by calling
+`/api/local/authorize` again — Zotero re-prompts for human consent on every call to that endpoint,
+regardless of any existing "Always Allow" state. (Per-write-attempt caching within a single already-
+authenticated process, as exercised in §8.2, remains unaffected — this finding is specifically
+about calling `/api/local/authorize` itself again, not about reusing an already-known key.)
+
+**Architecture consequence:** unattended writes across separate CLI invocations are only possible
+if the CLI itself persists the write-capable API key locally (or receives it from an explicit
+external credential source) and reuses it directly on writes — **never** calling
+`/api/local/authorize` as an automatic part of a write command's happy path, since that call blocks
+on a human GUI decision and would silently reintroduce exactly the blocking-on-a-dialog behavior
+§3.3 already rejected ("no polling loop... A polling/wait flag is explicit YAGNI scope creep").
+This was not anticipated by §3.1/§3.4 of the original plan, which assumed no new persisted state
+was needed. See the Phase 6 plan file's own updated Architecture section for the resulting design
+requirements.

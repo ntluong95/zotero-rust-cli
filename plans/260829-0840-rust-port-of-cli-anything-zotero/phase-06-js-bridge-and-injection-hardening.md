@@ -294,6 +294,50 @@ Design, pending the spike's exact status codes:
   resetting, that is useful context for the error message in §3.3 — see Unresolved Questions; it
   does not change the no-persistence decision above.
 
+### 3.4a Local API write-credential persistence (new requirement, added post-Slice-0)
+
+**Not anticipated by this plan's original draft.** §3.4 above correctly rules out persisting
+`Zotero-Server-ID` (a capability discriminator, not a credential). But the Local API's actual
+write-auth mechanism, only discovered live during Slice 0 (`zotero-10-impact-on-rust-port.md` §8.1,
+§8.7), is a distinct, real credential: a per-`appName` key returned by `POST /api/local/authorize`,
+sent as `Zotero-API-Key` on writes. A follow-up live test (§8.7) established that calling
+`/api/local/authorize` again from a fresh process — with the prior "Always Allow" grant still
+valid, not revoked — **still shows a new consent dialog every time**. Since every `zotero-cli`
+invocation is a stateless, fresh process (§3.1, no daemon), this means: **unattended writes across
+separate CLI invocations are impossible unless the CLI itself persists the write API key locally**
+(or receives it from an explicit external source) and reuses it directly, without ever calling
+`/api/local/authorize` as part of a write command's own happy path (that call blocks on a human
+GUI decision, which would silently reintroduce the blocking-on-a-dialog behavior §3.3 already
+rejects).
+
+**Design (minimum secure, cross-platform, matching this project's small-dependency-footprint
+principle and its stated primary caller — an unattended agent, frequently on headless
+machines/containers/CI with no OS keychain session available):**
+
+- **Primary store:** a dedicated, restrictive-permission local file (mode `0600` on Unix; relies on
+  the default per-user ACL under `%USERPROFILE%` on Windows, same trust boundary as this project's
+  existing `session_state_dir()`), **separate from `session.json`** (never added to its
+  byte-for-byte-locked 4-key schema — see §3.4's own precedent for why not). Same directory
+  convention and env-override pattern as `session_state_dir()`/`CLI_ANYTHING_ZOTERO_STATE_DIR`.
+  This is the same accepted threat model as an SSH private key or `~/.netrc` — documented as such
+  in `docs/SECURITY.md` (Slice 10).
+- **Override: an explicit environment variable** (e.g. `ZOTERO_LOCAL_API_KEY`), checked before the
+  file, for operators who want to inject a key from their own secret manager without the CLI ever
+  writing one to disk — matches the existing `ZOTERO_*` override convention in `paths.rs`.
+- **Explicitly not v1 scope: an OS keychain backend** (macOS Keychain / Windows Credential Manager /
+  Linux Secret Service). This isn't a "nice to have later" — it actively breaks the documented
+  primary use case (headless/CI/SSH agent operation, where no keyring session exists), and adds a
+  nontrivial native-dependency surface across 5 release targets that this project has explicitly
+  avoided elsewhere. Left as a possible opt-in backend behind a feature flag if a desktop-interactive
+  use case later demands it.
+- **Never call `/api/local/authorize` automatically inside a write command.** If no stored/injected
+  credential exists, the write path returns `WriteOutcome::AuthorizationRequired` and fails fast
+  (§3.3's existing no-polling philosophy) — a human/orchestrator must run an explicit, separate
+  authorize step (a Slice 6 command-surface decision, out of Slice 3-5's scope) that performs the
+  blocking `/api/local/authorize` call as a deliberate action, not a side effect.
+- **On a stored key returning `401 Invalid or expired API key`:** delete the stored credential and
+  return `WriteOutcome::AuthorizationRevoked` — do not automatically re-invoke the authorize flow.
+
 ### 3.5 (§C2) Compatibility renderer and post-write state parity
 
 **Rule: a write command must never construct its own output shape.** After a write commits, re-read
@@ -565,6 +609,47 @@ Both agents implement functions returning `anyhow::Result<WriteOutcome>` (or an 
 project-consistent error type — the point is the shared `WriteOutcome` enum, not the wrapping error
 type) from day one, not whatever ad hoc shape each track finds convenient. Slice 6 becomes a
 mechanical `match` over this enum plus the §3.5 renderer, not a design exercise.
+
+**Refined post-Slice-0 (`zotero-10-impact-on-rust-port.md` §8.1/§8.7): the single
+`AuthorizationDenied` variant above under-fits the live-verified evidence.** The Local API surface
+actually distinguishes five write-auth-adjacent outcomes, each with a different correct caller
+action — collapsing them back into one generic variant would throw away information the CLI's
+`--json` error payload (§3.3) needs to be actionable:
+
+```rust
+pub enum WriteOutcome {
+    Applied { affected_key: String },
+    /// 401, no stored/injected credential at all -- never authorized. Caller must run an explicit
+    /// authorize step (never triggered automatically -- see §3.4a).
+    AuthorizationRequired { detail: String },
+    /// 401 "Invalid or expired API key" on a *stored* credential -- was authorized, now isn't
+    /// (revoked, or Zotero-side expiry). Distinct caller action from Required: the stored
+    /// credential must be deleted (§3.4a), not merely retried.
+    AuthorizationRevoked { detail: String },
+    /// 403 -- a human explicitly clicked "Deny." DOC-VERIFIED shape only (not live-triggered in
+    /// Slice 0 -- denial was never deliberately exercised). Retrying without a new human decision
+    /// is pointless; do not auto-retry.
+    AuthorizationDenied { detail: String },
+    /// 429 -- Zotero's documented dialog rate limit (5/minute). DOC-VERIFIED only. Transient and
+    /// backoff-safe, unlike the three variants above -- must not be treated as a human-action signal.
+    RateLimited { detail: String },
+    /// 428 -- missing `Zotero-Server-ID` on the request. LIVE VERIFIED. A client-side protocol bug,
+    /// not a user-facing authorization state; must never be surfaced as "needs human action."
+    PreconditionFailed { detail: String },
+    /// `If-Unmodified-Since-Version` conflict. Caller re-reads and may retry with a fresh version --
+    /// does not imply the write landed.
+    Conflict { detail: String },
+    /// Transport/unexpected failure -- LIVE VERIFIED as a genuinely unresolved commit state (Slice 0
+    /// §8.4 item G was deliberately not tested destructively). Never triggers an automatic retry of
+    /// a non-idempotent write.
+    TransportError { detail: String },
+}
+```
+
+This is still the single shared, backend-neutral contract every write path returns (Local API
+today; JS Bridge and, later, Connector API map their own failure shapes onto the same enum) — not
+a Local-API-specific or bridge-local type. Slice 6's `match` is now over eight variants instead of
+four, but remains mechanical.
 
 ## Requirements
 
