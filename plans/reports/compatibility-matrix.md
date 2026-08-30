@@ -345,20 +345,17 @@ CLI's runtime compatibility contract; flagged as such rather than silently treat
 | `ZOTERO_EXECUTABLE` | `utils/zotero_paths.py` | ✅ Implemented (`paths.rs`) | Phase 3 vertical slice |
 | `ZOTERO_HTTP_PORT` | `utils/zotero_paths.py` | ✅ Implemented (`paths.rs`) | Phase 3 vertical slice |
 | `CLI_ANYTHING_ZOTERO_STATE_DIR` | `core/session.py` | ✅ Implemented (`session.rs`) | Phase 3 vertical slice |
-| `ZOTERO_CLI_AUDIT_DIR` | `core/audit.py` | ⏳ Pending | Phase 5 (`audit.rs`) |
-| `ZOTERO_EMBED_API` | `core/semantic.py` | ⏳ Pending | Phase 8 |
-| `ZOTERO_EMBED_MODEL` | `core/semantic.py` | ⏳ Pending | Phase 8 |
-| `ZOTERO_EMBED_KEY` | `core/semantic.py` | ⏳ Pending | Phase 8 |
-| `ZOTERO_VECTOR_DB` | `core/semantic.py` | ⏳ Pending | Phase 8 |
-| `OPENAI_API_KEY` | `utils/openai_api.py` | ⏳ Pending | Phase 7 (`item analyze`) |
-| `CLI_ANYTHING_ZOTERO_OPENAI_URL` | `utils/openai_api.py` | ⏳ Pending | Phase 7 |
+| `ZOTERO_CLI_AUDIT_DIR` | `core/audit.py` | ⏳ Pending | Phase 5 audit logging |
+| `ZOTERO_EMBED_API` | `core/semantic.py` | ✅ Implemented (`semantic/embed.rs`) | Phase 8 |
+| `ZOTERO_EMBED_MODEL` | `core/semantic.py` | ✅ Implemented (`semantic/embed.rs`) | Phase 8 |
+| `ZOTERO_EMBED_KEY` | `core/semantic.py` | ✅ Implemented (`semantic/embed.rs`) | Phase 8 |
+| `ZOTERO_VECTOR_DB` | `core/semantic.py` | ✅ Implemented (`semantic/embed.rs`) | Phase 8 |
+| `OPENAI_API_KEY` | `utils/openai_api.py` | ⏳ Pending | Deferred optional utility |
+| `CLI_ANYTHING_ZOTERO_OPENAI_URL` | `utils/openai_api.py` | ⏳ Pending | Deferred optional utility |
 | `ZOTERO_LOCALE` | `core/jsbridge.py` (AppleScript menu localization only) | ❌ N/A | The AppleScript bridge fallback is dropped entirely (Phase 6 decision) — this var has no remaining consumer to port |
 | `NO_COLOR` | `utils/repl_skin.py` only | ❌ N/A | REPL/branding dropped from v1 (approved decision) — no remaining consumer |
 | `CLI_ANYTHING_NO_COLOR` | `utils/repl_skin.py` only | ❌ N/A | Same as `NO_COLOR` |
 | `CLI_ANYTHING_ZOTERO_IMPORT_TARGET` | **Test-only** — `tests/test_full_e2e.py`, never in `core`/`utils`/`zotero_cli.py` | 🔹 Test-harness concern, not a CLI contract | The Rust parity harness may define its own equivalent for opt-in live-write tests; not a `zotero-cli` runtime env var |
 | `CLI_ANYTHING_FORCE_INSTALLED` | **Test-only** — `tests/test_cli_entrypoint.py`, `tests/test_full_e2e.py` | 🔹 Test-harness concern, not a CLI contract | Selects installed-vs-`python -m` subprocess resolution in Python's own test suite; has no Rust equivalent need since there's one binary, not an installed-package ambiguity |
 
-**Summary:** 5 of 17 implemented, 7 pending against named future phases (all real,
-all mapped), 3 not applicable (their only consumer was dropped from v1 by an
-approved decision), 2 reclassified as test-harness-only rather than CLI
-runtime contracts. Zero unaccounted-for.
+**Summary:** 9 of 17 implemented, 3 pending against optional deferred utilities, 3 not applicable (their only consumer was dropped from v1 by an approved decision), 2 reclassified as test-harness-only rather than CLI runtime contracts. Zero unaccounted-for.

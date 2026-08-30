@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Behavioural Baseline and Parity Harness"
-status: in-progress
+status: complete
 priority: P1
 effort: "3-4d"
 dependencies: []

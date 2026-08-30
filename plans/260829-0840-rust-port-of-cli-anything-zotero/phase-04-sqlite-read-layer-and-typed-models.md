@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "SQLite Read Layer and Typed Models"
-status: in-progress
+status: complete
 priority: P1
 effort: "5-7d"
 dependencies: [3]

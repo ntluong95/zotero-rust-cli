@@ -1,7 +1,7 @@
 ---
 phase: 7
 title: "Ingest, Attachments and PDF Cascade"
-status: todo
+status: complete
 priority: P1
 effort: "6-8d"
 dependencies: [6]

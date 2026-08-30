@@ -1,7 +1,7 @@
 ---
 title: "Rust Port of cli-anything-zotero"
 description: "Incremental, compatibility-first port of the cli-anything-zotero Python CLI (96 commands) to a distributable native Rust binary optimized for AI-agent use."
-status: pending
+status: in-progress
 priority: P1
 effort: "13 phases"
 tags: [rust, port, zotero, cli, agent-tooling, migration]
@@ -139,29 +139,88 @@ harness is built first (Phase 1) and runs continuously rather than as a late gat
 
 | # | Phase | Delivers | Status |
 |---|-------|----------|--------|
-| 1 | [Behavioural Baseline and Parity Harness](./phase-01-start.md) | Golden fixtures + normalize/diff tooling. No Rust. | In Progress |
-| 2 | [Distribution Spine and Release Pipeline](./phase-02-distribution-spine-and-release-pipeline.md) | 5-target CI, authenticated releases, Homebrew/Scoop — proven on a trivial binary | In Progress |
-| 3 | [CLI Skeleton, Result Contract and Config](./phase-03-cli-skeleton-result-contract-and-config.md) | v1 command paths, output contracts, exit codes, `--json` anywhere, paths | In Progress |
-| 4 | [SQLite Read Layer and Typed Models](./phase-04-sqlite-read-layer-and-typed-models.md) | 24 read commands (the Exact-class core) | In Progress |
-| 5 | [HTTP Surfaces and Runtime](./phase-05-http-surfaces-connector-local-api-and-runtime.md) | Connector + Local API + runtime/doctor/session/audit | In Progress |
-| 6 | [Write Backends: Local-API-First](./phase-06-js-bridge-and-injection-hardening.md) | **Re-planned 2026-08-29 against merged Phase 14 evidence, then red-teamed.** Local API writes (gated on the `local_api_writes_available` capability flag, not Zotero version) + JS Bridge for 4 confirmed privileged ops (up to 7 contingent); fixes D1; XPI. Corrects two factual errors caught in red-team review (a fabricated "already-landed" Connector client; wrong Zotero PATCH-array semantics) | Pending |
-| 7 | [Ingest, Attachments and PDF Cascade](./phase-07-ingest-attachments-and-pdf-cascade.md) | `add`/`import`/`note`/PDF cascade/hygiene/metrics | Pending |
-| 8 | [Semantic Search Vector Store](./phase-08-semantic-search-vector-store.md) | 3 commands; fixes D2; ~50× cosine speedup | Pending |
-| 9 | [Pure OOXML DOCX Commands](./phase-09-pure-ooxml-docx-commands.md) | 4 subprocess-free DOCX commands | Complete |
-| 10 | [Parity Certification and Cross-Platform](./phase-10-parity-certification-and-cross-platform.md) | Full matrix green on 3 OSes | Pending |
+| 1 | [Behavioural Baseline and Parity Harness](./phase-01-start.md) | Golden fixtures + normalize/diff tooling. No Rust. | Complete |
+| 2 | [Distribution Spine and Release Pipeline](./phase-02-distribution-spine-and-release-pipeline.md) | 5-target CI, authenticated releases, Homebrew/Scoop — proven on a trivial binary | Complete |
+| 3 | [CLI Skeleton, Result Contract and Config](./phase-03-cli-skeleton-result-contract-and-config.md) | v1 command paths, output contracts, exit codes, `--json` anywhere, paths | Complete |
+| 4 | [SQLite Read Layer and Typed Models](./phase-04-sqlite-read-layer-and-typed-models.md) | 24 read commands (the Exact-class core) | Complete |
+| 5 | [HTTP Surfaces and Runtime](./phase-05-http-surfaces-connector-local-api-and-runtime.md) | Connector + Local API + runtime/doctor/session/audit | Complete |
+| 6 | [Write Backends: Local-API-First](./phase-06-js-bridge-and-injection-hardening.md) | **Re-planned 2026-08-29 against merged Phase 14 evidence, then red-teamed.** Local API writes (gated on the `local_api_writes_available` capability flag, not Zotero version) + JS Bridge for 4 confirmed privileged ops (up to 7 contingent); fixes D1; XPI. Merged across PRs #6, #8, #9, #10, #11. | Complete |
+| 7 | [Ingest, Attachments and PDF Cascade](./phase-07-ingest-attachments-and-pdf-cascade.md) | `add`/`import`/`note`/PDF cascade/hygiene/metrics (18 public CLI commands). Merged across PRs #12-#19 (latest: PR #18 `a47006e`, PR #19 `568d90a`). | Complete |
+| 8 | [Semantic Search Vector Store](./phase-08-semantic-search-vector-store.md) | 3 commands (`item build-index`, `item semantic-search`, `item similar`); fixes D2; ~73× cosine speedup. Verified complete on main. | Complete |
+| 9 | [Pure OOXML DOCX Commands](./phase-09-pure-ooxml-docx-commands.md) | 4 subprocess-free DOCX commands (`inspect-citations`, `inspect-placeholders`, `validate-placeholders`, `render-citations`). Verified complete on main. | Complete |
+| — | **[Post-Phase-7 Remaining V1 Implementation](#post-phase-7-remaining-v1-implementation-parity-tail)** | **ACTIVE IMPLEMENTATION TAIL.** 17 canonical commands across 4 slices (Rendering/Export, Local App/Audit, Selection/Collection, Analysis/Hygiene). | **In Progress** |
+| 10 | [Parity Certification and Cross-Platform](./phase-10-parity-certification-and-cross-platform.md) | Full matrix green on 3 OSes, `PARITY-REPORT.md`, cross-platform hardening, upstream drift check. Gated on remaining v1 command implementation. | **Waiting for Remaining V1 Implementation** |
 | 11 | [Agent Skill, Docs and License Compliance](./phase-11-agent-skill-docs-and-license-compliance.md) | Regenerated SKILL.md, migration guide, Apache-2.0 compliance | Pending |
-| 12 | [DOCX Zoterify Chain (deferred, gated)](./phase-12-docx-zoterify-chain-deferred-gated.md) | The 7 external-process DOCX commands | Pending |
+| 12 | [DOCX Zoterify Chain (deferred, gated)](./phase-12-docx-zoterify-chain-deferred-gated.md) | The 7 external-process DOCX commands (gated after Phase 10) | Pending |
 | 13 | [Python Retirement](./phase-13-python-retirement.md) | Criteria-driven decommission | Pending |
-| 14 | [**Zotero 10 Compatibility Gate**](./phase-14-zotero-10-compatibility-gate.md) | **BLOCKS P6.** WAL-safe reads, WAL fixture, XPI 10.0.*, capability detection | **Ready to merge pending CI.** Layer A (SQLite policy), capability detection, HTTP hardening, and the Layer B read-backend specification are done and live-verified. XPI and Local API write-consent persistence (OQ4/OQ5) are deferred to Phase 6 by construction; the live Zotero ≤9 sweep and migrated-saved-search check (OQ6) are tracked as deferred compatibility verification, not merge blockers. Green 5-target CI is the only remaining merge gate. See `phase-14`'s "Merge-gate classification". |
+| 14 | [**Zotero 10 Compatibility Gate**](./phase-14-zotero-10-compatibility-gate.md) | **BLOCKS P6.** WAL-safe reads, WAL fixture, XPI 10.0.*, capability detection. Merged in PR #4 (`7ee7c70`). | Complete |
 
 ### Dependency graph
 
 ```
-P1 ──┬─→ P3 ──┬─→ P4 ──→ P5 ──→ ⟦P14⟧ ──→ P6 ──→ P7 ──→ P10 ──→ P11 ──→ P13
-     │        │                                            ↑              ↑
-P2 ──┘        └─→ P9 ──────────────────→ P8 ───────────────┘              │
-                                                              P12 ────────┘
+P1 ──┬─→ P3 ──┬─→ P4 ──→ P5 ──→ ⟦P14⟧ ──→ P6 ──→ P7 ──→ [Parity Tail] ──→ P10 ──→ P11 ──→ P13
+     │        │                                              ↑                 ↑              ↑
+P2 ──┘        └─→ P9 ──────────────────→ P8 ─────────────────┘                 │              │
+                                                                               P12 ───────────┘
 ```
+
+## Post-Phase-7 Remaining V1 Implementation (Parity Tail)
+
+Following the completion of Phase 7 (PR #18 `a47006e`, PR #19 `568d90a`), the major backend infrastructure for SQLite reads, dual write routing (Local API + JS Bridge), connector import, PDF cascade, vector semantic search, and pure OOXML is fully landed. However, a canonical parity audit against upstream `e42a930e` identifies 17 canonical leaf commands still missing from the v1 CLI surface.
+
+Phase 10 is the **future certification gate**, which cannot run until these commands are either implemented or formally reclassified.
+
+### Canonical 96-Command Inventory Breakdown
+
+| Status Category | Count | Command Names |
+|---|:---:|---|
+| **Integrated** | **69** | `add arxiv`, `add bibtex`, `add doi`, `add file`, `add url`, `app install-plugin`, `app plugin-status`, `app status`, `app uninstall-plugin`, `collection create`, `collection delete`, `collection fetch-pdfs`, `collection find`, `collection find-pdfs`, `collection get`, `collection items`, `collection list`, `collection remove-item`, `collection rename`, `collection tree`, `docx inspect-citations`, `docx inspect-placeholders`, `docx render-citations`, `docx validate-placeholders`, `import doi`, `import file`, `import json`, `import pmid`, `item add-to-collection`, `item annotations`, `item attach`, `item attachments`, `item build-index`, `item children`, `item delete`, `item fetch-pdf`, `item file`, `item find`, `item find-pdf`, `item get`, `item list`, `item merge`, `item move-to-collection` (Changed), `item notes`, `item search-annotations`, `item search-fulltext`, `item semantic-search`, `item similar`, `item tag`, `item update`, `js`, `library list`, `note add`, `note get`, `search get`, `search items`, `search list`, `session clear-collection`, `session clear-item`, `session clear-library`, `session history`, `session status`, `session use-collection`, `session use-item`, `session use-library`, `style list`, `sync`, `tag items`, `tag list` |
+| **Missing** | **17** | `app doctor`, `app launch`, `app ping`, `app version`, `audit path`, `audit tail`, `collection stats`, `collection use-selected`, `session use-selected`, `export bib`, `item bibliography`, `item citation`, `item export`, `item analyze`, `item context`, `item duplicates`, `item metrics` |
+| **Changed (Stand-alone)** | **1** | `app check-update` (fork uses package managers, does not poll upstream Python version file) |
+| **Excluded (Safe Divergence)**| **1** | `app enable-local-api` (replaced by Rust-native `app authorize-local-api` and plugin staging flow) |
+| **Dropped** | **1** | `repl` (challenge decision C4: non-interactive agent focus) |
+| **Deferred (Phase 12 Gated)** | **7** | `docx cite`, `docx doctor`, `docx insert-citations`, `docx prepare-zotero-import`, `docx zoterify`, `docx zoterify-preflight`, `docx zoterify-probe` |
+| **Total Canonical** | **96** | *(Plus 1 Rust-only utility: `app authorize-local-api`)* |
+
+### Implementation Slices for the Parity Tail
+
+#### Slice A: Rendering / Export (RECOMMENDED IMMEDIATE NEXT SLICE)
+- **Commands**: `item citation`, `item bibliography`, `item export`, `export bib`
+- **Scope**:
+  - Read-only with respect to Zotero SQLite and Local API.
+  - Queries Local API rendering endpoints (`/items/{key}/citation`, `/items/{key}/bibliography`, `/items/{key}/export?format=...`) or formats locally via CSL / BibTeX.
+  - 4 canonical rows; offline and mock-testable; foundational for `item context`.
+
+#### Slice B: Local App / Audit Utilities
+- **Commands**: `app ping`, `app version`, `app doctor`, `audit path`, `audit tail`
+- **Scope**:
+  - `app ping`: Fast reachability check.
+  - `app version`: Version metadata JSON / string.
+  - `app doctor`: Diagnostic report across paths, ports, databases, and bridge.
+  - `audit path` & `audit tail`: Command execution audit trail logger (`CLI_ANYTHING_ZOTERO_AUDIT_DIR`).
+
+#### Slice C: Selection / Collection
+- **Commands**: `collection stats`, `collection use-selected`, `session use-selected`
+- **Scope**:
+  - `collection stats`: Summary metrics of collection items.
+  - `collection use-selected` & `session use-selected`: Connector `getSelectedCollection` / `getSelectedItems` resolution.
+
+#### Slice D: Analysis / Hygiene
+- **Commands**: `item context`, `item duplicates`, `item metrics`, `item analyze`
+- **Scope**:
+  - `item context`: Hydrated item context assembling metadata, notes, bibtex, and citations.
+  - `item duplicates`: Duplicate detection using title/DOI/ISBN matchers.
+  - `item metrics`: Citation and lookup metrics (e.g. Crossref / Semantic Scholar / PMID).
+  - `item analyze`: LLM-based item synthesis utility.
+
+*(Note: `app launch` is isolated as a standalone GUI-spawning operation with distinct safety and platform validation requirements).*
+
+### Three-Agent Operating Model
+
+To execute the remaining implementation slices cleanly:
+- **Claude A**: Sole implementation writer (writes Rust modules, CLI arguments, and error routing).
+- **Claude B**: Independent Python contract oracle + source reviewer (validates exact JSON shapes, arguments, and edge cases against Python source `cli_anything/zotero/`).
+- **Gemini**: Black-box QA + canonical parity auditor (develops independent test fixtures, verifies exit codes, and audits compatibility).
 
 - **Phase number ≠ execution order.** P14 was appended by the plan CLI but executes **between P5 and
   P6**. This graph is authoritative. (P8 already shipped before P5–P7 by the same principle.)

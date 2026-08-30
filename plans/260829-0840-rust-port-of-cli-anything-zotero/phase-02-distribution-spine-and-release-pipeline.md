@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Distribution Spine and Release Pipeline"
-status: in-progress
+status: complete
 priority: P1
 effort: "3-5d"
 dependencies: []

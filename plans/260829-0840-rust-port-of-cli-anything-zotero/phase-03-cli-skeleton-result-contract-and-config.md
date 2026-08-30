@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "CLI Skeleton, Result Contract and Config"
-status: in-progress
+status: complete
 priority: P1
 effort: "5-7d"
 dependencies: [1, 2]

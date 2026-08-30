@@ -1,18 +1,20 @@
 ---
 phase: 10
 title: "Parity Certification and Cross-Platform Hardening"
-status: todo
+status: waiting-for-v1-tail
 priority: P1
 effort: "5-7d"
-dependencies: [7, 8, 9]
+dependencies: [7, 8, 9, "post-phase-7-tail"]
 ---
 
 # Phase 10: Parity Certification and Cross-Platform Hardening
 
 ## Overview
 
-Drive the full compatibility matrix to green on macOS, Windows and Linux, close remaining gaps, and
-produce a signed parity report that Phase 13 (Python retirement) can be decided against.
+Drive the full compatibility matrix to green on macOS, Windows and Linux, certify final parity, and
+produce a signed parity report (`plans/reports/PARITY-REPORT.md`) that Phase 13 (Python retirement) can be decided against.
+
+**Precondition**: This certification gate runs after the post-Phase-7 remaining v1 command implementation tail (Rendering/Export, Local App/Audit, Selection/Collection, Analysis/Hygiene) is completed.
 
 The harness has been running since Phase 1; this phase is about **certification and the long tail**,
 not first contact.

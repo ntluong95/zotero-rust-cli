@@ -1,7 +1,7 @@
 ---
 phase: 14
 title: "Zotero 10 Compatibility Gate"
-status: in-progress
+status: complete
 priority: P1
 effort: "3-5d"
 dependencies: [4, 5]
