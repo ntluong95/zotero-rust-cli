@@ -72,6 +72,60 @@ fn csl_missing_optional_fields_get_python_defaults() {
 }
 
 #[test]
+fn csl_truthy_fallbacks_match_python_or_semantics() {
+    for author in [json!([]), Value::Null] {
+        let input = json!({
+            "type": "article-journal",
+            "title": "Edited",
+            "author": author,
+            "editor": [{"family": "Ed"}]
+        });
+        let item = csl::csl_item_to_connector(input.as_object().unwrap(), 1);
+        assert_eq!(
+            item.get("creators"),
+            Some(&json!([{"creatorType": "author", "firstName": "", "lastName": "Ed"}]))
+        );
+    }
+
+    let input = json!({
+        "type": "article-journal",
+        "title": "Fallbacks",
+        "DOI": "",
+        "doi": "10.1/actual",
+        "URL": "",
+        "url": "https://example.test/article",
+        "keyword": [],
+        "categories": ["catA"]
+    });
+    let item = csl::csl_item_to_connector(input.as_object().unwrap(), 1);
+    assert_eq!(item.get("DOI"), Some(&json!("10.1/actual")));
+    assert_eq!(
+        item.get("url"),
+        Some(&json!("https://example.test/article"))
+    );
+    assert_eq!(item.get("tags"), Some(&json!([{"tag": "catA"}])));
+}
+
+#[test]
+fn issued_truthy_fallbacks_match_python_or_semantics() {
+    let input = json!({
+        "type": "article-journal",
+        "title": "Raw Date",
+        "issued": {"date-parts": [], "raw": "2020-05"}
+    });
+    let item = csl::csl_item_to_connector(input.as_object().unwrap(), 1);
+    assert_eq!(item.get("date"), Some(&json!("2020-05")));
+
+    let input = json!({
+        "type": "article-journal",
+        "title": "Raw Year",
+        "issued": {"date-parts": null, "raw": "2020"}
+    });
+    let item = csl::csl_item_to_connector(input.as_object().unwrap(), 1);
+    assert_eq!(item.get("date"), Some(&json!("2020")));
+}
+
+#[test]
 fn normalize_crossref_work_uses_first_title_container_and_published_print_date() {
     let payload = json!({
         "message": {
@@ -107,6 +161,23 @@ fn normalize_crossref_work_uses_first_title_container_and_published_print_date()
 }
 
 #[test]
+fn crossref_truthy_fallback_and_title_string_match_python() {
+    let payload = json!({
+        "message": {
+            "title": "Complete Article Title",
+            "DOI": "10.5555/string-title",
+            "container-title": ["Journal"],
+            "issued": {},
+            "published-print": {"date-parts": [[2020, 5]]}
+        }
+    });
+    let (items, format) = import_normalization::normalize_import_json_payload(&payload).unwrap();
+    assert_eq!(format, "crossref");
+    assert_eq!(items[0]["title"], json!("Complete Article Title"));
+    assert_eq!(items[0]["date"], json!("2020-5"));
+}
+
+#[test]
 fn normalize_connector_and_fallback_payloads_preserve_python_defaults() {
     let (items, format) = import_normalization::normalize_import_json_payload(
         &json!({"items": [{"itemType": "book", "title": "Book"}]}),
@@ -126,6 +197,16 @@ fn normalize_connector_and_fallback_payloads_preserve_python_defaults() {
         vec![
             json!({"title": "Loose", "itemType": "journalArticle", "id": "cli-anything-zotero-1"})
         ]
+    );
+
+    let (items, format) = import_normalization::normalize_import_json_payload(
+        &json!([{"itemType": "", "title": "Falsy Connector"}]),
+    )
+    .unwrap();
+    assert_eq!(format, "connector-fallback");
+    assert_eq!(
+        items,
+        vec![json!({"itemType": "", "title": "Falsy Connector", "id": "cli-anything-zotero-1"})]
     );
 
     let (items, format) = import_normalization::normalize_import_json_payload(&json!([])).unwrap();
@@ -233,6 +314,15 @@ fn attachment_descriptors_and_inline_plans_are_pure_python_parity() {
         err,
         "JSON import item 1 attachment 1 must include exactly one of `path` or `url`"
     );
+
+    let err = import_normalization::extract_inline_attachment_plans(
+        &[json!({"itemType": "journalArticle", "attachments": [3]})],
+        0,
+        60,
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(err, "JSON import item 1 attachment 1 must be an object");
 }
 
 #[test]

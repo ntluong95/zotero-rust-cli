@@ -63,8 +63,16 @@ fn first_or_python_index(value: Option<&Value>) -> Option<Value> {
     }
 }
 
+fn crossref_title(value: Option<&Value>) -> Option<Value> {
+    match value {
+        Some(Value::Array(values)) => values.first().cloned(),
+        Some(other) => Some(other.clone()),
+        None => None,
+    }
+}
+
 fn crossref_issued(msg: &Map<String, Value>) -> Value {
-    if let Some(issued) = msg.get("issued") {
+    if let Some(issued) = msg.get("issued").filter(|value| is_truthy(Some(value))) {
         return issued.clone();
     }
     let date_parts = msg
@@ -86,7 +94,7 @@ fn crossref_work_to_item(msg: &Map<String, Value>) -> Map<String, Value> {
     );
     csl.insert(
         "title".to_string(),
-        first_or_python_index(msg.get("title")).unwrap_or(Value::String(String::new())),
+        crossref_title(msg.get("title")).unwrap_or(Value::String(String::new())),
     );
     csl.insert(
         "DOI".to_string(),

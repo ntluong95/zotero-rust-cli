@@ -37,6 +37,12 @@ pub fn is_truthy(value: Option<&Value>) -> bool {
     }
 }
 
+fn first_truthy<'a>(first: Option<&'a Value>, second: Option<&'a Value>) -> Option<&'a Value> {
+    first
+        .filter(|value| is_truthy(Some(value)))
+        .or_else(|| second.filter(|value| is_truthy(Some(value))))
+}
+
 pub fn looks_like_csl_item(obj: &Value) -> bool {
     let Some(obj) = obj.as_object() else {
         return false;
@@ -59,7 +65,7 @@ pub fn issued_to_date(issued: Option<&Value>) -> String {
     let Some(obj) = issued.and_then(Value::as_object) else {
         return String::new();
     };
-    let Some(parts) = obj.get("date-parts").or_else(|| obj.get("raw")) else {
+    let Some(parts) = first_truthy(obj.get("date-parts"), obj.get("raw")) else {
         return String::new();
     };
     if let Some(raw) = parts.as_str() {
@@ -203,8 +209,16 @@ pub fn csl_item_to_connector(item: &Map<String, Value>, index: usize) -> Map<Str
         Value::String(format!("cli-anything-csl-{index}")),
     );
 
-    push_string_field(&mut out, "DOI", item.get("DOI").or_else(|| item.get("doi")));
-    push_string_field(&mut out, "url", item.get("URL").or_else(|| item.get("url")));
+    push_string_field(
+        &mut out,
+        "DOI",
+        first_truthy(item.get("DOI"), item.get("doi")),
+    );
+    push_string_field(
+        &mut out,
+        "url",
+        first_truthy(item.get("URL"), item.get("url")),
+    );
     if is_truthy(item.get("abstract")) {
         out.insert(
             "abstractNote".to_string(),
@@ -230,13 +244,17 @@ pub fn csl_item_to_connector(item: &Map<String, Value>, index: usize) -> Map<Str
     if !date.is_empty() {
         out.insert("date".to_string(), Value::String(date));
     }
-    let creators = authors_to_creators(item.get("author").or_else(|| item.get("editor")));
+    let creators = authors_to_creators(first_truthy(item.get("author"), item.get("editor")));
     if !creators.is_empty() {
         out.insert("creators".to_string(), Value::Array(creators));
     }
     let tags = item
         .get("keyword")
-        .or_else(|| item.get("categories"))
+        .filter(|value| is_truthy(Some(value)))
+        .or_else(|| {
+            item.get("categories")
+                .filter(|value| is_truthy(Some(value)))
+        })
         .and_then(Value::as_array)
         .map(|values| {
             values
