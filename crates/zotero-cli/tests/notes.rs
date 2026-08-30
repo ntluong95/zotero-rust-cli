@@ -557,7 +557,7 @@ fn test_add_note_result_handles_missing_item_id_gracefully() {
     ]);
     let bridge = JSBridgeClient::new(server.port);
 
-    let result = notes::add_note(
+    let err = notes::add_note(
         &runtime,
         &bridge,
         "DOC00001",
@@ -565,10 +565,62 @@ fn test_add_note_result_handles_missing_item_id_gracefully() {
         None,
         &session,
     )
-    .expect("succeeds even when the Bridge response omits itemID");
-    assert_eq!(result.key.as_deref(), Some("N1"));
-    assert_eq!(result.item_id, None);
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Invalid note creation response: missing or invalid key/itemID"
+    );
     server.finish();
+}
+
+#[test]
+fn test_note_add_rejects_malformed_identity_responses() {
+    let malformed_payloads = [
+        json!({}),
+        json!({"key": "ABC"}),
+        json!({"itemID": 123}),
+        json!({"key": "", "itemID": 123}),
+        json!({"key": "ABC", "itemID": null}),
+    ];
+
+    for payload in malformed_payloads {
+        let server = ScriptedServer::start(vec![
+            bridge_ownership_ok(),
+            ScriptedResponse::json(200, payload.clone()),
+        ]);
+        let bridge = JSBridgeClient::new(server.port);
+
+        let err = bridge.note_add(1, "PARENT1", "<p>hi</p>").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Invalid note creation response: missing or invalid key/itemID",
+            "failed to reject payload: {payload}"
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn test_note_add_accepts_valid_identity_responses() {
+    let valid_payloads = [
+        (json!({"key": "ABC", "itemID": 123}), "ABC", 123i64),
+        (json!({"key": "ABC", "itemID": 0}), "ABC", 0i64),
+    ];
+
+    for (payload, expected_key, expected_id) in valid_payloads {
+        let server = ScriptedServer::start(vec![
+            bridge_ownership_ok(),
+            ScriptedResponse::json(200, payload.clone()),
+        ]);
+        let bridge = JSBridgeClient::new(server.port);
+
+        let data = bridge
+            .note_add(1, "PARENT1", "<p>hi</p>")
+            .expect("should accept valid identity payload");
+        assert_eq!(data["key"], expected_key);
+        assert_eq!(data["itemID"], expected_id);
+        server.finish();
+    }
 }
 
 fn drain_request(stream: &mut std::net::TcpStream) {

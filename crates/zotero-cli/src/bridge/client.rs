@@ -585,7 +585,9 @@ impl JSBridgeClient {
     ///   `'ERROR: parent item not found'` string return, which is *not* a dict) ->
     ///   `"Failed to create note via JS bridge: {error}"`;
     /// - a well-formed (`ok: true`) but non-object payload -> `"Unexpected JS Bridge response
-    ///   (expected dict, got {type}): {data}"`.
+    ///   (expected dict, got {type}): {data}"`;
+    /// - an object payload missing concrete saved-note identity (`key` or `itemID`) ->
+    ///   `"Invalid note creation response: missing or invalid key/itemID"`.
     ///
     /// Exactly one `execute_js` call: no retry on timeout, transport failure, or an ambiguous/
     /// malformed response -- a second attempt could create a duplicate note server-side, and
@@ -604,6 +606,18 @@ impl JSBridgeClient {
                 python_type_name(&data),
                 format_bridge_data_for_error(&data)
             );
+        }
+        let key_valid = data
+            .get("key")
+            .and_then(Value::as_str)
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        let item_id_valid = data
+            .get("itemID")
+            .map(|v| v.is_i64() || v.is_u64())
+            .unwrap_or(false);
+        if !key_valid || !item_id_valid {
+            bail!("Invalid note creation response: missing or invalid key/itemID");
         }
         Ok(data)
     }
