@@ -447,3 +447,72 @@ pub fn build_environment(
 pub fn current_env_map() -> HashMap<String, String> {
     env::vars().collect()
 }
+
+/// `plugin_xpi_path()` (`zotero_paths.py:300-304`).
+pub fn plugin_xpi_path(profile_dir: Option<&Path>) -> Option<PathBuf> {
+    profile_dir.map(|p| p.join("extensions").join(crate::plugin::XPI_FILENAME))
+}
+
+/// `plugin_installed()` (`zotero_paths.py:307-312`).
+pub fn plugin_installed(profile_dir: Option<&Path>) -> bool {
+    let Some(profile_dir) = profile_dir else {
+        return false;
+    };
+    let our_xpi = profile_dir
+        .join("extensions")
+        .join(crate::plugin::XPI_FILENAME);
+    if our_xpi.is_file() {
+        return true;
+    }
+    let upstream_xpi = profile_dir
+        .join("extensions")
+        .join(crate::plugin::UPSTREAM_XPI_FILENAME);
+    upstream_xpi.is_file()
+}
+
+/// `bundled_plugin_version()` (`zotero_paths.py:320-330`).
+pub fn bundled_plugin_version() -> Option<String> {
+    let payload: serde_json::Value = serde_json::from_str(crate::plugin::MANIFEST_JSON).ok()?;
+    payload
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// `installed_plugin_version()` (`zotero_paths.py:333-344`).
+pub fn installed_plugin_version(profile_dir: Option<&Path>) -> Option<String> {
+    let profile_dir = profile_dir?;
+    let our_xpi = profile_dir
+        .join("extensions")
+        .join(crate::plugin::XPI_FILENAME);
+    let xpi_path = if our_xpi.is_file() {
+        our_xpi
+    } else {
+        let upstream_xpi = profile_dir
+            .join("extensions")
+            .join(crate::plugin::UPSTREAM_XPI_FILENAME);
+        if upstream_xpi.is_file() {
+            upstream_xpi
+        } else {
+            return None;
+        }
+    };
+    let file = std::fs::File::open(&xpi_path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut manifest_file = archive.by_name("manifest.json").ok()?;
+    let mut text = String::new();
+    use std::io::Read;
+    manifest_file.read_to_string(&mut text).ok()?;
+    let payload: serde_json::Value = serde_json::from_str(&text).ok()?;
+    payload
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// `plugin_update_available()` (`zotero_paths.py:347-351`).
+pub fn plugin_update_available(profile_dir: Option<&Path>) -> bool {
+    let installed = installed_plugin_version(profile_dir);
+    let bundled = bundled_plugin_version();
+    installed.is_some() && bundled.is_some() && installed != bundled
+}

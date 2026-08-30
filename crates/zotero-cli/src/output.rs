@@ -26,6 +26,7 @@ pub fn json_text(data: &Value) -> String {
 /// plan requires Exact-class commands to be byte-identical, not merely
 /// well-formed.
 pub fn emit(json_mode: bool, data: &Value) {
+    crate::audit::maybe_audit(data);
     if json_mode {
         println!("{}", json_text(data));
         return;
