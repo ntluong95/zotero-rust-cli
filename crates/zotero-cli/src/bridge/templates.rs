@@ -19,6 +19,13 @@ pub const T_FIND_DUPLICATES: &str = include_str!("js/find_duplicates.js");
 pub const T_ITEM_MERGE: &str = include_str!("js/item_merge.js");
 pub const T_SYNC: &str = include_str!("js/sync.js");
 
+// Phase 7 Slice 3: PDF cascade discovery primitives (`core/jsbridge.py`'s
+// `find_pdf`/`list_items_missing_pdf` -- Zotero's own "Find Available PDF", not the
+// open-access cascade, which lives entirely outside the Bridge in `pdf_fetch.rs`).
+pub const T_FIND_PDF: &str = include_str!("js/find_pdf.js");
+pub const T_FIND_PDF_VERIFY: &str = include_str!("js/find_pdf_verify.js");
+pub const T_LIST_ITEMS_MISSING_PDF: &str = include_str!("js/list_items_missing_pdf.js");
+
 /// Renders a JavaScript snippet by binding `params` safely via `JSON.parse`
 /// into the constant `P`.
 ///
@@ -189,4 +196,36 @@ pub fn render_item_merge(
 
 pub fn render_sync() -> &'static str {
     T_SYNC
+}
+
+pub fn render_find_pdf(library_id: u32, key: &str) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "key": key,
+    });
+    render(T_FIND_PDF, &params)
+}
+
+pub fn render_find_pdf_verify(
+    library_id: u32,
+    key: &str,
+    timeout_secs: u64,
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "key": key,
+        "timeoutSecs": timeout_secs,
+    });
+    render(T_FIND_PDF_VERIFY, &params)
+}
+
+pub fn render_list_items_missing_pdf(
+    library_id: u32,
+    key: &str,
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "key": key,
+    });
+    render(T_LIST_ITEMS_MISSING_PDF, &params)
 }

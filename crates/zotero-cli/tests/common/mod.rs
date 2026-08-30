@@ -21,6 +21,10 @@ pub enum ScriptedResponse {
     /// Accepts the connection then drops it without writing anything -- a transport-level
     /// failure (connection reset / unexpected EOF), never a valid HTTP response.
     Drop,
+    /// Accepts the connection, reads the request, then sleeps past the client's own configured
+    /// timeout before dropping without responding -- produces a genuine client-side timeout
+    /// error (unlike `Drop`, which resets immediately), for testing ambiguous-timeout recovery.
+    Stall(std::time::Duration),
 }
 
 impl ScriptedResponse {
@@ -138,6 +142,10 @@ impl ScriptedServer {
                     ScriptedResponse::Drop => {
                         drop(stream);
                     }
+                    ScriptedResponse::Stall(duration) => {
+                        thread::sleep(duration);
+                        drop(stream);
+                    }
                     ScriptedResponse::Http {
                         status,
                         headers,
@@ -221,12 +229,13 @@ pub fn build_fixture_sqlite(dir: &Path) -> PathBuf {
         CREATE TABLE items (itemID INTEGER PRIMARY KEY, itemTypeID INTEGER, dateAdded TEXT, dateModified TEXT, clientDateModified TEXT, libraryID INTEGER, key TEXT, version INTEGER, synced INTEGER);
         INSERT INTO items VALUES (1, 1, '2026-01-01', '2026-01-01', '2026-01-01', 1, 'ITEM0001', 1, 1);
         INSERT INTO items VALUES (2, 1, '2026-01-01', '2026-01-01', '2026-01-01', 1, 'ITEM0002', 1, 1);
+        INSERT INTO items VALUES (3, 1, '2026-01-01', '2026-01-01', '2026-01-01', 1, 'ITEM0003', 1, 1);
         CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT, fieldFormatID INTEGER);
-        INSERT INTO fields VALUES (1, 'title', 0);
+        INSERT INTO fields VALUES (1, 'title', 0), (2, 'DOI', 0);
         CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT);
-        INSERT INTO itemDataValues VALUES (1, 'Test Item One'), (2, 'Test Item Two');
+        INSERT INTO itemDataValues VALUES (1, 'Test Item One'), (2, 'Test Item Two'), (3, 'Test Item Three (has PDF)'), (4, '10.1101/2024.01.01.000001');
         CREATE TABLE itemData (itemID INTEGER, fieldID INTEGER, valueID INTEGER);
-        INSERT INTO itemData VALUES (1, 1, 1), (2, 1, 2);
+        INSERT INTO itemData VALUES (1, 1, 1), (2, 1, 2), (3, 1, 3), (2, 2, 4);
         CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, firstName TEXT, lastName TEXT, fieldMode INTEGER);
         CREATE TABLE itemCreators (itemID INTEGER, creatorID INTEGER, creatorTypeID INTEGER, orderIndex INTEGER);
         CREATE TABLE tags (tagID INTEGER PRIMARY KEY, name TEXT);
@@ -238,6 +247,7 @@ pub fn build_fixture_sqlite(dir: &Path) -> PathBuf {
         CREATE TABLE collectionItems (collectionID INTEGER, itemID INTEGER, orderIndex INTEGER);
         CREATE TABLE itemNotes (itemID INTEGER PRIMARY KEY, parentItemID INTEGER, note TEXT, title TEXT);
         CREATE TABLE itemAttachments (itemID INTEGER PRIMARY KEY, parentItemID INTEGER, linkMode INTEGER, contentType TEXT, charsetID INTEGER, path TEXT, syncState INTEGER, storageModTime INTEGER, storageHash TEXT, lastProcessedModificationTime INTEGER);
+        INSERT INTO itemAttachments (itemID, parentItemID, linkMode, contentType, path) VALUES (100, 3, 0, 'application/pdf', 'storage:existing.pdf');
         CREATE TABLE itemAnnotations (itemID INTEGER PRIMARY KEY, parentItemID INTEGER, type INTEGER, authorName TEXT, text TEXT, comment TEXT, color TEXT, pageLabel TEXT, sortIndex TEXT, position TEXT, isExternal INTEGER);
         CREATE TABLE savedSearches (savedSearchID INTEGER PRIMARY KEY, savedSearchName TEXT, clientDateModified TEXT, libraryID INTEGER, key TEXT, version INTEGER, synced INTEGER);
         CREATE TABLE savedSearchConditions (savedSearchID INTEGER, searchConditionID INTEGER, condition TEXT, operator TEXT, value TEXT, required INTEGER);
