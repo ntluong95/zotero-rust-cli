@@ -89,6 +89,23 @@ fn create_fake_profile(dir: &Path, plugin_version: Option<&str>) -> std::path::P
     profile_dir
 }
 
+fn create_fake_zotero_install(dir: &Path) -> std::path::PathBuf {
+    let install_dir = dir.join("fake_zotero_install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    let executable = install_dir.join(if cfg!(windows) {
+        "zotero.exe"
+    } else {
+        "zotero"
+    });
+    std::fs::write(&executable, b"").unwrap();
+    std::fs::write(
+        install_dir.join("application.ini"),
+        "[App]\nVersion=7.0.1\n",
+    )
+    .unwrap();
+    executable
+}
+
 // ── app ping ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -177,6 +194,7 @@ fn app_doctor_healthy_fixture_all_checks_pass() {
     let dir = TestDir::new("app-doctor-healthy");
     build_fixture_sqlite(dir.path());
     let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let executable = create_fake_zotero_install(dir.path());
 
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
@@ -191,7 +209,10 @@ fn app_doctor_healthy_fixture_all_checks_pass() {
     let (code, value) = run_cli(
         dir.path(),
         server.port,
-        &[("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap())],
+        &[
+            ("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap()),
+            ("ZOTERO_EXECUTABLE", executable.to_str().unwrap()),
+        ],
         &["app", "doctor"],
     );
     server.finish();
@@ -222,6 +243,7 @@ fn app_doctor_degraded_when_connector_unavailable() {
     let dir = TestDir::new("app-doctor-connector-down");
     build_fixture_sqlite(dir.path());
     let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let executable = create_fake_zotero_install(dir.path());
 
     let server = ScriptedServer::start(vec![
         connector_ping_unavailable(),
@@ -231,7 +253,10 @@ fn app_doctor_degraded_when_connector_unavailable() {
     let (code, value) = run_cli(
         dir.path(),
         server.port,
-        &[("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap())],
+        &[
+            ("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap()),
+            ("ZOTERO_EXECUTABLE", executable.to_str().unwrap()),
+        ],
         &["app", "doctor"],
     );
     server.finish();
@@ -254,6 +279,7 @@ fn app_doctor_degraded_when_plugin_update_available() {
     let dir = TestDir::new("app-doctor-plugin-update");
     build_fixture_sqlite(dir.path());
     let profile_dir = create_fake_profile(dir.path(), Some("1.0.0"));
+    let executable = create_fake_zotero_install(dir.path());
 
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
@@ -268,7 +294,10 @@ fn app_doctor_degraded_when_plugin_update_available() {
     let (code, value) = run_cli(
         dir.path(),
         server.port,
-        &[("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap())],
+        &[
+            ("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap()),
+            ("ZOTERO_EXECUTABLE", executable.to_str().unwrap()),
+        ],
         &["app", "doctor"],
     );
     server.finish();
@@ -305,6 +334,7 @@ fn app_doctor_degraded_when_local_api_unavailable() {
     let dir = TestDir::new("app-doctor-local-api-down");
     build_fixture_sqlite(dir.path());
     let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let executable = create_fake_zotero_install(dir.path());
 
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
@@ -323,7 +353,10 @@ fn app_doctor_degraded_when_local_api_unavailable() {
     let (code, value) = run_cli(
         dir.path(),
         server.port,
-        &[("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap())],
+        &[
+            ("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap()),
+            ("ZOTERO_EXECUTABLE", executable.to_str().unwrap()),
+        ],
         &["app", "doctor"],
     );
     server.finish();
@@ -344,6 +377,7 @@ fn app_doctor_degraded_when_bridge_eval_fails() {
     let dir = TestDir::new("app-doctor-bridge-eval-fail");
     build_fixture_sqlite(dir.path());
     let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let executable = create_fake_zotero_install(dir.path());
 
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
@@ -358,7 +392,10 @@ fn app_doctor_degraded_when_bridge_eval_fails() {
     let (code, value) = run_cli(
         dir.path(),
         server.port,
-        &[("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap())],
+        &[
+            ("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap()),
+            ("ZOTERO_EXECUTABLE", executable.to_str().unwrap()),
+        ],
         &["app", "doctor"],
     );
     server.finish();
@@ -379,13 +416,17 @@ fn app_doctor_plugin_missing_diagnostic() {
     build_fixture_sqlite(dir.path());
     // Create profile directory with NO plugin installed
     let profile_dir = create_fake_profile(dir.path(), None);
+    let executable = create_fake_zotero_install(dir.path());
 
     let server = ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_available()]);
 
     let (code, value) = run_cli(
         dir.path(),
         server.port,
-        &[("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap())],
+        &[
+            ("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap()),
+            ("ZOTERO_EXECUTABLE", executable.to_str().unwrap()),
+        ],
         &["app", "doctor"],
     );
     server.finish();
