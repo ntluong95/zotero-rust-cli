@@ -940,18 +940,17 @@ fn item_merge_reports_conflict_when_a_merged_away_key_still_resolves_live() {
     assert_ne!(payload["outcome"], "applied");
 }
 
-// ── Review Blocker 3: `item duplicates` deferred, removed from the public CLI surface ──
+// ── `item duplicates` is now implemented in the ANALYSIS / HYGIENE slice ──
 
 #[test]
-fn item_duplicates_is_no_longer_a_recognized_subcommand() {
+fn item_duplicates_is_now_a_recognized_subcommand() {
     let output = std::process::Command::new(common::bin_path())
-        .args(["item", "duplicates"])
+        .args(["item", "duplicates", "--help"])
         .output()
         .unwrap();
-    assert_ne!(
+    assert_eq!(
         output.status.code(),
         Some(0),
-        "item duplicates must be rejected as an unrecognized subcommand, not silently accepted \
-         with a partial --by contract"
+        "item duplicates is now a supported command in the analysis-hygiene slice"
     );
 }
