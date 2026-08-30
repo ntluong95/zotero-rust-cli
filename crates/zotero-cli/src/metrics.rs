@@ -16,7 +16,7 @@ use crate::error::DomainError;
 use crate::runtime::RuntimeContext;
 use crate::session::SessionState;
 
-const NIH_ICITE_BASE_URL: &str = "https://icite.od.nih.gov/api/pubs";
+pub const NIH_ICITE_BASE_URL: &str = "https://icite.od.nih.gov/api/pubs";
 const USER_AGENT: &str = "Mozilla/5.0";
 const TIMEOUT_SECS: u64 = 15;
 
@@ -25,11 +25,11 @@ const TIMEOUT_SECS: u64 = 15;
 /// External Data Egress: Sends only `pmids=<pmid>` parameter to `https://icite.od.nih.gov/api/pubs`.
 /// No API keys, credentials, or other metadata are sent.
 pub fn get_metrics(pmid: &str) -> Value {
-    let base_url = std::env::var("CLI_ANYTHING_ZOTERO_ICITE_URL")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| NIH_ICITE_BASE_URL.to_string());
+    get_metrics_with_url(pmid, NIH_ICITE_BASE_URL)
+}
+
+/// Internal injectable test seam: fetch metrics from a specific base URL.
+pub fn get_metrics_with_url(pmid: &str, base_url: &str) -> Value {
     let url = format!("{base_url}?pmids={pmid}&format=json");
     let req = ureq::get(&url)
         .header("User-Agent", USER_AGENT)
@@ -99,6 +99,56 @@ pub fn get_metrics(pmid: &str) -> Value {
     })
 }
 
+fn resolve_pmid(
+    runtime: &RuntimeContext,
+    ref_id: &str,
+    is_pmid: bool,
+    session: &SessionState,
+) -> Result<String> {
+    if is_pmid {
+        return Ok(ref_id.to_string());
+    }
+
+    let item = catalog::get_item(runtime, Some(ref_id), session)?;
+    let mut extracted_pmid: Option<String> = None;
+
+    if let Some(val) = item.fields.get("PMID") {
+        let s = match val {
+            Value::String(s) => s.trim().to_string(),
+            Value::Number(n) => n.to_string(),
+            _ => String::new(),
+        };
+        if !s.is_empty() {
+            extracted_pmid = Some(s);
+        }
+    }
+
+    if extracted_pmid.is_none() {
+        if let Some(extra_val) = item.fields.get("extra").and_then(|v| v.as_str()) {
+            for line in extra_val.lines() {
+                let stripped = line.trim();
+                if stripped.to_uppercase().starts_with("PMID:") {
+                    if let Some((_, rest)) = stripped.split_once(':') {
+                        let p = rest.trim();
+                        if !p.is_empty() {
+                            extracted_pmid = Some(p.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    match extracted_pmid {
+        Some(p) => Ok(p),
+        None => Err(DomainError::new(format!(
+            "No PMID found in item '{ref_id}' (checked PMID field and extra text). Use --pmid flag to pass a PMID directly."
+        ))
+        .into()),
+    }
+}
+
 /// Look up citation metrics for an item or direct PMID (`zotero_cli.py:1410-1441`).
 pub fn item_metrics(
     runtime: &RuntimeContext,
@@ -106,50 +156,17 @@ pub fn item_metrics(
     is_pmid: bool,
     session: &SessionState,
 ) -> Result<Value> {
-    let pmid = if is_pmid {
-        ref_id.to_string()
-    } else {
-        let item = catalog::get_item(runtime, Some(ref_id), session)?;
-        let mut extracted_pmid: Option<String> = None;
+    item_metrics_with_url(runtime, ref_id, is_pmid, session, NIH_ICITE_BASE_URL)
+}
 
-        if let Some(val) = item.fields.get("PMID") {
-            let s = match val {
-                Value::String(s) => s.trim().to_string(),
-                Value::Number(n) => n.to_string(),
-                _ => String::new(),
-            };
-            if !s.is_empty() {
-                extracted_pmid = Some(s);
-            }
-        }
-
-        if extracted_pmid.is_none() {
-            if let Some(extra_val) = item.fields.get("extra").and_then(|v| v.as_str()) {
-                for line in extra_val.lines() {
-                    let stripped = line.trim();
-                    if stripped.to_uppercase().starts_with("PMID:") {
-                        if let Some((_, rest)) = stripped.split_once(':') {
-                            let p = rest.trim();
-                            if !p.is_empty() {
-                                extracted_pmid = Some(p.to_string());
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        match extracted_pmid {
-            Some(p) => p,
-            None => {
-                return Err(DomainError::new(format!(
-                    "No PMID found in item '{ref_id}' (checked PMID field and extra text). Use --pmid flag to pass a PMID directly."
-                ))
-                .into());
-            }
-        }
-    };
-
-    Ok(get_metrics(&pmid))
+/// Internal injectable test seam: look up citation metrics with custom base URL.
+pub fn item_metrics_with_url(
+    runtime: &RuntimeContext,
+    ref_id: &str,
+    is_pmid: bool,
+    session: &SessionState,
+    base_url: &str,
+) -> Result<Value> {
+    let pmid = resolve_pmid(runtime, ref_id, is_pmid, session)?;
+    Ok(get_metrics_with_url(&pmid, base_url))
 }

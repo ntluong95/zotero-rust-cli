@@ -44,6 +44,11 @@ pub struct DuplicatePayload {
     pub groups: Vec<DuplicateGroup>,
 }
 
+static WS_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
+static NON_WORD_WS_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"[^\w\s]").unwrap());
+
 /// Normalizes a DOI string (`hygiene.py:13-17`):
 /// - lowercase
 /// - strip URL prefix (`https?://(dx\.)?doi\.org/`)
@@ -73,21 +78,10 @@ pub fn norm_doi(value: &str) -> String {
 /// - collapse consecutive whitespace to a single space
 /// - remove characters matching `[^\w\s]`
 pub fn norm_title(value: &str) -> String {
-    let lower = value.trim().to_lowercase();
-    let mut cleaned = String::with_capacity(lower.len());
-    let mut prev_is_space = false;
-    for c in lower.chars() {
-        if c.is_whitespace() {
-            if !prev_is_space {
-                cleaned.push(' ');
-                prev_is_space = true;
-            }
-        } else if c.is_alphanumeric() || c == '_' {
-            cleaned.push(c);
-            prev_is_space = false;
-        }
-    }
-    cleaned.trim().to_string()
+    let text = value.trim().to_lowercase();
+    let text = WS_RE.replace_all(&text, " ");
+    let text = NON_WORD_WS_RE.replace_all(&text, "");
+    text.to_string()
 }
 
 /// Find duplicates by DOI or title from SQLite (`hygiene.py:27-106`).
@@ -142,15 +136,7 @@ pub fn find_duplicates(
             DuplicatesBy::Zotero => unreachable!("zotero duplicate mode uses bridge"),
         };
 
-        let date = if let Some(d) = &item.date {
-            if !d.is_empty() {
-                d.clone()
-            } else {
-                item.date_added.clone()
-            }
-        } else {
-            item.date_added.clone()
-        };
+        let date = item.date.clone().unwrap_or_default();
 
         let member = DuplicateItemMember {
             key: item.key.clone(),

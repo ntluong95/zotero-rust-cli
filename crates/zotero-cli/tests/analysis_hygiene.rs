@@ -331,9 +331,11 @@ fn build_duplicates_fixture(dir: &Path) -> PathBuf {
     let conn = rusqlite::Connection::open(&sqlite_path).unwrap();
     conn.execute_batch(
         r#"
-        -- Clear items
+        -- Clear items, attachments, and values
         DELETE FROM itemData;
         DELETE FROM items;
+        DELETE FROM itemAttachments;
+        DELETE FROM itemDataValues;
 
         -- Create items with DOI variants (Group 1: 10.1000/182)
         INSERT INTO items VALUES (1, 1, '2026-01-01', '2026-01-01', '2026-01-01', 1, 'DOI0001', 1, 1);
@@ -537,6 +539,117 @@ fn test_duplicates_zotero_mode_success_and_error() {
 }
 
 // =========================================================================
+#[test]
+fn test_title_normalization_unicode_and_characters() {
+    use zotero_cli::hygiene::norm_title;
+
+    assert_eq!(
+        norm_title("  Café & Münchner: Über_morgen  "),
+        "café  münchner über_morgen"
+    );
+    assert_eq!(
+        norm_title("Quantum-Computing: A Review! (2nd ed.)"),
+        "quantumcomputing a review 2nd ed"
+    );
+    assert_eq!(
+        norm_title("Title\t\n  with \r\n multiple   spaces"),
+        "title with multiple spaces"
+    );
+    assert_eq!(norm_title("underscore_test_123"), "underscore_test_123");
+    assert_eq!(
+        norm_title("  量子计算与量子信息（第二版）  "),
+        "量子计算与量子信息第二版"
+    );
+    assert_eq!(
+        norm_title("Русский текст: Обзор 2026!"),
+        "русский текст обзор 2026"
+    );
+}
+
+#[test]
+fn test_duplicates_member_sorting_exact_parity() {
+    let dir = TestDir::new("dups-member-sorting");
+    let sqlite_path = build_fixture_sqlite(dir.path());
+    let conn = rusqlite::Connection::open(&sqlite_path).unwrap();
+
+    // fieldID 6 is 'date' in Zotero schema, fieldID 2 is 'DOI', fieldID 1 is 'title'
+    conn.execute_batch(
+        r#"
+        DELETE FROM itemData;
+        DELETE FROM items;
+        DELETE FROM itemAttachments;
+        DELETE FROM itemDataValues;
+        INSERT OR IGNORE INTO fields VALUES (6, 'date', 0);
+
+        -- 4 items with same DOI (10.1000/sort_test)
+        -- Item 1: hasPdf=false, date missing (dateAdded='2026-01-01') -> member date must be "", sort key (1, "")
+        INSERT INTO items VALUES (1, 1, '2026-01-01', '2026-01-01', '2026-01-01', 1, 'NO_PDF_NO_DATE', 1, 1);
+        -- Item 2: hasPdf=false, date='2023-01-01' -> sort key (1, "2023-01-01")
+        INSERT INTO items VALUES (2, 1, '2026-01-01', '2026-01-01', '2026-01-01', 1, 'NO_PDF_WITH_DATE', 1, 1);
+        -- Item 3: hasPdf=true, date='2025-01-01' -> sort key (0, "2025-01-01")
+        INSERT INTO items VALUES (3, 1, '2026-01-01', '2026-01-01', '2026-01-01', 1, 'PDF_NEWER', 1, 1);
+        -- Item 4: hasPdf=true, date='2024-01-01' -> sort key (0, "2024-01-01")
+        INSERT INTO items VALUES (4, 1, '2026-01-01', '2026-01-01', '2026-01-01', 1, 'PDF_OLDER', 1, 1);
+
+        INSERT INTO itemDataValues VALUES (1, '10.1000/sort_test');
+        INSERT INTO itemDataValues VALUES (2, 'Sort Test Title');
+        INSERT INTO itemDataValues VALUES (3, '2023-01-01');
+        INSERT INTO itemDataValues VALUES (4, '2025-01-01');
+        INSERT INTO itemDataValues VALUES (5, '2024-01-01');
+
+        INSERT INTO itemData VALUES (1, 2, 1), (1, 1, 2);
+        INSERT INTO itemData VALUES (2, 2, 1), (2, 1, 2), (2, 6, 3);
+        INSERT INTO itemData VALUES (3, 2, 1), (3, 1, 2), (3, 6, 4);
+        INSERT INTO itemData VALUES (4, 2, 1), (4, 1, 2), (4, 6, 5);
+
+        -- Attachments for items 3 and 4
+        INSERT INTO items VALUES (30, 1, '2026-01-01', '2026-01-01', '2026-01-01', 1, 'ATT_PDF3', 1, 1);
+        INSERT INTO itemAttachments (itemID, parentItemID, linkMode, contentType, path) VALUES (30, 3, 0, 'application/pdf', 'storage:p3.pdf');
+        INSERT INTO items VALUES (40, 1, '2026-01-01', '2026-01-01', '2026-01-01', 1, 'ATT_PDF4', 1, 1);
+        INSERT INTO itemAttachments (itemID, parentItemID, linkMode, contentType, path) VALUES (40, 4, 0, 'application/pdf', 'storage:p4.pdf');
+        "#,
+    ).unwrap();
+
+    let server = ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_available()]);
+    let (code, output) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "duplicates", "--by", "doi"],
+    );
+    server.finish();
+
+    assert_eq!(code, 0);
+    assert_eq!(output["group_count"], 1);
+    let group = &output["groups"][0];
+    let items = group["items"].as_array().unwrap();
+    assert_eq!(items.len(), 4);
+
+    // Expected order:
+    // 1. PDF_OLDER: (0, "2024-01-01")
+    // 2. PDF_NEWER: (0, "2025-01-01")
+    // 3. NO_PDF_NO_DATE: (1, "") -> date is empty string, NOT dateAdded fallback
+    // 4. NO_PDF_WITH_DATE: (1, "2023-01-01")
+    assert_eq!(items[0]["key"], "PDF_OLDER");
+    assert_eq!(items[0]["hasPdf"], true);
+    assert_eq!(items[0]["date"], "2024-01-01");
+
+    assert_eq!(items[1]["key"], "PDF_NEWER");
+    assert_eq!(items[1]["hasPdf"], true);
+    assert_eq!(items[1]["date"], "2025-01-01");
+
+    assert_eq!(items[2]["key"], "NO_PDF_NO_DATE");
+    assert_eq!(items[2]["hasPdf"], false);
+    assert_eq!(items[2]["date"], ""); // Confirms date is "" and dateAdded was NOT used as fallback
+
+    assert_eq!(items[3]["key"], "NO_PDF_WITH_DATE");
+    assert_eq!(items[3]["hasPdf"], false);
+    assert_eq!(items[3]["date"], "2023-01-01");
+
+    assert_eq!(group["keep_suggestion"], "PDF_OLDER");
+}
+
+// =========================================================================
 // 3. ITEM METRICS TESTS
 // =========================================================================
 
@@ -545,7 +658,7 @@ fn test_metrics_direct_pmid_and_field_pmid() {
     let dir = TestDir::new("metrics-direct");
     build_comprehensive_fixture(dir.path());
 
-    // 1. Direct --pmid
+    // 1. Direct --pmid via injectable test seam
     let icite_server = ScriptedServer::start(vec![ScriptedResponse::json(
         200,
         json!({
@@ -562,17 +675,23 @@ fn test_metrics_direct_pmid_and_field_pmid() {
             }]
         }),
     )]);
-    let zotero_server =
-        ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_available()]);
     let icite_url = format!("http://127.0.0.1:{}/api/pubs", icite_server.port);
 
-    let (code, output) = run_cli(
-        dir.path(),
-        zotero_server.port,
-        &[("CLI_ANYTHING_ZOTERO_ICITE_URL", &icite_url)],
-        &["item", "metrics", "25619680", "--pmid"],
-    );
-    assert_eq!(code, 0);
+    let data_dir_str = dir.path().to_str().unwrap();
+    let runtime =
+        zotero_cli::runtime::build_runtime_context(zotero_cli::runtime::BuildEnvironmentArgs {
+            backend: "sqlite",
+            data_dir: Some(data_dir_str),
+            profile_dir: None,
+            executable: None,
+        });
+    let session = zotero_cli::session::SessionState::default();
+
+    let output = zotero_cli::metrics::item_metrics_with_url(
+        &runtime, "25619680", true, &session, &icite_url,
+    )
+    .unwrap();
+
     assert_eq!(output["pmid"], 25619680);
     assert_eq!(output["year"], 2015);
     assert_eq!(output["journal"], "Nature");
@@ -584,7 +703,6 @@ fn test_metrics_direct_pmid_and_field_pmid() {
     let reqs = icite_server.finish();
     assert_eq!(reqs.len(), 1);
     assert!(reqs[0].path.contains("pmids=25619680"));
-    zotero_server.finish();
 
     // 2. Lookup via item key where PMID is in fields["PMID"] (ITEM0003 has PMID 12345678)
     let icite_server2 = ScriptedServer::start(vec![ScriptedResponse::json(
@@ -603,21 +721,19 @@ fn test_metrics_direct_pmid_and_field_pmid() {
             }]
         }),
     )]);
-    let zotero_server2 =
-        ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_available()]);
     let icite_url2 = format!("http://127.0.0.1:{}/api/pubs", icite_server2.port);
 
-    let (code2, output2) = run_cli(
-        dir.path(),
-        zotero_server2.port,
-        &[("CLI_ANYTHING_ZOTERO_ICITE_URL", &icite_url2)],
-        &["item", "metrics", "ITEM0003"],
-    );
-    assert_eq!(code2, 0);
+    let output2 = zotero_cli::metrics::item_metrics_with_url(
+        &runtime,
+        "ITEM0003",
+        false,
+        &session,
+        &icite_url2,
+    )
+    .unwrap();
     assert_eq!(output2["pmid"], 12345678);
     assert_eq!(output2["title"], "Study from PMID field");
     icite_server2.finish();
-    zotero_server2.finish();
 
     // 3. Lookup via item key where PMID is in fields["extra"] (ITEM0002 has extra "PMID: 98765432")
     let icite_server3 = ScriptedServer::start(vec![ScriptedResponse::json(
@@ -636,21 +752,19 @@ fn test_metrics_direct_pmid_and_field_pmid() {
             }]
         }),
     )]);
-    let zotero_server3 =
-        ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_available()]);
     let icite_url3 = format!("http://127.0.0.1:{}/api/pubs", icite_server3.port);
 
-    let (code3, output3) = run_cli(
-        dir.path(),
-        zotero_server3.port,
-        &[("CLI_ANYTHING_ZOTERO_ICITE_URL", &icite_url3)],
-        &["item", "metrics", "ITEM0002"],
-    );
-    assert_eq!(code3, 0);
+    let output3 = zotero_cli::metrics::item_metrics_with_url(
+        &runtime,
+        "ITEM0002",
+        false,
+        &session,
+        &icite_url3,
+    )
+    .unwrap();
     assert_eq!(output3["pmid"], 98765432);
     assert_eq!(output3["title"], "Study from extra field");
     icite_server3.finish();
-    zotero_server3.finish();
 
     // 4. Missing PMID error on item without PMID (no network call dispatched)
     let server = ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_available()]);
@@ -676,20 +790,11 @@ fn test_metrics_icite_errors() {
     // 1. Empty data array
     let icite_server =
         ScriptedServer::start(vec![ScriptedResponse::json(200, json!({"data": []}))]);
-    let zotero_server =
-        ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_available()]);
     let icite_url = format!("http://127.0.0.1:{}/api/pubs", icite_server.port);
 
-    let (code, output) = run_cli(
-        dir.path(),
-        zotero_server.port,
-        &[("CLI_ANYTHING_ZOTERO_ICITE_URL", &icite_url)],
-        &["item", "metrics", "12345", "--pmid"],
-    );
-    assert_eq!(code, 1);
+    let output = zotero_cli::metrics::get_metrics_with_url("12345", &icite_url);
     assert_eq!(output["error"], "No data for PMID 12345");
     icite_server.finish();
-    zotero_server.finish();
 
     // 2. HTTP 500
     let icite_server2 = ScriptedServer::start(vec![ScriptedResponse::Http {
@@ -697,23 +802,14 @@ fn test_metrics_icite_errors() {
         headers: vec![],
         body: b"Internal Server Error".to_vec(),
     }]);
-    let zotero_server2 =
-        ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_available()]);
     let icite_url2 = format!("http://127.0.0.1:{}/api/pubs", icite_server2.port);
 
-    let (code2, output2) = run_cli(
-        dir.path(),
-        zotero_server2.port,
-        &[("CLI_ANYTHING_ZOTERO_ICITE_URL", &icite_url2)],
-        &["item", "metrics", "12345", "--pmid"],
-    );
-    assert_eq!(code2, 1);
+    let output2 = zotero_cli::metrics::get_metrics_with_url("12345", &icite_url2);
     assert!(output2["error"]
         .as_str()
         .unwrap()
         .contains("Failed to fetch metrics for PMID 12345: HTTP 500"));
     icite_server2.finish();
-    zotero_server2.finish();
 }
 
 #[test]
@@ -732,10 +828,24 @@ fn test_metrics_response_mapping_logic() {
         }]
     });
 
-    let d = &raw_payload["data"][0];
-    let title_full = d["title"].as_str().unwrap();
-    let title_truncated: String = title_full.chars().take(80).collect();
-    assert_eq!(title_truncated.len(), 80);
+    let srv = ScriptedServer::start(vec![ScriptedResponse::json(200, raw_payload)]);
+    let base_url = format!("http://127.0.0.1:{}/api/pubs", srv.port);
+    let output = zotero_cli::metrics::get_metrics_with_url("25619680", &base_url);
+    srv.finish();
+
+    assert_eq!(output["pmid"], 25619680);
+    assert_eq!(
+        output["title"],
+        "A very long title that exceeds eighty characters in length to verify proper trun"
+    );
+    assert_eq!(output["title"].as_str().unwrap().chars().count(), 80);
+    assert_eq!(output["year"], 2015);
+    assert_eq!(output["journal"], "Nature");
+    assert_eq!(output["citation_count"], 42);
+    assert_eq!(output["rcr"], 2.5);
+    assert_eq!(output["nih_percentile"], 75.0);
+    assert_eq!(output["expected_citations"], 5.0);
+    assert_eq!(output["doi"], "10.1038/nature14136");
 }
 
 // =========================================================================
