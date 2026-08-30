@@ -92,6 +92,15 @@ pub enum Commands {
     /// DOCX citation inspection and rendering commands.
     #[command(subcommand)]
     Docx(DocxCommands),
+    /// Execute raw JavaScript inside Zotero via the CLI Bridge (privileged; JS Bridge only).
+    Js {
+        code: String,
+        /// Seconds to wait for the script to complete.
+        #[arg(long, default_value_t = 10)]
+        wait: u64,
+    },
+    /// Trigger a Zotero sync cycle (privileged; JS Bridge only).
+    Sync,
 }
 
 #[derive(Subcommand, Debug)]
@@ -134,6 +143,29 @@ pub enum DocxCommands {
 pub enum AppCommands {
     /// Report Zotero installation, data paths, and connector/Local API availability.
     Status,
+    /// Stage the fork-owned CLI Bridge XPI plugin to a local output directory.
+    InstallPlugin {
+        /// Directory to stage the XPI file into (must then be installed manually via
+        /// Zotero's Add-ons manager -- this never touches the Zotero profile directly).
+        #[arg(long = "output-dir")]
+        output_dir: Option<String>,
+    },
+    /// Report whether the CLI Bridge endpoint is active and who owns it.
+    PluginStatus {
+        #[arg(long = "output-dir")]
+        output_dir: Option<String>,
+    },
+    /// Remove the staged CLI Bridge XPI artifact (does not touch an installed extension).
+    UninstallPlugin {
+        #[arg(long = "output-dir")]
+        output_dir: Option<String>,
+    },
+    /// Perform the explicit, deliberate Local API write-authorization handshake
+    /// (`POST /api/local/authorize`). Blocks on a human consent dialog in Zotero.
+    AuthorizeLocalApi {
+        #[arg(long = "app-name", default_value = "zotero-rust-cli")]
+        app_name: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -208,6 +240,69 @@ pub enum ItemCommands {
         #[arg(long = "min-score", default_value_t = 0.5)]
         min_score: f32,
     },
+    /// Update one or more fields on an item. Local API when available, JS Bridge fallback.
+    Update {
+        item_key: String,
+        /// A `field=value` pair; may be repeated.
+        #[arg(long = "field", value_parser = parse_key_val)]
+        fields: Vec<(String, String)>,
+    },
+    /// Add or remove tags on an item. Local API when available, JS Bridge fallback.
+    Tag {
+        item_key: String,
+        #[arg(long = "add")]
+        add: Vec<String>,
+        #[arg(long = "remove")]
+        remove: Vec<String>,
+    },
+    /// Delete an item. Local API when available, JS Bridge fallback.
+    Delete {
+        item_key: String,
+        /// Required to actually perform the deletion (safety confirmation).
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Attach a file to an item (JS Bridge only -- Local API's multi-step upload
+    /// protocol is not implemented in this build).
+    Attach { item_key: String, pdf_path: String },
+    /// Add an item to a collection without disturbing its other collection memberships.
+    /// Local API when available (read-modify-write full-array-replace), JS Bridge fallback.
+    AddToCollection {
+        item_ref: String,
+        collection_ref: String,
+    },
+    /// Move an item to a collection, one Zotero-side operation. Local API when available
+    /// (read-modify-write full-array-replace), JS Bridge fallback (supports at most one
+    /// `--from` source and does not support `--all-other-collections`).
+    MoveToCollection {
+        item_ref: String,
+        collection_ref: String,
+        /// Source collection(s) to remove the item from. May be repeated.
+        #[arg(long = "from")]
+        from: Vec<String>,
+        /// Remove the item from every other collection it currently belongs to.
+        #[arg(long = "all-other-collections")]
+        all_other_collections: bool,
+    },
+    /// Merge one or more items into a target item (privileged; JS Bridge only).
+    Merge {
+        keep_key: String,
+        merge_keys: Vec<String>,
+        /// Required to actually perform the merge (safety confirmation).
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+/// Parses a `key=value` command-line argument into a tuple, for `--field key=value`.
+fn parse_key_val(s: &str) -> Result<(String, String), String> {
+    let (key, value) = s
+        .split_once('=')
+        .ok_or_else(|| format!("expected `key=value`, got: {s}"))?;
+    if key.is_empty() {
+        return Err(format!("expected `key=value`, got: {s}"));
+    }
+    Ok((key.to_string(), value.to_string()))
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -274,6 +369,38 @@ pub enum CollectionCommands {
     },
     /// Print the collection hierarchy for the current (or default) library.
     Tree,
+    /// Create a new collection. Local API when available, JS Bridge fallback.
+    Create {
+        name: String,
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    /// Rename a collection and/or move it under a new parent. Local API when available,
+    /// JS Bridge fallback.
+    Rename {
+        collection_key: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    /// Delete a collection. Local API when available, JS Bridge fallback.
+    Delete {
+        collection_key: String,
+        /// Also delete the items contained in this collection (JS Bridge only --
+        /// no Local API primitive for cascading item deletion exists in this build).
+        #[arg(long = "delete-items")]
+        delete_items: bool,
+        /// Required to actually perform the deletion (safety confirmation).
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Remove an item from a collection without disturbing its other memberships.
+    /// Local API when available (read-modify-write full-array-replace), JS Bridge fallback.
+    RemoveItem {
+        collection_key: String,
+        item_key: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
