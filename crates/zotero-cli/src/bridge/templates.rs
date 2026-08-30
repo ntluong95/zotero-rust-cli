@@ -17,6 +17,9 @@ pub const T_COLLECTION_REMOVE_ITEM: &str = include_str!("js/collection_remove_it
 // Slice 7: Confirmed privileged Bridge-only operations
 pub const T_FIND_DUPLICATES: &str = include_str!("js/find_duplicates.js");
 pub const T_ITEM_MERGE: &str = include_str!("js/item_merge.js");
+// Read-only preview counterpart to `T_ITEM_MERGE` (`hygiene.py:_preview_js`, `hygiene.py:109-161`):
+// resolves/summarizes items only -- no `saveTx`/`eraseTx`/`merge`/`trash` call anywhere in it.
+pub const T_ITEM_MERGE_PREVIEW: &str = include_str!("js/item_merge_preview.js");
 pub const T_SYNC: &str = include_str!("js/sync.js");
 
 // Phase 7 Slice 3: PDF cascade discovery primitives (`core/jsbridge.py`'s
@@ -215,6 +218,19 @@ pub fn render_item_merge(
         "otherKeys": other_keys,
     });
     render(T_ITEM_MERGE, &params)
+}
+
+pub fn render_item_merge_preview(
+    library_id: i64,
+    keep_key: &str,
+    merge_keys: &[String],
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "keepKey": keep_key,
+        "mergeKeys": merge_keys,
+    });
+    render(T_ITEM_MERGE_PREVIEW, &params)
 }
 
 pub fn render_sync() -> &'static str {

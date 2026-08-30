@@ -82,6 +82,7 @@ of implementation language.
 |---|---|---|---|
 | Bare `zotero-cli` (no subcommand) | Enters REPL, **blocks on stdin** | Prints help, exits 0 | A blocking stdin read is the worst failure mode for a non-interactive agent caller. |
 | `item move-to-collection` | **Only** works with `--experimental`, direct SQLite write, Zotero must be **closed** | Works by default via one dedicated JS bridge operation with Zotero **running**; `--experimental` removed | Verified: this command has no bridge path upstream (`_require_experimental_flag` fires unconditionally). v1 implements one Zotero-side operation equivalent to add target + remove sources, with rollback/compensation requirements. Strictly more usable, but it is new work and a real behaviour change — not a like-for-like port. |
+| `app check-update` | Polls upstream's version file over the network | No network poll; always reports current | A fork must not poll upstream's own version-check endpoint on the user's behalf. Package managers (Homebrew, Scoop, direct release downloads) already own the update-notification job for this distribution. |
 
 ### What actually changes for the three `--experimental` commands
 
@@ -166,16 +167,25 @@ P2 ──┘        └─→ P9 ───────────────�
 
 ## Post-Phase-7 Remaining V1 Implementation (Parity Tail)
 
-Following the completion of Phase 7 (PR #18 `a47006e`, PR #19 `568d90a`), the major backend infrastructure for SQLite reads, dual write routing (Local API + JS Bridge), connector import, PDF cascade, vector semantic search, and pure OOXML is fully landed. However, a canonical parity audit against upstream `e42a930e` identifies 17 canonical leaf commands still missing from the v1 CLI surface.
+Following the completion of Phase 7 (PR #18 `a47006e`, PR #19 `568d90a`) and the post-Phase-7 parity
+tail (PRs #20-25, landing the Rendering/Export, Local App/Audit, Selection/Collection, and
+Analysis/Hygiene slices plus `app launch`), the canonical parity audit against upstream `e42a930e`
+now finds **zero** commands missing: every one of the 17 leaf commands this table used to list as
+Missing has a real Rust implementation and dispatch arm as of PR #25 (`e45010f`, "app launch (final
+canonical command)").
 
-Phase 10 is the **future certification gate**, which cannot run until these commands are either implemented or formally reclassified.
+Phase 10's certification gate (canonical-matrix reconciliation, RC1 versioning, release-artifact
+verification) is underway on this basis — see `plans/reports/compatibility-matrix.md`'s "Phase 10
+canonical classification" section for the authoritative per-command table and evidence pointers.
+The table below is kept in sync with that canonical source; on any future disagreement, the
+compatibility matrix wins.
 
 ### Canonical 96-Command Inventory Breakdown
 
 | Status Category | Count | Command Names |
 |---|:---:|---|
-| **Integrated** | **69** | `add arxiv`, `add bibtex`, `add doi`, `add file`, `add url`, `app install-plugin`, `app plugin-status`, `app status`, `app uninstall-plugin`, `collection create`, `collection delete`, `collection fetch-pdfs`, `collection find`, `collection find-pdfs`, `collection get`, `collection items`, `collection list`, `collection remove-item`, `collection rename`, `collection tree`, `docx inspect-citations`, `docx inspect-placeholders`, `docx render-citations`, `docx validate-placeholders`, `import doi`, `import file`, `import json`, `import pmid`, `item add-to-collection`, `item annotations`, `item attach`, `item attachments`, `item build-index`, `item children`, `item delete`, `item fetch-pdf`, `item file`, `item find`, `item find-pdf`, `item get`, `item list`, `item merge`, `item move-to-collection` (Changed), `item notes`, `item search-annotations`, `item search-fulltext`, `item semantic-search`, `item similar`, `item tag`, `item update`, `js`, `library list`, `note add`, `note get`, `search get`, `search items`, `search list`, `session clear-collection`, `session clear-item`, `session clear-library`, `session history`, `session status`, `session use-collection`, `session use-item`, `session use-library`, `style list`, `sync`, `tag items`, `tag list` |
-| **Missing** | **17** | `app doctor`, `app launch`, `app ping`, `app version`, `audit path`, `audit tail`, `collection stats`, `collection use-selected`, `session use-selected`, `export bib`, `item bibliography`, `item citation`, `item export`, `item analyze`, `item context`, `item duplicates`, `item metrics` |
+| **Integrated** | **86** | `add arxiv`, `add bibtex`, `add doi`, `add file`, `add url`, `app doctor`, `app install-plugin`, `app launch`, `app ping`, `app plugin-status`, `app status`, `app uninstall-plugin`, `app version`, `audit path`, `audit tail`, `collection create`, `collection delete`, `collection fetch-pdfs`, `collection find`, `collection find-pdfs`, `collection get`, `collection items`, `collection list`, `collection remove-item`, `collection rename`, `collection stats`, `collection tree`, `collection use-selected`, `docx inspect-citations`, `docx inspect-placeholders`, `docx render-citations`, `docx validate-placeholders`, `export bib`, `import doi`, `import file`, `import json`, `import pmid`, `item add-to-collection`, `item analyze`, `item annotations`, `item attach`, `item attachments`, `item bibliography`, `item build-index`, `item children`, `item citation`, `item context`, `item delete`, `item duplicates`, `item export`, `item fetch-pdf`, `item file`, `item find`, `item find-pdf`, `item get`, `item list`, `item merge`, `item metrics`, `item move-to-collection` (Changed), `item notes`, `item search-annotations`, `item search-fulltext`, `item semantic-search`, `item similar`, `item tag`, `item update`, `js`, `library list`, `note add`, `note get`, `search get`, `search items`, `search list`, `session clear-collection`, `session clear-item`, `session clear-library`, `session history`, `session status`, `session use-collection`, `session use-item`, `session use-library`, `session use-selected`, `style list`, `sync`, `tag items`, `tag list` |
+| **Missing** | **0** | *(none)* |
 | **Changed (Stand-alone)** | **1** | `app check-update` (fork uses package managers, does not poll upstream Python version file) |
 | **Excluded (Safe Divergence)**| **1** | `app enable-local-api` (replaced by Rust-native `app authorize-local-api` and plugin staging flow) |
 | **Dropped** | **1** | `repl` (challenge decision C4: non-interactive agent focus) |

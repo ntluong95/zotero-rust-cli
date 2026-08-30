@@ -542,16 +542,21 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         Commands::Item(ItemCommands::Merge {
             keep_key,
             merge_keys,
+            dry_run,
             confirm,
         }) => {
             let runtime = build_runtime();
+            // `--dry-run/--confirm` (`zotero_cli.py:1504`): a Click boolean flag pair,
+            // `default=True` (dry-run). `resolve_bool_flag` + clap's `overrides_with` together
+            // give the same "last flag wins, default dry-run" semantics as Click.
+            let dry_run = resolve_bool_flag(dry_run, confirm, true);
             item_merge_command(
                 &runtime,
                 &session,
                 json_mode,
                 &keep_key,
                 &merge_keys,
-                confirm,
+                dry_run,
             )
         }
         Commands::Collection(CollectionCommands::Create { name, parent }) => {
@@ -2123,17 +2128,52 @@ fn item_merge_command(
     json_mode: bool,
     keep_key: &str,
     merge_keys: &[String],
-    confirm: bool,
+    dry_run: bool,
 ) -> anyhow::Result<i32> {
-    if merge_keys.is_empty() {
-        return Err(error::DomainError::new("At least one merge key is required").into());
+    // `merge_items()`'s top-of-function self-filter (`hygiene.py:410`): silently drop any merge
+    // key equal to the keep key (plain string equality on the raw CLI args, not resolved-item
+    // equality), by literal string match -- before either the preview or the confirm path runs.
+    let merge_keys: Vec<String> = merge_keys
+        .iter()
+        .filter(|k| !k.is_empty() && k.as_str() != keep_key)
+        .cloned()
+        .collect();
+    if keep_key.is_empty() || merge_keys.is_empty() {
+        let payload = serde_json::json!({
+            "action": "item_merge",
+            "ok": false,
+            "status": "error",
+            "code": "INVALID_ARGS",
+            "error": "keep key and at least one other key are required",
+        });
+        output::emit(json_mode, &payload);
+        return Ok(1);
     }
-    if !confirm {
-        return Err(error::DomainError::new("Refusing to merge without --confirm").into());
+
+    if dry_run {
+        let payload = hygiene::merge_preview(runtime, session, keep_key, &merge_keys)?;
+        let ok = payload
+            .get("ok")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let status = payload
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        output::emit(json_mode, &payload);
+        // `exit_code_for()` (`results.py:40-47`): ok=false -> 1; else status in the failure set -> 1.
+        let exit_code =
+            if !ok || matches!(status, "partial_success" | "error" | "failed" | "timeout") {
+                1
+            } else {
+                0
+            };
+        return Ok(exit_code);
     }
+
     let keep_item = catalog::get_item(runtime, Some(keep_key), session)?;
     let mut resolved_merge_keys = Vec::with_capacity(merge_keys.len());
-    for key in merge_keys {
+    for key in &merge_keys {
         let merged_item = catalog::get_item(runtime, Some(key), session)?;
         if merged_item.library_id != keep_item.library_id {
             return Err(error::DomainError::new(
