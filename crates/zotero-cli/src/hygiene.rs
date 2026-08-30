@@ -260,15 +260,18 @@ pub fn find_duplicates_zotero(bridge: &bridge::JSBridgeClient, limit: usize) -> 
 }
 
 /// Zero-mutation dry-run preview for `item merge` (default; `--dry-run`), mirroring
-/// `hygiene.py`'s `preview_merge()` SQLite-fallback path (`preview_source: "sqlite"`) composed
-/// with `merge_items()`'s dry-run envelope wrapping (`action`, `plan`, `dry_run`), which Python
-/// applies unconditionally on both the success and error branches (`hygiene.py:421-426`).
+/// `hygiene.py`'s `preview_merge()` (`hygiene.py:297-398`) composed with `merge_items()`'s
+/// dry-run envelope wrapping (`action`, `plan`, `dry_run`), which Python applies unconditionally
+/// on both the success and error branches (`hygiene.py:421-426`).
 ///
-/// Unlike Python -- which tries a live JS Bridge preview first and falls back to SQLite only when
-/// the bridge is unavailable -- this never attempts the bridge at all: every other read path in
-/// this port is SQLite/Local-API only, so the SQLite-fallback shape is the *only* shape this
-/// preview ever produces. That is exactly the shape Python itself falls back to whenever its own
-/// live bridge attempt is unavailable, so no new schema is introduced here.
+/// Bridge-first, SQLite-fallback, exactly like upstream: attempts the same read-only preview JS
+/// (`T_ITEM_MERGE_PREVIEW`, a verbatim port of `hygiene.py:_preview_js` -- resolves/summarizes
+/// items only, never `saveTx`/`eraseTx`/`merge`/`trash`) via the JS Bridge first; on success,
+/// `preview_source: "bridge"`. If the bridge is unreachable, its ownership handshake fails, or
+/// the eval itself reports `ok:false` (including "keep item not found" -- Python does not treat
+/// that as terminal; it still falls through to the SQLite attempt), falls back to the existing
+/// SQLite-only preview, `preview_source: "sqlite"`, carrying the captured `bridge_error` forward
+/// exactly as Python's `preview_merge` does.
 ///
 /// The confirmed mutation path (`item merge --confirm`) is untouched by this function and keeps
 /// using the existing, accepted `Zotero.Items.merge()` JS Bridge call in `item_merge_command`.
@@ -278,10 +281,108 @@ pub fn merge_preview(
     keep_key: &str,
     merge_keys: &[String],
 ) -> anyhow::Result<Value> {
-    let sqlite_path = &runtime.environment.sqlite_path;
-    // `session_mod.session_library_id(current_session())` (`zotero_cli.py:1515`), default 1.
     let library_id = session::session_library_id(session, 1)?;
     let plan = serde_json::json!({"keep": keep_key, "merge": merge_keys, "dry_run": true});
+
+    let bridge_error = match render_and_execute_bridge_preview(keep_key, merge_keys, library_id) {
+        BridgePreviewOutcome::Success(data) => {
+            return Ok(build_bridge_preview_payload(keep_key, data, &plan));
+        }
+        BridgePreviewOutcome::Failed(err) => err,
+    };
+
+    merge_preview_sqlite(
+        runtime,
+        keep_key,
+        merge_keys,
+        library_id,
+        bridge_error,
+        plan,
+    )
+}
+
+enum BridgePreviewOutcome {
+    Success(Value),
+    /// Mirrors Python's `bridge_error` local: `None` when the bridge reported no error text at
+    /// all (e.g. a malformed-but-still-a-dict response with no `error` key), matching
+    /// `hygiene.py:356`'s `(data or {}).get("error")` exactly (no "preview failed" fallback
+    /// string in that specific sub-case).
+    Failed(Option<String>),
+}
+
+/// `preview_merge()`'s try/bridge block (`hygiene.py:319-360`). `bridge.execute_js` in this port
+/// never throws (`BridgeResponse` mirrors Python's `transport` dict), so there is no `except`
+/// to port -- transport-level failure is just `resp.ok == false`, same as Python's `else` arm.
+fn render_and_execute_bridge_preview(
+    keep_key: &str,
+    merge_keys: &[String],
+    library_id: i64,
+) -> BridgePreviewOutcome {
+    let Ok(code) = bridge::templates::render_item_merge_preview(library_id, keep_key, merge_keys)
+    else {
+        return BridgePreviewOutcome::Failed(Some("preview failed".to_string()));
+    };
+    let client = bridge::JSBridgeClient::with_default_port();
+    let resp = client.execute_js(&code, 20);
+    if !resp.ok {
+        return BridgePreviewOutcome::Failed(Some(
+            resp.error
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "bridge preview failed".to_string()),
+        ));
+    }
+    match resp.data {
+        Some(data) if data.is_object() => {
+            if data.get("ok").and_then(Value::as_bool) == Some(true) {
+                BridgePreviewOutcome::Success(data)
+            } else {
+                BridgePreviewOutcome::Failed(
+                    data.get("error")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                )
+            }
+        }
+        _ => BridgePreviewOutcome::Failed(Some("preview failed".to_string())),
+    }
+}
+
+/// `preview_merge()`'s bridge-success branch (`hygiene.py:328-355`), already wrapped in
+/// `merge_items()`'s dry-run envelope (`action: "item_merge"`, `plan`, `dry_run: true`).
+fn build_bridge_preview_payload(keep_key: &str, data: Value, plan: &Value) -> Value {
+    let will = data.get("will").cloned().unwrap_or(Value::Null);
+    let (summary, message) = summary_and_message_from_will(&will, keep_key, "bridge");
+    serde_json::json!({
+        "action": "item_merge",
+        "ok": true,
+        "status": "dry_run",
+        "code": "DRY_RUN",
+        "keep": data.get("keep").cloned().unwrap_or(Value::Null),
+        "others": data.get("others").cloned().unwrap_or(Value::Array(Vec::new())),
+        "missing": data.get("missing").cloned().unwrap_or(Value::Array(Vec::new())),
+        "will": will,
+        "preview_source": "bridge",
+        "summary": summary,
+        "message": message,
+        "plan": plan,
+        "dry_run": true,
+    })
+}
+
+/// `preview_merge()`'s SQLite-offline-fallback branch (`hygiene.py:362-388`), reached either
+/// because the bridge attempt failed/was unreachable, or (matching Python exactly) because the
+/// bridge itself reported `keep item not found` -- that is not treated as terminal upstream;
+/// SQLite gets its own independent attempt to resolve `keep_key` before this ever becomes a
+/// `KEEP_NOT_FOUND` error.
+fn merge_preview_sqlite(
+    runtime: &RuntimeContext,
+    keep_key: &str,
+    merge_keys: &[String],
+    library_id: i64,
+    bridge_error: Option<String>,
+    plan: Value,
+) -> anyhow::Result<Value> {
+    let sqlite_path = &runtime.environment.sqlite_path;
 
     let Some(keep_item) = db::resolve_item(sqlite_path, keep_key, Some(library_id))? else {
         return Ok(serde_json::json!({
@@ -290,7 +391,10 @@ pub fn merge_preview(
             "status": "error",
             "code": "KEEP_NOT_FOUND",
             "error": format!("keep item not found: {keep_key}"),
-            "bridge_error": Value::Null,
+            // Always present, even when null -- matches `bridge_error=bridge_error` always being
+            // passed as a `result_payload` kwarg on this branch (`hygiene.py:372`), unlike the
+            // success branch below where the key is only added when truthy.
+            "bridge_error": bridge_error,
             "preview_source": "sqlite",
             "plan": plan,
             "dry_run": true,
@@ -363,37 +467,9 @@ pub fn merge_preview(
         "add_collections": cols_to_add,
         "trash_items": trash_items,
     });
+    let (summary, message) = summary_and_message_from_will(&will, keep_key, "sqlite");
 
-    let add_collections_summary: Vec<Value> = cols_to_add
-        .iter()
-        .map(|c| {
-            let name = c["name"].as_str().filter(|s| !s.is_empty());
-            Value::String(
-                name.unwrap_or_else(|| c["key"].as_str().unwrap_or_default())
-                    .to_string(),
-            )
-        })
-        .collect();
-
-    let summary = serde_json::json!({
-        "trash_count": trash_items.len(),
-        "move_attachments": attachments_to_move,
-        "move_notes": notes_to_move,
-        "add_tags": tags_to_add,
-        "add_collections": add_collections_summary,
-    });
-
-    let message = format!(
-        "Would trash {} item(s) into keep={keep_key}: move {} attachment(s), {} note(s); \
-         add {} tag(s), {} collection(s). (preview via sqlite) Re-run with --confirm to apply.",
-        trash_items.len(),
-        attachments_to_move,
-        notes_to_move,
-        tags_to_add.len(),
-        cols_to_add.len(),
-    );
-
-    Ok(serde_json::json!({
+    let mut payload = serde_json::json!({
         "action": "item_merge",
         "ok": true,
         "status": "dry_run",
@@ -407,7 +483,69 @@ pub fn merge_preview(
         "message": message,
         "plan": plan,
         "dry_run": true,
-    }))
+    });
+    // `if bridge_error: payload["bridge_error"] = bridge_error` (`hygiene.py:386-387`) -- only
+    // attached when truthy (non-`None`, non-empty), unlike the `KEEP_NOT_FOUND` branch above.
+    if let Some(err) = bridge_error.filter(|s| !s.is_empty()) {
+        payload["bridge_error"] = Value::String(err);
+    }
+    Ok(payload)
+}
+
+/// `summary`/`message` construction shared by the bridge-success and SQLite-success branches
+/// (`hygiene.py:338-353` and `hygiene.py:281-293` respectively -- same shape, same formula).
+fn summary_and_message_from_will(will: &Value, keep_key: &str, source: &str) -> (Value, String) {
+    let trash_items = will
+        .get("trash_items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let move_attachments = will
+        .get("move_attachments")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let move_notes = will.get("move_notes").and_then(Value::as_i64).unwrap_or(0);
+    let add_tags = will
+        .get("add_tags")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let add_collections = will
+        .get("add_collections")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let add_collections_summary: Vec<Value> = add_collections
+        .iter()
+        .map(|c| {
+            let name = c
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            let key = c.get("key").and_then(Value::as_str).unwrap_or_default();
+            Value::String(name.unwrap_or(key).to_string())
+        })
+        .collect();
+
+    let summary = serde_json::json!({
+        "trash_count": trash_items.len(),
+        "move_attachments": move_attachments,
+        "move_notes": move_notes,
+        "add_tags": add_tags,
+        "add_collections": add_collections_summary,
+    });
+
+    let message = format!(
+        "Would trash {} item(s) into keep={keep_key}: move {} attachment(s), {} note(s); \
+         add {} tag(s), {} collection(s). (preview via {source}) Re-run with --confirm to apply.",
+        trash_items.len(),
+        move_attachments,
+        move_notes,
+        add_tags.len(),
+        add_collections.len(),
+    );
+    (summary, message)
 }
 
 /// Per-item summary shape shared by `keep` and each `others[]` entry

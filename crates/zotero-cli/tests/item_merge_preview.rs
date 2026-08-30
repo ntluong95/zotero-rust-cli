@@ -16,9 +16,11 @@
 //! - `--confirm` is unaffected: it dispatches to the existing, accepted `Zotero.Items.merge()`
 //!   JS Bridge mutation path in `item_merge_command`, unchanged by this fix.
 //!
-//! This port's preview always resolves via SQLite (`preview_source: "sqlite"`) rather than
-//! attempting a live JS Bridge preview first like Python does -- see `hygiene::merge_preview`'s
-//! doc comment for why that's a faithful (not invented) subset of Python's own contract.
+//! - Bridge-first, SQLite-fallback: a read-only JS Bridge preview is attempted first
+//!   (`preview_source: "bridge"`); on any failure (unreachable, ownership handshake fails, eval
+//!   reports `ok:false` -- including a bridge-reported "keep item not found", which Python does
+//!   *not* treat as terminal) it falls back to the SQLite-only preview (`preview_source:
+//!   "sqlite"`), carrying the captured `bridge_error` forward exactly as Python does.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -93,7 +95,12 @@ fn build_merge_preview_fixture(dir: &std::path::Path) -> std::path::PathBuf {
     sqlite_path
 }
 
-// ── Bare invocation / explicit --dry-run: identical, zero-mutation preview ──
+// ── Bare invocation / explicit --dry-run: identical, zero-mutation preview.
+//    No bridge_ownership_ok() is scripted, so the mock server's accept loop exits (and its
+//    listening socket closes) after exactly 2 connections; the bridge-first preview attempt's
+//    ownership probe then fails fast with connection-refused -- this *is* the "bridge
+//    unavailable" fallback path (scenario B), proven structurally: zero additional connections
+//    are ever accepted, and the preview still succeeds via SQLite. ──
 
 #[test]
 fn bare_invocation_previews_by_default_and_makes_zero_mutation_calls() {
@@ -112,7 +119,9 @@ fn bare_invocation_previews_by_default_and_makes_zero_mutation_calls() {
     assert_eq!(
         requests.len(),
         2,
-        "only build_runtime()'s connector-ping + local-api-probe -- zero bridge/write calls: {requests:?}"
+        "connector-ping + local-api-probe only -- the bridge preview's ownership probe fails \
+         fast (connection refused, bridge unavailable) and is never accepted; zero write calls \
+         reach the server: {requests:?}"
     );
 
     assert_eq!(code, 0, "payload: {payload}");
@@ -122,6 +131,13 @@ fn bare_invocation_previews_by_default_and_makes_zero_mutation_calls() {
     assert_eq!(payload["code"], "DRY_RUN");
     assert_eq!(payload["dry_run"], true);
     assert_eq!(payload["preview_source"], "sqlite");
+    assert_eq!(
+        payload["bridge_error"],
+        "JS Bridge endpoint not available. Install the CLI Bridge plugin: \
+         zotero-cli app install-plugin, then restart Zotero.",
+        "the deterministic 'bridge unavailable' message, carried forward onto the successful \
+         sqlite-fallback payload since it's truthy (hygiene.py:386-387)"
+    );
     assert_eq!(payload["missing"], json!([]));
     assert_eq!(
         payload["plan"],
@@ -170,6 +186,249 @@ fn explicit_dry_run_flag_produces_the_same_preview_as_bare_invocation() {
     assert_eq!(code, 0, "payload: {payload}");
     assert_eq!(payload["status"], "dry_run");
     assert_eq!(payload["will"]["trash_items"], json!(["OTHR0001"]));
+}
+
+// ── Bridge-first preview: success, transport/eval failure, and the "bridge says keep is
+//    missing but SQLite still finds it" non-terminal case Python's own fallback ladder defines ──
+
+/// The exact object `T_ITEM_MERGE_PREVIEW`'s JS would return for `KEEP0001`/`OTHR0001` against
+/// this file's fixture -- hand-computed to match `summarize_item_for_merge_preview`'s SQLite
+/// output field-for-field, since both are supposed to produce the same shape.
+fn scripted_bridge_preview_success_body() -> serde_json::Value {
+    json!({
+        "ok": true,
+        "keep": {
+            "key": "KEEP0001", "title": "Keep Item", "DOI": "", "date": "", "itemType": "document",
+            "tags": ["keep-tag"],
+            "collections": [{"id": 1, "key": "COLLE001", "name": "Test Collection"}],
+            "attachments": [], "notes": [],
+            "nAttachments": 0, "nNotes": 0, "nTags": 1, "nCollections": 1,
+        },
+        "others": [{
+            "key": "OTHR0001", "title": "Other Item A", "DOI": "10.1000/a", "date": "2024-01-01",
+            "itemType": "document",
+            "tags": ["only-a-tag", "shared-tag"],
+            "collections": [{"id": 2, "key": "COLLC002", "name": "Collection C2"}],
+            "attachments": [{"key": "ATCH0001", "title": "", "contentType": "application/pdf",
+                              "filename": "storage:a.pdf", "linkMode": 0}],
+            "notes": [{"key": "NOTE0001", "title": "Note A"}],
+            "nAttachments": 1, "nNotes": 1, "nTags": 2, "nCollections": 1,
+        }],
+        "missing": [],
+        "will": {
+            "move_attachments": 1, "move_notes": 1,
+            "add_tags": ["only-a-tag", "shared-tag"],
+            "add_collections": [{"id": 2, "key": "COLLC002", "name": "Collection C2"}],
+            "trash_items": ["OTHR0001"],
+        },
+    })
+}
+
+#[test]
+fn bridge_available_and_preview_succeeds_reports_bridge_source_and_touches_no_sqlite() {
+    // No fixture built at all: if the implementation fell through to SQLite despite the bridge
+    // succeeding, `db::resolve_item` would fail loudly against a data dir with no zotero.sqlite --
+    // structural proof this path never touches SQLite, not just an unasserted side observation.
+    let dir = TestDir::new("merge-preview-bridge-success");
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        ScriptedResponse::json(200, scripted_bridge_preview_success_body()),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "merge", "KEEP0001", "OTHR0001"],
+    );
+
+    let requests = server.finish();
+    assert_eq!(
+        requests.len(),
+        4,
+        "ping, probe, ownership-ping, preview-eval: {requests:?}"
+    );
+    let eval_body = String::from_utf8_lossy(&requests[3].body);
+    for forbidden in [
+        "saveTx", "eraseTx", ".merge(", ".trash", ".deleted", "delete(",
+    ] {
+        assert!(
+            !eval_body.contains(forbidden),
+            "preview script sent to the bridge must be read-only; found {forbidden:?} in: {eval_body}"
+        );
+    }
+
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(payload["action"], "item_merge");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["status"], "dry_run");
+    assert_eq!(payload["code"], "DRY_RUN");
+    assert_eq!(payload["preview_source"], "bridge");
+    assert_eq!(payload["dry_run"], true);
+    assert_eq!(
+        payload.get("bridge_error"),
+        None,
+        "no error to report on a clean bridge success"
+    );
+    assert_eq!(payload["keep"]["key"], "KEEP0001");
+    assert_eq!(payload["others"][0]["key"], "OTHR0001");
+    assert_eq!(payload["missing"], json!([]));
+    assert_eq!(payload["will"]["move_attachments"], 1);
+    assert_eq!(payload["will"]["move_notes"], 1);
+    assert_eq!(
+        payload["will"]["add_tags"],
+        json!(["only-a-tag", "shared-tag"])
+    );
+    assert_eq!(payload["will"]["trash_items"], json!(["OTHR0001"]));
+    assert_eq!(payload["summary"]["trash_count"], 1);
+    assert_eq!(
+        payload["summary"]["add_collections"],
+        json!(["Collection C2"])
+    );
+    assert_eq!(
+        payload["message"],
+        "Would trash 1 item(s) into keep=KEEP0001: move 1 attachment(s), 1 note(s); \
+         add 2 tag(s), 1 collection(s). (preview via bridge) Re-run with --confirm to apply."
+    );
+    assert_eq!(
+        payload["plan"],
+        json!({"keep": "KEEP0001", "merge": ["OTHR0001"], "dry_run": true})
+    );
+}
+
+#[test]
+fn bridge_returns_missing_merge_away_item_matches_python_non_error_behavior() {
+    let dir = TestDir::new("merge-preview-bridge-missing-other");
+    let mut body = scripted_bridge_preview_success_body();
+    body["others"] = json!([]);
+    body["missing"] = json!(["NOPE9999"]);
+    body["will"] = json!({
+        "move_attachments": 0, "move_notes": 0, "add_tags": [], "add_collections": [], "trash_items": [],
+    });
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        ScriptedResponse::json(200, body),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "merge", "KEEP0001", "NOPE9999"],
+    );
+
+    assert_eq!(server.finish().len(), 4);
+    assert_eq!(
+        code, 0,
+        "a missing merge-away item is not a preview-time error: {payload}"
+    );
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["status"], "dry_run");
+    assert_eq!(payload["preview_source"], "bridge");
+    assert_eq!(payload["missing"], json!(["NOPE9999"]));
+    assert_eq!(payload["others"], json!([]));
+}
+
+#[test]
+fn bridge_eval_reports_failure_falls_back_to_sqlite_with_bridge_error_recorded() {
+    let dir = TestDir::new("merge-preview-bridge-eval-error");
+    build_merge_preview_fixture(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        // A transport-level success (HTTP 200, valid JSON) but an app-level eval failure --
+        // distinct from "bridge unavailable" (scenario B), matching `hygiene.py:356`'s
+        // `data.get("error")` branch, not the `transport.get("error")` one.
+        ScriptedResponse::json(200, json!({"ok": false, "error": "sandbox eval exploded"})),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "merge", "KEEP0001", "OTHR0001"],
+    );
+
+    assert_eq!(
+        server.finish().len(),
+        4,
+        "ownership succeeded; the eval itself was attempted"
+    );
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["preview_source"], "sqlite");
+    assert_eq!(payload["bridge_error"], "sandbox eval exploded");
+    assert_eq!(payload["keep"]["key"], "KEEP0001");
+    assert_eq!(payload["others"][0]["key"], "OTHR0001");
+}
+
+#[test]
+fn bridge_cannot_resolve_keep_falls_back_to_sqlite_which_still_finds_it() {
+    // Matches `hygiene.py:preview_merge` exactly: the bridge reporting "keep item not found" is
+    // *not* terminal -- SQLite gets its own independent attempt, and here it succeeds, so the
+    // overall preview succeeds too (with the bridge's error carried forward, not surfaced as a
+    // failure).
+    let dir = TestDir::new("merge-preview-bridge-keep-not-found");
+    build_merge_preview_fixture(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        ScriptedResponse::json(
+            200,
+            json!({"ok": false, "error": "keep item not found", "keep": "KEEP0001"}),
+        ),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "merge", "KEEP0001", "OTHR0001"],
+    );
+
+    assert_eq!(server.finish().len(), 4);
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["status"], "dry_run");
+    assert_eq!(payload["preview_source"], "sqlite");
+    assert_eq!(payload["bridge_error"], "keep item not found");
+    assert_eq!(payload["keep"]["key"], "KEEP0001");
+}
+
+#[test]
+fn bridge_and_sqlite_both_fail_to_resolve_keep_is_keep_not_found_with_bridge_error() {
+    let dir = TestDir::new("merge-preview-bridge-and-sqlite-keep-not-found");
+    build_merge_preview_fixture(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        ScriptedResponse::json(
+            200,
+            json!({"ok": false, "error": "keep item not found", "keep": "GHOST999"}),
+        ),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "merge", "GHOST999", "OTHR0001"],
+    );
+
+    assert_eq!(server.finish().len(), 4);
+    assert_eq!(code, 1, "payload: {payload}");
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["code"], "KEEP_NOT_FOUND");
+    assert_eq!(payload["preview_source"], "sqlite");
+    assert_eq!(payload["bridge_error"], "keep item not found");
+    assert_eq!(payload["error"], "keep item not found: GHOST999");
 }
 
 // ── Multiple merge keys: incremental (not naive-union) dedup across `others` ──
