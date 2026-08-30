@@ -229,6 +229,12 @@ pub enum AppCommands {
     Ping,
     /// Diagnose local Zotero + CLI Bridge readiness for agent workflows.
     Doctor,
+    /// Launch the local Zotero desktop application and wait for the connector (and, if
+    /// configured, the Local API) to come up.
+    Launch {
+        #[arg(long = "wait-timeout", default_value_t = 30)]
+        wait_timeout: i64,
+    },
     /// Stage the fork-owned CLI Bridge XPI plugin to a local output directory.
     InstallPlugin {
         /// Directory to stage the XPI file into (must then be installed manually via

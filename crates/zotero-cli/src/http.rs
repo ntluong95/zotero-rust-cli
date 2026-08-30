@@ -61,6 +61,43 @@ pub fn connector_is_available(port: u16, timeout: Duration) -> (bool, String) {
     }
 }
 
+/// `wait_for_endpoint()` (`zotero_http.py:208-226`): polls `path` until a response's status is
+/// in `ready_statuses` or `timeout` elapses, matching Python's loop shape exactly -- deadline
+/// checked *before* each attempt, a per-attempt 3s request timeout independent of the overall
+/// poll `timeout`, and `poll_interval` slept after every attempt (including the last one before
+/// the deadline trips). A transport-level failure (connection refused, DNS, etc.) is swallowed
+/// the same way Python's `except RuntimeError: pass` swallows `request()`'s `RuntimeError` --
+/// only an HTTP response with a non-ready status, or no response at all, keeps polling.
+pub fn wait_for_endpoint(
+    port: u16,
+    path: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+    headers: &[(&str, &str)],
+    ready_statuses: &[u16],
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let mut request = ureq::get(&base_url(port, path));
+        for (key, value) in headers {
+            request = request.header(*key, *value);
+        }
+        let response = request
+            .config()
+            .timeout_global(Some(Duration::from_secs(3)))
+            .http_status_as_error(false)
+            .build()
+            .call();
+        if let Ok(response) = response {
+            if ready_statuses.contains(&response.status().as_u16()) {
+                return true;
+            }
+        }
+        std::thread::sleep(poll_interval);
+    }
+    false
+}
+
 /// Result of probing `GET /api/`: availability (Python-parity shape) plus
 /// the Zotero 10+ capability discriminator that has no Python equivalent.
 pub struct LocalApiProbe {
