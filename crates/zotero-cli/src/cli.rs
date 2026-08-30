@@ -104,6 +104,9 @@ pub enum Commands {
     /// Independent Zotero data export commands.
     #[command(subcommand)]
     Export(ExportCommands),
+    /// Inspect local write-operation audit log.
+    #[command(subcommand)]
+    Audit(AuditCommands),
     /// Execute raw JavaScript inside Zotero via the CLI Bridge (privileged; JS Bridge only).
     Js {
         code: String,
@@ -220,6 +223,12 @@ impl std::fmt::Display for ExportFormat {
 pub enum AppCommands {
     /// Report Zotero installation, data paths, and connector/Local API availability.
     Status,
+    /// Print CLI and detected Zotero version.
+    Version,
+    /// Check connector availability (ping).
+    Ping,
+    /// Diagnose local Zotero + CLI Bridge readiness for agent workflows.
+    Doctor,
     /// Stage the fork-owned CLI Bridge XPI plugin to a local output directory.
     InstallPlugin {
         /// Directory to stage the XPI file into (must then be installed manually via
@@ -242,6 +251,17 @@ pub enum AppCommands {
     AuthorizeLocalApi {
         #[arg(long = "app-name", default_value = "zotero-rust-cli")]
         app_name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuditCommands {
+    /// Print the audit log file path.
+    Path,
+    /// Show the latest audit log entries.
+    Tail {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
 }
 

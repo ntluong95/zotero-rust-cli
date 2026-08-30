@@ -1,11 +1,13 @@
 pub mod add_import;
 pub mod annotations;
+pub mod audit;
 pub mod bridge;
 pub mod catalog;
 pub mod cli;
 pub mod credentials;
 pub mod csl;
 pub mod db;
+pub mod doctor;
 pub mod docx;
 pub mod error;
 pub mod fulltext;
@@ -30,9 +32,9 @@ use clap::{CommandFactory, Parser};
 use serde_json::Value;
 
 use cli::{
-    AddCommands, AppCommands, Cli, CollectionCommands, Commands, DocxCommands, ExportCommands,
-    ImportCommands, ItemCommands, LibraryCommands, NoteCommands, SearchCommands, SessionCommands,
-    StyleCommands, TagCommands,
+    AddCommands, AppCommands, AuditCommands, Cli, CollectionCommands, Commands, DocxCommands,
+    ExportCommands, ImportCommands, ItemCommands, LibraryCommands, NoteCommands, SearchCommands,
+    SessionCommands, StyleCommands, TagCommands,
 };
 use write::WriteOutcome;
 
@@ -95,6 +97,53 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             let payload = runtime.to_status_payload();
             output::emit(json_mode, &Value::Object(payload));
             Ok(0)
+        }
+        // `app_version()` (`zotero_cli.py:444-450`).
+        Commands::App(AppCommands::Version) => {
+            let runtime = build_runtime();
+            let zotero_version = if runtime.environment.version.is_empty()
+                || runtime.environment.version == "unknown"
+            {
+                None
+            } else {
+                Some(runtime.environment.version.as_str())
+            };
+            if json_mode {
+                let payload = serde_json::json!({
+                    "package_version": env!("CARGO_PKG_VERSION"),
+                    "zotero_version": zotero_version,
+                });
+                output::emit(json_mode, &payload);
+            } else {
+                let val = match zotero_version {
+                    Some(v) => Value::String(v.to_string()),
+                    None => Value::Null,
+                };
+                output::emit(json_mode, &val);
+            }
+            Ok(0)
+        }
+        // `app_ping()` (`zotero_cli.py:475-482`).
+        Commands::App(AppCommands::Ping) => {
+            let runtime = build_runtime();
+            if !runtime.connector_available {
+                return Err(error::DomainError::new(runtime.connector_message).into());
+            }
+            let payload = serde_json::json!({
+                "connector_available": true,
+                "message": runtime.connector_message,
+            });
+            output::emit(json_mode, &payload);
+            Ok(0)
+        }
+        // `app_doctor()` (`zotero_cli.py:534-543`).
+        Commands::App(AppCommands::Doctor) => {
+            let runtime = build_runtime();
+            let bridge = bridge::JSBridgeClient::new(runtime.environment.port);
+            let payload = doctor::run_doctor(&runtime, &bridge);
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
         }
         Commands::Item(ItemCommands::List { limit }) => {
             let runtime = build_runtime();
@@ -1029,6 +1078,46 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             let code = exit_code_for(&payload);
             output::emit(json_mode, &payload);
             Ok(code)
+        }
+        // `audit_path_command()` (`zotero_cli.py:551-564`).
+        Commands::Audit(AuditCommands::Path) => {
+            let path = audit::audit_path();
+            let payload = serde_json::json!({
+                "action": "audit_path",
+                "ok": true,
+                "status": "success",
+                "path": path.to_string_lossy(),
+            });
+            if json_mode {
+                println!("{}", output::json_text(&payload));
+            } else {
+                println!("{}", path.to_string_lossy());
+            }
+            Ok(0)
+        }
+        // `audit_tail_command()` (`zotero_cli.py:566-590`).
+        Commands::Audit(AuditCommands::Tail { limit }) => {
+            let path = audit::audit_path();
+            let entries = audit::tail(limit);
+            let payload = serde_json::json!({
+                "action": "audit_tail",
+                "ok": true,
+                "status": "success",
+                "path": path.to_string_lossy(),
+                "count": entries.len(),
+                "entries": entries,
+            });
+            if json_mode {
+                println!("{}", output::json_text(&payload));
+            } else {
+                for entry in &entries {
+                    println!("{}", output::json_text(entry));
+                }
+                if entries.is_empty() {
+                    println!("(empty audit log)");
+                }
+            }
+            Ok(0)
         }
         Commands::Js { code, wait } => js_command(json_mode, &code, wait),
         Commands::Sync => sync_command(json_mode),
