@@ -618,4 +618,71 @@ impl JSBridgeClient {
         }
         Ok(data)
     }
+
+    /// `core/jsbridge.py::JSBridgeClient.search_fulltext` -- delegates to Zotero's live
+    /// `Zotero.Search` engine (`fulltextContent contains query`), never Zotero's FTS SQLite
+    /// tables directly. No index-state polling/waiting/retry: an unindexed or not-yet-searchable
+    /// PDF simply yields no match, exactly as Python never waits either.
+    pub fn search_fulltext(&self, library_id: u32, query: &str, limit: i64) -> BridgeResponse {
+        let code = match templates::render_search_fulltext(library_id, query, limit) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&code, 8)
+    }
+
+    /// `core/jsbridge.py::JSBridgeClient.search_annotations`. Empty `query` searches
+    /// `itemType is 'annotation'`; non-empty searches `annotationText contains query` --
+    /// `annotationComment` is never searched. Color filtering (when `colors` is non-empty) is
+    /// applied before the `limit` slice, matching Python's `filtered.slice(0, limit)` ordering.
+    pub fn search_annotations(
+        &self,
+        library_id: u32,
+        query: &str,
+        colors: Option<&[String]>,
+        limit: i64,
+    ) -> BridgeResponse {
+        let code = match templates::render_search_annotations(library_id, query, colors, limit) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&code, 8)
+    }
+
+    /// `core/jsbridge.py::JSBridgeClient.get_annotations`. Accepts a raw item key only: if that
+    /// item is itself a PDF attachment, the JS walks up to its bibliographic parent before
+    /// collecting annotations from all of the parent's PDF attachments. Per-attachment
+    /// `getAnnotations()` errors are swallowed individually (`try {} catch (e) {}` inside the
+    /// loop) so one bad PDF never fails the whole call. A not-found item/parent yields a bare
+    /// `"ERROR: ..."` string, not a transport failure -- matching Python's `emit_js`, this is
+    /// still a *successful* Bridge response at the transport level.
+    pub fn get_annotations(&self, library_id: u32, key: &str) -> BridgeResponse {
+        let code = match templates::render_get_annotations(library_id, key) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&code, 5)
+    }
+}
+
+/// Mirrors `zotero_cli.py::emit_js`'s payload/exit classification for a raw Bridge transport
+/// response (minus the `require_data` flag, which none of Slice 5's commands pass): a
+/// transport-level failure returns the whole envelope with `false`; a transport success whose
+/// `data` is an object carrying `"ok": false` is application-level failure; anything else --
+/// including a bare `"ERROR: ..."` string -- is success, returned as-is. Returns
+/// `(payload_to_emit, is_success)`.
+pub fn classify_bridge_payload(transport: &BridgeResponse) -> (Value, bool) {
+    if !transport.ok {
+        return (
+            serde_json::to_value(transport).unwrap_or(Value::Null),
+            false,
+        );
+    }
+    match &transport.data {
+        Some(Value::Object(map)) if map.get("ok") == Some(&Value::Bool(false)) => {
+            (Value::Object(map.clone()), false)
+        }
+        Some(data) => (data.clone(), true),
+        None => (serde_json::to_value(transport).unwrap_or(Value::Null), true),
+    }
 }

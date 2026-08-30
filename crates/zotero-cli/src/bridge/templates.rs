@@ -31,6 +31,14 @@ pub const T_LIST_ITEMS_MISSING_PDF: &str = include_str!("js/list_items_missing_p
 // content -- never gets string-interpolated into JS source).
 pub const T_NOTE_ADD: &str = include_str!("js/note_add.js");
 
+// Phase 7 Slice 5: Full-text/annotation search + annotation retrieval
+// (`core/jsbridge.py`'s `search_fulltext`/`search_annotations`/`get_annotations`). All three
+// delegate entirely to Zotero's live `Zotero.Search`/`Item.getAnnotations` APIs -- never Zotero's
+// FTS SQLite tables -- and are read-only.
+pub const T_SEARCH_FULLTEXT: &str = include_str!("js/search_fulltext.js");
+pub const T_SEARCH_ANNOTATIONS: &str = include_str!("js/search_annotations.js");
+pub const T_GET_ANNOTATIONS: &str = include_str!("js/get_annotations.js");
+
 /// Renders a JavaScript snippet by binding `params` safely via `JSON.parse`
 /// into the constant `P`.
 ///
@@ -246,4 +254,44 @@ pub fn render_note_add(
         "noteHtml": note_html,
     });
     render(T_NOTE_ADD, &params)
+}
+
+/// `limit` is `i64`, not `usize`/`u32`: Python's `items.slice(0, limit)` (and this port's
+/// `items.slice(0, P.limit)`) inherits JS's `Array.slice` semantics unclamped, where `0` yields
+/// an empty result and a negative value counts back from the end. Do not validate or clamp this
+/// value here -- Zotero's own JS engine is the authority on what it means.
+pub fn render_search_fulltext(
+    library_id: u32,
+    query: &str,
+    limit: i64,
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "query": query,
+        "limit": limit,
+    });
+    render(T_SEARCH_FULLTEXT, &params)
+}
+
+pub fn render_search_annotations(
+    library_id: u32,
+    query: &str,
+    colors: Option<&[String]>,
+    limit: i64,
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "query": query,
+        "colors": colors,
+        "limit": limit,
+    });
+    render(T_SEARCH_ANNOTATIONS, &params)
+}
+
+pub fn render_get_annotations(library_id: u32, key: &str) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "key": key,
+    });
+    render(T_GET_ANNOTATIONS, &params)
 }
