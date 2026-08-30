@@ -12,7 +12,7 @@
 //! "Approved intentional break": a blocking stdin read is the worst
 //! failure mode for a non-interactive agent caller.
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -89,6 +89,15 @@ pub enum Commands {
     /// Session state commands (current library/collection/item, history).
     #[command(subcommand)]
     Session(SessionCommands),
+    /// Read and add child notes.
+    #[command(subcommand)]
+    Note(NoteCommands),
+    /// Unified ingest entrypoints (translator-first with OA fallbacks).
+    #[command(subcommand)]
+    Add(AddCommands),
+    /// Official Zotero import and write commands.
+    #[command(subcommand)]
+    Import(ImportCommands),
     /// DOCX citation inspection and rendering commands.
     #[command(subcommand)]
     Docx(DocxCommands),
@@ -292,6 +301,47 @@ pub enum ItemCommands {
         #[arg(long)]
         confirm: bool,
     },
+    /// Trigger Zotero's "Find Available PDF" for a single item (via JS bridge).
+    FindPdf {
+        item_key: String,
+        /// Seconds to wait for PDF download.
+        #[arg(long, default_value_t = 30)]
+        timeout: i64,
+    },
+    /// Fetch a PDF via Zotero find-pdf + open-access cascade, then attach.
+    FetchPdf {
+        item_key: String,
+        /// Comma-separated cascade: zotero,unpaywall,epmc,biorxiv,arxiv.
+        #[arg(long, default_value = "zotero,unpaywall,epmc,biorxiv,arxiv")]
+        sources: String,
+        /// Fetch even if item already has a PDF.
+        #[arg(long)]
+        force: bool,
+        #[arg(long = "zotero-timeout", default_value_t = 45)]
+        zotero_timeout: u64,
+        #[arg(long = "download-timeout", default_value_t = 45)]
+        download_timeout: u64,
+    },
+    /// Search full-text content of PDFs in the Zotero library (via JS bridge).
+    SearchFulltext {
+        query: String,
+        /// Maximum number of results.
+        #[arg(long, default_value_t = 10)]
+        limit: i64,
+    },
+    /// Search annotations across all items by keyword and/or color.
+    SearchAnnotations {
+        #[arg(default_value = "")]
+        query: String,
+        /// Filter by annotation color (repeatable). E.g. yellow, red, #ffd400.
+        #[arg(long = "color")]
+        colors: Vec<String>,
+        /// Max results.
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+    },
+    /// View annotations and highlights for a Zotero item (via JS bridge).
+    Annotations { item_key: String },
 }
 
 /// Parses a `key=value` command-line argument into a tuple, for `--field key=value`.
@@ -401,6 +451,39 @@ pub enum CollectionCommands {
         collection_key: String,
         item_key: String,
     },
+    /// Find available PDFs for items missing PDFs (per-item, via JS bridge).
+    FindPdfs {
+        collection_key: String,
+        /// Seconds to wait for each item's PDF lookup.
+        #[arg(long = "timeout-per-item", default_value_t = 45)]
+        timeout_per_item: u64,
+        /// Only process the first N items missing PDFs.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Fetch PDFs for items missing attachments using Zotero + OA cascade.
+    FetchPdfs {
+        collection_key: String,
+        /// Comma-separated cascade: zotero,unpaywall,epmc,biorxiv,arxiv.
+        #[arg(long, default_value = "zotero,unpaywall,epmc,biorxiv,arxiv")]
+        sources: String,
+        /// Only process the first N items missing PDFs.
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long = "zotero-timeout", default_value_t = 45)]
+        zotero_timeout: u64,
+        #[arg(long = "download-timeout", default_value_t = 45)]
+        download_timeout: u64,
+        /// Print one JSON progress object per item to stdout.
+        #[arg(long = "jsonl-progress")]
+        jsonl_progress: bool,
+        /// Skip keys completed in prior --resume runs.
+        #[arg(long)]
+        resume: bool,
+        /// Clear resume state for this collection before running.
+        #[arg(long = "reset-resume")]
+        reset_resume: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -453,5 +536,228 @@ pub enum SessionCommands {
     History {
         #[arg(long, default_value_t = 10)]
         limit: i64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum NoteCommands {
+    /// Get a note by key.
+    Get {
+        #[arg(value_name = "REF")]
+        note_ref: String,
+    },
+    /// Add a child note to a top-level item.
+    Add {
+        item_ref: String,
+        /// Inline note content.
+        #[arg(long)]
+        text: Option<String>,
+        /// Read note content from a file.
+        #[arg(long = "file")]
+        file_path: Option<String>,
+        #[arg(long = "format", value_enum, default_value_t = NoteFormat::Text)]
+        fmt: NoteFormat,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+#[value(rename_all = "lower")]
+pub enum NoteFormat {
+    Text,
+    Markdown,
+    Html,
+}
+
+impl std::fmt::Display for NoteFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            NoteFormat::Text => "text",
+            NoteFormat::Markdown => "markdown",
+            NoteFormat::Html => "html",
+        };
+        write!(f, "{s}")
+    }
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+#[value(rename_all = "lower")]
+pub enum IfExists {
+    File,
+    Skip,
+    Duplicate,
+}
+
+impl std::fmt::Display for IfExists {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            IfExists::File => "file",
+            IfExists::Skip => "skip",
+            IfExists::Duplicate => "duplicate",
+        };
+        write!(f, "{s}")
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AddCommands {
+    /// Ingest an item by DOI: translator-first, Crossref BibTeX fallback.
+    Doi {
+        doi: String,
+        #[arg(long = "collection")]
+        collection_key: Option<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long = "if-exists", value_enum, default_value_t = IfExists::File)]
+        if_exists: IfExists,
+        /// Try Zotero DOI translator before Crossref BibTeX fallback.
+        #[arg(long = "translator", overrides_with = "no_translator", action = ArgAction::SetTrue)]
+        translator: bool,
+        #[arg(long = "no-translator", overrides_with = "translator", action = ArgAction::SetTrue)]
+        no_translator: bool,
+        /// Also run PDF cascade after import.
+        #[arg(long = "fetch-pdf", overrides_with = "no_fetch_pdf", action = ArgAction::SetTrue)]
+        fetch_pdf: bool,
+        #[arg(long = "no-fetch-pdf", overrides_with = "fetch_pdf", action = ArgAction::SetTrue)]
+        no_fetch_pdf: bool,
+        #[arg(
+            long = "pdf-sources",
+            default_value = "zotero,unpaywall,epmc,biorxiv,arxiv"
+        )]
+        pdf_sources: String,
+    },
+    /// Ingest an item by arXiv id.
+    Arxiv {
+        arxiv_id: String,
+        #[arg(long = "collection")]
+        collection_key: Option<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long = "if-exists", value_enum, default_value_t = IfExists::File)]
+        if_exists: IfExists,
+        #[arg(long = "fetch-pdf", overrides_with = "no_fetch_pdf", action = ArgAction::SetTrue)]
+        fetch_pdf: bool,
+        #[arg(long = "no-fetch-pdf", overrides_with = "fetch_pdf", action = ArgAction::SetTrue)]
+        no_fetch_pdf: bool,
+        #[arg(long = "pdf-sources", default_value = "zotero,arxiv,unpaywall")]
+        pdf_sources: String,
+    },
+    /// Ingest a local file (translator-routed by extension).
+    File {
+        #[arg(value_name = "PATH")]
+        path: String,
+        #[arg(long = "collection")]
+        collection_key: Option<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long = "if-exists", value_enum, default_value_t = IfExists::File)]
+        if_exists: IfExists,
+    },
+    /// Ingest entries from a local BibTeX file via the connector.
+    Bibtex {
+        #[arg(value_name = "PATH")]
+        path: String,
+        #[arg(long = "collection")]
+        collection_key: Option<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+    },
+    /// Ingest from arXiv/DOI/webpage URL.
+    Url {
+        url: String,
+        #[arg(long = "collection")]
+        collection_key: Option<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long = "if-exists", value_enum, default_value_t = IfExists::File)]
+        if_exists: IfExists,
+        #[arg(long = "fetch-pdf", overrides_with = "no_fetch_pdf", action = ArgAction::SetTrue)]
+        fetch_pdf: bool,
+        #[arg(long = "no-fetch-pdf", overrides_with = "fetch_pdf", action = ArgAction::SetTrue)]
+        no_fetch_pdf: bool,
+        #[arg(
+            long = "pdf-sources",
+            default_value = "zotero,unpaywall,epmc,biorxiv,arxiv"
+        )]
+        pdf_sources: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ImportCommands {
+    /// Import records from a file via the Zotero connector.
+    File {
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Collection ID, key, or treeViewID target.
+        #[arg(long = "collection")]
+        collection_ref: Option<String>,
+        /// Tag to apply after import. Repeatable.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Optional JSON manifest describing attachments for imported records.
+        #[arg(long = "attachments-manifest")]
+        attachments_manifest: Option<String>,
+        /// Default delay before each URL attachment download.
+        #[arg(long = "attachment-delay-ms", default_value_t = 0)]
+        attachment_delay_ms: i64,
+        /// Default timeout in seconds for attachment download/upload.
+        #[arg(long = "attachment-timeout", default_value_t = 60)]
+        attachment_timeout: i64,
+        /// Timeout in seconds for connector/import HTTP calls.
+        #[arg(long = "connector-timeout", default_value_t = 120)]
+        connector_timeout: u64,
+        /// Auto-split multi-entry BibTeX into per-entry imports.
+        #[arg(long = "split-bib", overrides_with = "no_split_bib", action = ArgAction::SetTrue)]
+        split_bib: bool,
+        #[arg(long = "no-split-bib", overrides_with = "split_bib", action = ArgAction::SetTrue)]
+        no_split_bib: bool,
+    },
+    /// Import records from a connector-format JSON file.
+    Json {
+        #[arg(value_name = "PATH")]
+        path: String,
+        #[arg(long = "collection")]
+        collection_ref: Option<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long = "attachment-delay-ms", default_value_t = 0)]
+        attachment_delay_ms: i64,
+        #[arg(long = "attachment-timeout", default_value_t = 60)]
+        attachment_timeout: i64,
+    },
+    /// Import an item by DOI.
+    Doi {
+        doi: String,
+        /// Collection key to add the imported item to.
+        #[arg(long = "collection")]
+        collection_key: Option<String>,
+        /// Tag to apply after import. Repeatable.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Reuse an existing library item with the same DOI when present.
+        #[arg(long = "dedupe", overrides_with = "no_dedupe", action = ArgAction::SetTrue)]
+        dedupe: bool,
+        #[arg(long = "no-dedupe", overrides_with = "dedupe", action = ArgAction::SetTrue)]
+        no_dedupe: bool,
+        #[arg(long = "if-exists", value_enum, default_value_t = IfExists::File)]
+        if_exists: IfExists,
+        /// Try Zotero DOI translator before Crossref BibTeX fallback.
+        #[arg(long = "translator", overrides_with = "no_translator", action = ArgAction::SetTrue)]
+        translator: bool,
+        #[arg(long = "no-translator", overrides_with = "translator", action = ArgAction::SetTrue)]
+        no_translator: bool,
+        /// Timeout for Crossref -> connector fallback import.
+        #[arg(long = "connector-timeout", default_value_t = 120)]
+        connector_timeout: u64,
+    },
+    /// Import an item by PMID using Zotero's built-in translator (via JS bridge).
+    Pmid {
+        pmid: String,
+        /// Collection key to add the imported item to.
+        #[arg(long = "collection")]
+        collection_key: Option<String>,
+        /// Tag to apply after import. Repeatable.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
     },
 }

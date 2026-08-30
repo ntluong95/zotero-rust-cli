@@ -1,13 +1,23 @@
+pub mod add_import;
+pub mod annotations;
 pub mod bridge;
 pub mod catalog;
 pub mod cli;
 pub mod credentials;
+pub mod csl;
 pub mod db;
 pub mod docx;
 pub mod error;
+pub mod fulltext;
 pub mod http;
+pub mod import_attachments;
+pub mod import_core;
+pub mod import_normalization;
+pub mod notes;
 pub mod output;
 pub mod paths;
+pub mod pdf_cascade;
+pub mod pdf_fetch;
 pub mod plugin;
 pub mod runtime;
 pub mod semantic;
@@ -19,8 +29,9 @@ use clap::{CommandFactory, Parser};
 use serde_json::Value;
 
 use cli::{
-    AppCommands, Cli, CollectionCommands, Commands, DocxCommands, ItemCommands, LibraryCommands,
-    SearchCommands, SessionCommands, StyleCommands, TagCommands,
+    AddCommands, AppCommands, Cli, CollectionCommands, Commands, DocxCommands, ImportCommands,
+    ItemCommands, LibraryCommands, NoteCommands, SearchCommands, SessionCommands, StyleCommands,
+    TagCommands,
 };
 use write::WriteOutcome;
 
@@ -515,8 +526,439 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             let runtime = build_runtime();
             app_authorize_local_api_command(&runtime, json_mode, &app_name)
         }
+        Commands::Item(ItemCommands::FindPdf { item_key, timeout }) => {
+            let bridge = bridge::JSBridgeClient::with_default_port();
+            let payload = pdf_fetch::find_pdf_for_item(&bridge, &item_key, 1, timeout as u64);
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Item(ItemCommands::FetchPdf {
+            item_key,
+            sources,
+            force,
+            zotero_timeout,
+            download_timeout,
+        }) => {
+            let runtime = build_runtime();
+            let bridge = bridge::JSBridgeClient::with_default_port();
+            let source_list = pdf_fetch::parse_sources(Some(&sources))?;
+            let library_id = session::session_library_id(&session, 1)?;
+            let client = pdf_fetch::UreqPdfClient;
+            let payload = pdf_fetch::fetch_pdf_for_item(
+                &runtime,
+                &bridge,
+                &client,
+                &client,
+                &item_key,
+                &source_list,
+                library_id,
+                zotero_timeout,
+                download_timeout,
+                force,
+            );
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Item(ItemCommands::SearchFulltext { query, limit }) => {
+            let bridge = bridge::JSBridgeClient::with_default_port();
+            let (payload, is_success) = fulltext::search_fulltext(&bridge, &query, limit);
+            output::emit(json_mode, &payload);
+            Ok(if is_success { 0 } else { 1 })
+        }
+        Commands::Item(ItemCommands::SearchAnnotations {
+            query,
+            colors,
+            limit,
+        }) => {
+            let bridge = bridge::JSBridgeClient::with_default_port();
+            let colors_opt = (!colors.is_empty()).then_some(colors.as_slice());
+            let (payload, is_success) =
+                annotations::search_annotations(&bridge, &query, colors_opt, limit);
+            output::emit(json_mode, &payload);
+            Ok(if is_success { 0 } else { 1 })
+        }
+        Commands::Item(ItemCommands::Annotations { item_key }) => {
+            let bridge = bridge::JSBridgeClient::with_default_port();
+            let (payload, is_success) = annotations::get_annotations(&bridge, &item_key);
+            output::emit(json_mode, &payload);
+            Ok(if is_success { 0 } else { 1 })
+        }
+        Commands::Collection(CollectionCommands::FindPdfs {
+            collection_key,
+            timeout_per_item,
+            limit,
+        }) => {
+            let bridge = bridge::JSBridgeClient::with_default_port();
+            let result = pdf_cascade::find_pdfs_in_collection(
+                &bridge,
+                &collection_key,
+                1,
+                timeout_per_item,
+                limit,
+            );
+            let (payload, code) = unwrap_transport_envelope(result, true);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Collection(CollectionCommands::FetchPdfs {
+            collection_key,
+            sources,
+            limit,
+            zotero_timeout,
+            download_timeout,
+            jsonl_progress,
+            resume,
+            reset_resume,
+        }) => {
+            let runtime = build_runtime();
+            let bridge = bridge::JSBridgeClient::with_default_port();
+            let source_list = pdf_fetch::parse_sources(Some(&sources))?;
+            let library_id = session::session_library_id(&session, 1)?;
+            let client = pdf_fetch::UreqPdfClient;
+            let mut progress = |row: &Value| {
+                if jsonl_progress {
+                    println!("{}", serde_json::to_string(row).unwrap_or_default());
+                }
+            };
+            let payload = pdf_cascade::fetch_pdfs_for_collection(
+                &runtime,
+                &bridge,
+                &client,
+                &client,
+                &collection_key,
+                &source_list,
+                library_id,
+                limit,
+                zotero_timeout,
+                download_timeout,
+                Some(&mut progress),
+                resume,
+                reset_resume,
+            );
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Note(NoteCommands::Get { note_ref }) => {
+            let runtime = build_runtime();
+            let item = notes::get_note(&runtime, Some(&note_ref), &session)?;
+            if json_mode {
+                output::emit(json_mode, &serde_json::to_value(&item)?);
+            } else {
+                println!("{}", item.note_text);
+            }
+            Ok(0)
+        }
+        Commands::Note(NoteCommands::Add {
+            item_ref,
+            text,
+            file_path,
+            fmt,
+        }) => {
+            let runtime = build_runtime();
+            let bridge = bridge::JSBridgeClient::with_default_port();
+            let input = notes::resolve_note_input(text.as_deref(), file_path.as_deref())?;
+            let fmt_str = fmt.to_string();
+            let result = notes::add_note(
+                &runtime,
+                &bridge,
+                &item_ref,
+                input,
+                Some(&fmt_str),
+                &session,
+            )?;
+            output::emit(json_mode, &serde_json::to_value(&result)?);
+            Ok(0)
+        }
+        Commands::Add(AddCommands::Doi {
+            doi,
+            collection_key,
+            tags,
+            if_exists,
+            translator,
+            no_translator,
+            fetch_pdf,
+            no_fetch_pdf,
+            pdf_sources,
+        }) => {
+            let runtime = build_runtime();
+            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let prefer_translator = resolve_bool_flag(translator, no_translator, true);
+            let fetch_pdf = resolve_bool_flag(fetch_pdf, no_fetch_pdf, false);
+            let library_id = session::session_library_id(&session, 1)?;
+            let options = add_import::AddImportOptions {
+                collection_key,
+                tags,
+                session,
+                if_exists: if_exists.to_string(),
+                dedupe: true,
+                prefer_translator,
+                fetch_pdf,
+                pdf_sources: Some(pdf_sources),
+                library_id,
+                connector_timeout: std::time::Duration::from_secs(120),
+            };
+            let payload = add_import::add_doi(&runtime, &mut bridge, &doi, options);
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Add(AddCommands::Arxiv {
+            arxiv_id,
+            collection_key,
+            tags,
+            if_exists,
+            fetch_pdf,
+            no_fetch_pdf,
+            pdf_sources,
+        }) => {
+            let runtime = build_runtime();
+            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let fetch_pdf = resolve_bool_flag(fetch_pdf, no_fetch_pdf, true);
+            let library_id = session::session_library_id(&session, 1)?;
+            let options = add_import::AddImportOptions {
+                collection_key,
+                tags,
+                session,
+                if_exists: if_exists.to_string(),
+                dedupe: true,
+                prefer_translator: true,
+                fetch_pdf,
+                pdf_sources: Some(pdf_sources),
+                library_id,
+                connector_timeout: std::time::Duration::from_secs(120),
+            };
+            let payload = add_import::add_arxiv(&runtime, &mut bridge, &arxiv_id, options);
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Add(AddCommands::File {
+            path,
+            collection_key,
+            tags,
+            if_exists,
+        }) => {
+            let runtime = build_runtime();
+            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let library_id = session::session_library_id(&session, 1)?;
+            let options = add_import::AddImportOptions {
+                collection_key,
+                tags,
+                session,
+                if_exists: if_exists.to_string(),
+                dedupe: true,
+                prefer_translator: true,
+                fetch_pdf: false,
+                pdf_sources: None,
+                library_id,
+                connector_timeout: std::time::Duration::from_secs(120),
+            };
+            let payload =
+                add_import::add_file(&runtime, &mut bridge, std::path::Path::new(&path), options);
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Add(AddCommands::Bibtex {
+            path,
+            collection_key,
+            tags,
+        }) => {
+            let runtime = build_runtime();
+            let payload = add_import::add_bibtex(
+                &runtime,
+                std::path::Path::new(&path),
+                collection_key,
+                tags,
+                session,
+            );
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Add(AddCommands::Url {
+            url,
+            collection_key,
+            tags,
+            if_exists,
+            fetch_pdf,
+            no_fetch_pdf,
+            pdf_sources,
+        }) => {
+            let runtime = build_runtime();
+            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let fetch_pdf = resolve_bool_flag(fetch_pdf, no_fetch_pdf, false);
+            let library_id = session::session_library_id(&session, 1)?;
+            let options = add_import::AddImportOptions {
+                collection_key,
+                tags,
+                session,
+                if_exists: if_exists.to_string(),
+                dedupe: true,
+                prefer_translator: true,
+                fetch_pdf,
+                pdf_sources: Some(pdf_sources),
+                library_id,
+                connector_timeout: std::time::Duration::from_secs(120),
+            };
+            let payload = add_import::add_url(&runtime, &mut bridge, &url, options);
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Import(ImportCommands::File {
+            path,
+            collection_ref,
+            tags,
+            attachments_manifest,
+            attachment_delay_ms,
+            attachment_timeout,
+            connector_timeout,
+            split_bib,
+            no_split_bib,
+        }) => {
+            let runtime = build_runtime();
+            let split_bib = resolve_bool_flag(split_bib, no_split_bib, true);
+            let options = import_core::ImportOptions {
+                collection_ref,
+                tags,
+                session,
+                attachment_manifest: attachments_manifest.map(std::path::PathBuf::from),
+                attachment_delay_ms,
+                attachment_timeout,
+                connector_timeout: std::time::Duration::from_secs(connector_timeout),
+                split_bib,
+            };
+            let payload = import_core::import_file(&runtime, std::path::Path::new(&path), options)?;
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Import(ImportCommands::Json {
+            path,
+            collection_ref,
+            tags,
+            attachment_delay_ms,
+            attachment_timeout,
+        }) => {
+            let runtime = build_runtime();
+            let options = import_core::ImportOptions {
+                collection_ref,
+                tags,
+                session,
+                attachment_manifest: None,
+                attachment_delay_ms,
+                attachment_timeout,
+                connector_timeout: std::time::Duration::from_secs(120),
+                split_bib: false,
+            };
+            let payload = import_core::import_json(&runtime, std::path::Path::new(&path), options)?;
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Import(ImportCommands::Doi {
+            doi,
+            collection_key,
+            tags,
+            dedupe,
+            no_dedupe,
+            if_exists,
+            translator,
+            no_translator,
+            connector_timeout,
+        }) => {
+            let runtime = build_runtime();
+            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let dedupe = resolve_bool_flag(dedupe, no_dedupe, true);
+            let prefer_translator = resolve_bool_flag(translator, no_translator, true);
+            let library_id = session::session_library_id(&session, 1)?;
+            let options = add_import::AddImportOptions {
+                collection_key,
+                tags,
+                session,
+                if_exists: if_exists.to_string(),
+                dedupe,
+                prefer_translator,
+                fetch_pdf: false,
+                pdf_sources: None,
+                library_id,
+                connector_timeout: std::time::Duration::from_secs(connector_timeout),
+            };
+            let payload = add_import::import_doi(&runtime, &mut bridge, &doi, options);
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
+        Commands::Import(ImportCommands::Pmid {
+            pmid,
+            collection_key,
+            tags,
+        }) => {
+            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let payload =
+                add_import::import_pmid(&mut bridge, &pmid, collection_key.as_deref(), &tags, 1);
+            let code = exit_code_for(&payload);
+            output::emit(json_mode, &payload);
+            Ok(code)
+        }
         Commands::Js { code, wait } => js_command(json_mode, &code, wait),
         Commands::Sync => sync_command(json_mode),
+    }
+}
+
+/// `exit_code_for()` (`core/results.py::exit_code_for`): `ok: false` or a
+/// `status` of `partial_success`/`error`/`failed`/`timeout` maps to exit 1;
+/// everything else (including a missing/non-boolean `ok`) is exit 0.
+fn exit_code_for(payload: &Value) -> i32 {
+    if payload.get("ok") == Some(&Value::Bool(false)) {
+        return 1;
+    }
+    let status = payload.get("status").and_then(Value::as_str).unwrap_or("");
+    if matches!(status, "partial_success" | "error" | "failed" | "timeout") {
+        return 1;
+    }
+    0
+}
+
+/// `emit_js()`'s transport-envelope unwrap (`zotero_cli.py:317-349`), for callers (only
+/// `collection find-pdfs` in this slice) whose core function returns the raw `{ok, data, error}`
+/// wrapper rather than an already-flattened `result_payload()`-shaped value.
+fn unwrap_transport_envelope(result: Value, require_data: bool) -> (Value, i32) {
+    if result.get("ok") != Some(&Value::Bool(true)) {
+        return (result, 1);
+    }
+    let data = result.get("data").cloned();
+    match data {
+        None | Some(Value::Null) if require_data => (
+            serde_json::json!({
+                "ok": false,
+                "data": null,
+                "error": "JS bridge returned empty success (data is null)",
+                "code": "EMPTY_RESULT",
+            }),
+            1,
+        ),
+        Some(Value::Object(ref map)) if map.get("ok") == Some(&Value::Bool(false)) => {
+            (data.unwrap(), 1)
+        }
+        Some(d) => (d, 0),
+        None => (result, 0),
+    }
+}
+
+/// Resolves a Click-style `--flag/--no-flag` boolean pair (mutually exclusive via clap's
+/// `overrides_with`) to its effective value: an explicit flag wins over `default`.
+fn resolve_bool_flag(positive: bool, negative: bool, default: bool) -> bool {
+    if positive {
+        true
+    } else if negative {
+        false
+    } else {
+        default
     }
 }
 
@@ -1861,5 +2303,89 @@ mod write_command_helper_tests {
         let rendered = render_write_result(&view, &[]);
         assert!(rendered.get("version").is_none());
         assert_eq!(rendered["outcome"], "applied");
+    }
+}
+
+#[cfg(test)]
+mod phase7_dispatch_helper_tests {
+    use super::*;
+
+    #[test]
+    fn exit_code_for_maps_ok_false_to_one() {
+        let payload = serde_json::json!({"ok": false, "status": "error"});
+        assert_eq!(exit_code_for(&payload), 1);
+    }
+
+    #[test]
+    fn exit_code_for_maps_partial_success_to_one_even_when_ok_true() {
+        let payload = serde_json::json!({"ok": true, "status": "partial_success"});
+        assert_eq!(exit_code_for(&payload), 1);
+    }
+
+    #[test]
+    fn exit_code_for_maps_success_to_zero() {
+        let payload = serde_json::json!({"ok": true, "status": "success"});
+        assert_eq!(exit_code_for(&payload), 0);
+    }
+
+    #[test]
+    fn exit_code_for_treats_a_missing_ok_key_as_not_false() {
+        // Mirrors Python's `payload.get("ok") is False`: a missing key is `None`, not `False`.
+        let payload = serde_json::json!({"status": "success"});
+        assert_eq!(exit_code_for(&payload), 0);
+    }
+
+    #[test]
+    fn exit_code_for_treats_a_missing_status_as_success() {
+        let payload = serde_json::json!({"ok": true});
+        assert_eq!(exit_code_for(&payload), 0);
+    }
+
+    #[test]
+    fn unwrap_transport_envelope_passes_through_a_transport_failure() {
+        let result = serde_json::json!({"ok": false, "data": null, "error": "boom"});
+        let (payload, code) = unwrap_transport_envelope(result.clone(), true);
+        assert_eq!(payload, result);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn unwrap_transport_envelope_unwraps_data_on_success() {
+        let result = serde_json::json!({"ok": true, "data": {"checked": 3}, "error": null});
+        let (payload, code) = unwrap_transport_envelope(result, true);
+        assert_eq!(payload, serde_json::json!({"checked": 3}));
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn unwrap_transport_envelope_treats_a_nested_ok_false_data_object_as_failure() {
+        let result = serde_json::json!({"ok": true, "data": {"ok": false, "error": "nested"}});
+        let (payload, code) = unwrap_transport_envelope(result, false);
+        assert_eq!(payload, serde_json::json!({"ok": false, "error": "nested"}));
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn unwrap_transport_envelope_require_data_rejects_a_null_data_success() {
+        let result = serde_json::json!({"ok": true, "data": null});
+        let (payload, code) = unwrap_transport_envelope(result, true);
+        assert_eq!(payload["code"], "EMPTY_RESULT");
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn resolve_bool_flag_prefers_the_explicit_positive_flag() {
+        assert!(resolve_bool_flag(true, false, false));
+    }
+
+    #[test]
+    fn resolve_bool_flag_prefers_the_explicit_negative_flag() {
+        assert!(!resolve_bool_flag(false, true, true));
+    }
+
+    #[test]
+    fn resolve_bool_flag_falls_back_to_the_default_when_neither_flag_is_set() {
+        assert!(resolve_bool_flag(false, false, true));
+        assert!(!resolve_bool_flag(false, false, false));
     }
 }
