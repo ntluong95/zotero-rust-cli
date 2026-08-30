@@ -119,6 +119,39 @@ fn map_text_outcome(
     }
 }
 
+/// `type(data).__name__` for the JSON shapes `serde_json::Value` can hold, matching Python's
+/// runtime type names for `core/notes.py::add_note`'s own error message
+/// (`f"...got {type(data).__name__}): {data}"`).
+fn python_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "NoneType",
+        Value::Bool(_) => "bool",
+        Value::Number(n) => {
+            if n.is_i64() || n.is_u64() {
+                "int"
+            } else {
+                "float"
+            }
+        }
+        Value::String(_) => "str",
+        Value::Array(_) => "list",
+        Value::Object(_) => "dict",
+    }
+}
+
+/// Renders `data` the way Python's f-string `f"...: {data}"` would for a non-dict value --
+/// unquoted for a string (the common case here: the Bridge's own `'ERROR: ...'` string when the
+/// parent item vanished between resolution and the write attempt), `None` for null, and each
+/// other JSON shape's compact form otherwise (a documented minor divergence from Python's `repr`
+/// for `list`/`bool`/`float`, since those shapes never occur from this crate's own JS templates).
+fn format_bridge_data_for_error(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Null => "None".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Same idea as [`map_text_outcome`] but for `collection_create`'s JSON-object response shape
 /// (`{"key": "..."}` on success, `{"error": "..."}` on failure) rather than a prefixed string.
 fn map_object_outcome(resp: &BridgeResponse) -> WriteOutcome {
@@ -536,5 +569,53 @@ impl JSBridgeClient {
             Err(err) => return BridgeResponse::failure(err.to_string()),
         };
         self.execute_js(&code, 15)
+    }
+
+    // ── Phase 7 Slice 4: Note creation (Bridge-only, single mutation attempt, no retry) ────
+
+    /// `core/notes.py::add_note`'s inline JS block (`Zotero.Items.getByLibraryAndKey` ->
+    /// `new Zotero.Item('note')` -> `setNote` -> `saveTx()`), rendered through the shared
+    /// `JSON.parse` template mechanism instead of Python's raw string interpolation, so the
+    /// note's normalized HTML is never spliced into JS source text.
+    ///
+    /// Returns the raw success payload (`{key, itemID, title}`) for `notes::add_note` to project
+    /// into the Python-compatible result shape. Error handling matches
+    /// `core/notes.py::add_note` exactly, at the byte level of both messages:
+    /// - transport/script failure (`ok: false`, including the JS template's own
+    ///   `'ERROR: parent item not found'` string return, which is *not* a dict) ->
+    ///   `"Failed to create note via JS bridge: {error}"`;
+    /// - a well-formed (`ok: true`) but non-object payload -> `"Unexpected JS Bridge response
+    ///   (expected dict, got {type}): {data}"`;
+    /// - an object payload missing concrete saved-note identity (`key` or `itemID`) ->
+    ///   `"Invalid note creation response: missing or invalid key/itemID"`.
+    ///
+    /// Exactly one `execute_js` call: no retry on timeout, transport failure, or an ambiguous/
+    /// malformed response -- a second attempt could create a duplicate note server-side, and
+    /// `saveTx()` is not idempotent.
+    pub fn note_add(&self, library_id: u32, parent_key: &str, note_html: &str) -> Result<Value> {
+        let code = templates::render_note_add(library_id, parent_key, note_html)?;
+        let resp = self.execute_js(&code, 10);
+        if !resp.ok {
+            let err = resp.error.as_deref().unwrap_or("unknown error");
+            bail!("Failed to create note via JS bridge: {err}");
+        }
+        let data = resp.data.clone().unwrap_or(Value::Null);
+        if !data.is_object() {
+            bail!(
+                "Unexpected JS Bridge response (expected dict, got {}): {}",
+                python_type_name(&data),
+                format_bridge_data_for_error(&data)
+            );
+        }
+        let key_valid = data
+            .get("key")
+            .and_then(Value::as_str)
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        let item_id_valid = data.get("itemID").map(Value::is_i64).unwrap_or(false);
+        if !key_valid || !item_id_valid {
+            bail!("Invalid note creation response: missing or invalid key/itemID");
+        }
+        Ok(data)
     }
 }

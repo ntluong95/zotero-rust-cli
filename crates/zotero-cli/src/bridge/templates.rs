@@ -26,6 +26,11 @@ pub const T_FIND_PDF: &str = include_str!("js/find_pdf.js");
 pub const T_FIND_PDF_VERIFY: &str = include_str!("js/find_pdf_verify.js");
 pub const T_LIST_ITEMS_MISSING_PDF: &str = include_str!("js/list_items_missing_pdf.js");
 
+// Phase 7 Slice 4: Note creation (`core/notes.py::add_note`'s inline JS block, factored through
+// the shared `render`/`JSON.parse` mechanism so the note's normalized HTML -- arbitrary user
+// content -- never gets string-interpolated into JS source).
+pub const T_NOTE_ADD: &str = include_str!("js/note_add.js");
+
 /// Renders a JavaScript snippet by binding `params` safely via `JSON.parse`
 /// into the constant `P`.
 ///
@@ -228,4 +233,17 @@ pub fn render_list_items_missing_pdf(
         "key": key,
     });
     render(T_LIST_ITEMS_MISSING_PDF, &params)
+}
+
+pub fn render_note_add(
+    library_id: u32,
+    parent_key: &str,
+    note_html: &str,
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "parentKey": parent_key,
+        "noteHtml": note_html,
+    });
+    render(T_NOTE_ADD, &params)
 }
