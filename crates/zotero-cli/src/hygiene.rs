@@ -5,11 +5,14 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::bridge;
 use crate::cli::DuplicatesBy;
 use crate::db;
+use crate::runtime::RuntimeContext;
+use crate::session::{self, SessionState};
 
 /// Single duplicate member within a duplicate group.
 #[derive(Debug, Clone, Serialize)]
@@ -254,4 +257,215 @@ pub fn find_duplicates_zotero(bridge: &bridge::JSBridgeClient, limit: usize) -> 
     } else {
         (serde_json::to_value(&resp).unwrap_or(Value::Null), 1)
     }
+}
+
+/// Zero-mutation dry-run preview for `item merge` (default; `--dry-run`), mirroring
+/// `hygiene.py`'s `preview_merge()` SQLite-fallback path (`preview_source: "sqlite"`) composed
+/// with `merge_items()`'s dry-run envelope wrapping (`action`, `plan`, `dry_run`), which Python
+/// applies unconditionally on both the success and error branches (`hygiene.py:421-426`).
+///
+/// Unlike Python -- which tries a live JS Bridge preview first and falls back to SQLite only when
+/// the bridge is unavailable -- this never attempts the bridge at all: every other read path in
+/// this port is SQLite/Local-API only, so the SQLite-fallback shape is the *only* shape this
+/// preview ever produces. That is exactly the shape Python itself falls back to whenever its own
+/// live bridge attempt is unavailable, so no new schema is introduced here.
+///
+/// The confirmed mutation path (`item merge --confirm`) is untouched by this function and keeps
+/// using the existing, accepted `Zotero.Items.merge()` JS Bridge call in `item_merge_command`.
+pub fn merge_preview(
+    runtime: &RuntimeContext,
+    session: &SessionState,
+    keep_key: &str,
+    merge_keys: &[String],
+) -> anyhow::Result<Value> {
+    let sqlite_path = &runtime.environment.sqlite_path;
+    // `session_mod.session_library_id(current_session())` (`zotero_cli.py:1515`), default 1.
+    let library_id = session::session_library_id(session, 1)?;
+    let plan = serde_json::json!({"keep": keep_key, "merge": merge_keys, "dry_run": true});
+
+    let Some(keep_item) = db::resolve_item(sqlite_path, keep_key, Some(library_id))? else {
+        return Ok(serde_json::json!({
+            "action": "item_merge",
+            "ok": false,
+            "status": "error",
+            "code": "KEEP_NOT_FOUND",
+            "error": format!("keep item not found: {keep_key}"),
+            "bridge_error": Value::Null,
+            "preview_source": "sqlite",
+            "plan": plan,
+            "dry_run": true,
+        }));
+    };
+    let keep_sum = summarize_item_for_merge_preview(sqlite_path, &keep_item)?;
+
+    let mut others: Vec<Value> = Vec::new();
+    let mut missing: Vec<Value> = Vec::new();
+    for key in merge_keys {
+        match db::resolve_item(sqlite_path, key, Some(library_id))? {
+            Some(item) => others.push(summarize_item_for_merge_preview(sqlite_path, &item)?),
+            None => missing.push(Value::String(key.clone())),
+        }
+    }
+
+    // `_preview_from_summaries` (`hygiene.py:237-294`): incremental de-dup against `keep`'s
+    // existing tags/collections *and* against earlier `others` entries already folded in -- an
+    // order-sensitive accumulation, not a set union, so duplicate merge keys or overlapping
+    // tags/collections across `others` are only added to the plan once, in first-seen order.
+    let mut keep_tag_set: HashSet<String> = keep_sum["tags"]
+        .as_array()
+        .expect("keep_sum.tags is always an array")
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    // Python falls back to `str(id)` when a collection's `key` is falsy; unreachable here since
+    // every Zotero collection row always has a non-null `key`.
+    let mut keep_col_set: HashSet<String> = keep_sum["collections"]
+        .as_array()
+        .expect("keep_sum.collections is always an array")
+        .iter()
+        .map(|c| c["key"].as_str().unwrap_or_default().to_string())
+        .collect();
+
+    let mut tags_to_add: Vec<Value> = Vec::new();
+    let mut cols_to_add: Vec<Value> = Vec::new();
+    let mut attachments_to_move: i64 = 0;
+    let mut notes_to_move: i64 = 0;
+    for other in &others {
+        attachments_to_move += other["nAttachments"].as_i64().unwrap_or(0);
+        notes_to_move += other["nNotes"].as_i64().unwrap_or(0);
+        for tag in other["tags"]
+            .as_array()
+            .expect("others[].tags is always an array")
+        {
+            let t = tag.as_str().unwrap_or_default().to_string();
+            if !keep_tag_set.contains(&t) {
+                tags_to_add.push(Value::String(t.clone()));
+                keep_tag_set.insert(t);
+            }
+        }
+        for col in other["collections"]
+            .as_array()
+            .expect("others[].collections is always an array")
+        {
+            let ck = col["key"].as_str().unwrap_or_default().to_string();
+            if !keep_col_set.contains(&ck) {
+                cols_to_add.push(col.clone());
+                keep_col_set.insert(ck);
+            }
+        }
+    }
+    let trash_items: Vec<Value> = others.iter().map(|o| o["key"].clone()).collect();
+
+    let will = serde_json::json!({
+        "move_attachments": attachments_to_move,
+        "move_notes": notes_to_move,
+        "add_tags": tags_to_add,
+        "add_collections": cols_to_add,
+        "trash_items": trash_items,
+    });
+
+    let add_collections_summary: Vec<Value> = cols_to_add
+        .iter()
+        .map(|c| {
+            let name = c["name"].as_str().filter(|s| !s.is_empty());
+            Value::String(
+                name.unwrap_or_else(|| c["key"].as_str().unwrap_or_default())
+                    .to_string(),
+            )
+        })
+        .collect();
+
+    let summary = serde_json::json!({
+        "trash_count": trash_items.len(),
+        "move_attachments": attachments_to_move,
+        "move_notes": notes_to_move,
+        "add_tags": tags_to_add,
+        "add_collections": add_collections_summary,
+    });
+
+    let message = format!(
+        "Would trash {} item(s) into keep={keep_key}: move {} attachment(s), {} note(s); \
+         add {} tag(s), {} collection(s). (preview via sqlite) Re-run with --confirm to apply.",
+        trash_items.len(),
+        attachments_to_move,
+        notes_to_move,
+        tags_to_add.len(),
+        cols_to_add.len(),
+    );
+
+    Ok(serde_json::json!({
+        "action": "item_merge",
+        "ok": true,
+        "status": "dry_run",
+        "code": "DRY_RUN",
+        "keep": keep_sum,
+        "others": others,
+        "missing": missing,
+        "will": will,
+        "preview_source": "sqlite",
+        "summary": summary,
+        "message": message,
+        "plan": plan,
+        "dry_run": true,
+    }))
+}
+
+/// Per-item summary shape shared by `keep` and each `others[]` entry
+/// (`hygiene.py:_sqlite_summarize_item`, `hygiene.py:170-234`).
+fn summarize_item_for_merge_preview(sqlite_path: &Path, item: &db::Item) -> anyhow::Result<Value> {
+    let tags: Vec<Value> = item
+        .tags
+        .iter()
+        .filter(|t| !t.name.is_empty())
+        .map(|t| Value::String(t.name.clone()))
+        .collect();
+
+    let item_id_str = item.item_id.to_string();
+    let attachments: Vec<Value> = db::fetch_item_attachments(sqlite_path, &item_id_str)?
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "key": a.key,
+                "title": a.title,
+                "contentType": a.content_type.clone().unwrap_or_default(),
+                // Matches Python's exact field, which reuses the raw attachment path as
+                // "filename" rather than a basename (`hygiene.py:187`) -- not "fixed" here.
+                "filename": a.attachment_path.clone().unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    let notes: Vec<Value> = db::fetch_item_notes(sqlite_path, &item_id_str)?
+        .iter()
+        .map(|n| {
+            let title_source = if !n.title.is_empty() {
+                n.title.as_str()
+            } else {
+                n.note_preview.as_str()
+            };
+            let truncated: String = title_source.chars().take(80).collect();
+            serde_json::json!({"key": n.key, "title": truncated})
+        })
+        .collect();
+
+    let collections: Vec<Value> = db::fetch_item_collections(sqlite_path, item.item_id)?
+        .iter()
+        .map(|c| serde_json::json!({"id": c.id, "key": c.key, "name": c.name}))
+        .collect();
+
+    Ok(serde_json::json!({
+        "key": item.key,
+        "title": item.title,
+        "DOI": item.doi,
+        "date": item.date.clone().unwrap_or_default(),
+        "itemType": item.type_name,
+        "tags": tags,
+        "collections": collections,
+        "attachments": attachments,
+        "notes": notes,
+        "nAttachments": attachments.len(),
+        "nNotes": notes.len(),
+        "nTags": tags.len(),
+        "nCollections": collections.len(),
+    }))
 }

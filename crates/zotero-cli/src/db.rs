@@ -602,6 +602,38 @@ pub fn fetch_item_attachments(sqlite_path: &Path, item_ref: &str) -> anyhow::Res
         .collect())
 }
 
+/// A collection an item belongs to, as summarized for `item merge`'s dry-run
+/// preview (`hygiene.py:_sqlite_summarize_item`, `zotero_sqlite.py` inline query).
+#[derive(Debug, Clone, Serialize)]
+pub struct ItemCollectionRef {
+    pub id: i64,
+    pub key: String,
+    pub name: String,
+}
+
+/// `_sqlite_summarize_item()`'s inline collections query (`hygiene.py:194-218`).
+pub fn fetch_item_collections(
+    sqlite_path: &Path,
+    item_id: i64,
+) -> anyhow::Result<Vec<ItemCollectionRef>> {
+    let conn = connect_readonly(sqlite_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT c.collectionID, c.key, c.collectionName
+         FROM collectionItems ci
+         JOIN collections c ON c.collectionID = ci.collectionID
+         WHERE ci.itemID = ?1
+         ORDER BY c.collectionName COLLATE NOCASE",
+    )?;
+    let rows = stmt.query_map([item_id], |row| {
+        Ok(ItemCollectionRef {
+            id: row.get("collectionID")?,
+            key: row.get("key")?,
+            name: row.get("collectionName")?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// Minimal percent-decoder matching `urllib.parse.unquote`'s default
 /// (`utf-8`, lossy on invalid sequences) closely enough for the file:
 /// URI paths this is used on. No new dependency: this is the only call

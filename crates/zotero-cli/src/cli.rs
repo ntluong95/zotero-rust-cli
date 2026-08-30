@@ -388,11 +388,16 @@ pub enum ItemCommands {
         all_other_collections: bool,
     },
     /// Merge one or more items into a target item (privileged; JS Bridge only).
+    ///
+    /// Defaults to a zero-mutation dry-run preview; pass --confirm to apply.
     Merge {
         keep_key: String,
         merge_keys: Vec<String>,
-        /// Required to actually perform the merge (safety confirmation).
-        #[arg(long)]
+        /// Preview only (default): resolve items and report the merge plan, mutate nothing.
+        #[arg(long = "dry-run", overrides_with = "confirm", action = ArgAction::SetTrue)]
+        dry_run: bool,
+        /// Apply the merge (privileged JS Bridge write).
+        #[arg(long = "confirm", overrides_with = "dry_run", action = ArgAction::SetTrue)]
         confirm: bool,
     },
     /// Trigger Zotero's "Find Available PDF" for a single item (via JS bridge).
