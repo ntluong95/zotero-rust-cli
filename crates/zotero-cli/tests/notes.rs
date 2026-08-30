@@ -581,6 +581,7 @@ fn test_note_add_rejects_malformed_identity_responses() {
         json!({"itemID": 123}),
         json!({"key": "", "itemID": 123}),
         json!({"key": "ABC", "itemID": null}),
+        json!({"key": "ABC", "itemID": 9223372036854775808u64}),
     ];
 
     for payload in malformed_payloads {
@@ -605,6 +606,7 @@ fn test_note_add_accepts_valid_identity_responses() {
     let valid_payloads = [
         (json!({"key": "ABC", "itemID": 123}), "ABC", 123i64),
         (json!({"key": "ABC", "itemID": 0}), "ABC", 0i64),
+        (json!({"key": "ABC", "itemID": i64::MAX}), "ABC", i64::MAX),
     ];
 
     for (payload, expected_key, expected_id) in valid_payloads {
@@ -621,6 +623,36 @@ fn test_note_add_accepts_valid_identity_responses() {
         assert_eq!(data["itemID"], expected_id);
         server.finish();
     }
+}
+
+#[test]
+fn test_add_note_accepts_i64_max_item_id() {
+    let dir = TestDir::new("add-note-i64-max");
+    let runtime = test_runtime(build_notes_fixture(dir.path()));
+    let session = SessionState::default();
+
+    let server = ScriptedServer::start(vec![
+        bridge_ownership_ok(),
+        ScriptedResponse::json(
+            200,
+            json!({"key": "MAXNOTE1", "itemID": i64::MAX, "title": "Doc One"}),
+        ),
+    ]);
+    let bridge = JSBridgeClient::new(server.port);
+
+    let result = notes::add_note(
+        &runtime,
+        &bridge,
+        "DOC00001",
+        notes::NoteInput::Text("boundary test"),
+        None,
+        &session,
+    )
+    .expect("succeeds for i64::MAX");
+
+    assert_eq!(result.key.as_deref(), Some("MAXNOTE1"));
+    assert_eq!(result.item_id, Some(i64::MAX));
+    server.finish();
 }
 
 fn drain_request(stream: &mut std::net::TcpStream) {

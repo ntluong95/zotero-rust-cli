@@ -612,10 +612,7 @@ impl JSBridgeClient {
             .and_then(Value::as_str)
             .map(|s| !s.is_empty())
             .unwrap_or(false);
-        let item_id_valid = data
-            .get("itemID")
-            .map(|v| v.is_i64() || v.is_u64())
-            .unwrap_or(false);
+        let item_id_valid = data.get("itemID").map(Value::is_i64).unwrap_or(false);
         if !key_valid || !item_id_valid {
             bail!("Invalid note creation response: missing or invalid key/itemID");
         }
