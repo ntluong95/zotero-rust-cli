@@ -56,6 +56,7 @@ impl ScriptedResponse {
     }
 }
 
+#[derive(Debug)]
 pub struct CapturedRequest {
     pub method: String,
     pub path: String,

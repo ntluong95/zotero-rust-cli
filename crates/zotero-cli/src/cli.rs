@@ -101,6 +101,9 @@ pub enum Commands {
     /// DOCX citation inspection and rendering commands.
     #[command(subcommand)]
     Docx(DocxCommands),
+    /// Independent Zotero data export commands.
+    #[command(subcommand)]
+    Export(ExportCommands),
     /// Execute raw JavaScript inside Zotero via the CLI Bridge (privileged; JS Bridge only).
     Js {
         code: String,
@@ -146,6 +149,71 @@ pub enum DocxCommands {
         #[arg(long = "force")]
         force: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ExportCommands {
+    /// Export real Zotero items to a standalone BibTeX/BibLaTeX file.
+    Bib {
+        /// Comma-separated item keys/IDs to export.
+        #[arg(long)]
+        items: Option<String>,
+        /// Collection key/ID whose top-level items should be exported.
+        #[arg(long = "collection")]
+        collection_ref: Option<String>,
+        #[arg(long = "format", value_enum, default_value_t = ExportBibFormat::Bibtex)]
+        fmt: ExportBibFormat,
+        /// Output .bib file path.
+        #[arg(long, required = true)]
+        output: String,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+#[value(rename_all = "lower")]
+pub enum ExportBibFormat {
+    Bibtex,
+    Biblatex,
+}
+
+impl std::fmt::Display for ExportBibFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ExportBibFormat::Bibtex => "bibtex",
+            ExportBibFormat::Biblatex => "biblatex",
+        };
+        write!(f, "{s}")
+    }
+}
+
+/// `SUPPORTED_EXPORT_FORMATS` (`rendering.py:10`), as a `clap` choice set --
+/// matches Python's `click.Choice(list(rendering.SUPPORTED_EXPORT_FORMATS))`
+/// on `item export --format`.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+#[value(rename_all = "lower")]
+pub enum ExportFormat {
+    Ris,
+    Bibtex,
+    Biblatex,
+    Csljson,
+    Csv,
+    Mods,
+    Refer,
+}
+
+impl std::fmt::Display for ExportFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ExportFormat::Ris => "ris",
+            ExportFormat::Bibtex => "bibtex",
+            ExportFormat::Biblatex => "biblatex",
+            ExportFormat::Csljson => "csljson",
+            ExportFormat::Csv => "csv",
+            ExportFormat::Mods => "mods",
+            ExportFormat::Refer => "refer",
+        };
+        write!(f, "{s}")
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -342,6 +410,35 @@ pub enum ItemCommands {
     },
     /// View annotations and highlights for a Zotero item (via JS bridge).
     Annotations { item_key: String },
+    /// Export a single item's reference data via the Zotero Local API.
+    Export {
+        #[arg(value_name = "REF")]
+        item_ref: Option<String>,
+        #[arg(long = "format", value_enum)]
+        fmt: ExportFormat,
+    },
+    /// Render an item's inline citation via the Zotero Local API.
+    Citation {
+        #[arg(value_name = "REF")]
+        item_ref: Option<String>,
+        #[arg(long)]
+        style: Option<String>,
+        #[arg(long)]
+        locale: Option<String>,
+        #[arg(long)]
+        linkwrap: bool,
+    },
+    /// Render an item's bibliography entry via the Zotero Local API.
+    Bibliography {
+        #[arg(value_name = "REF")]
+        item_ref: Option<String>,
+        #[arg(long)]
+        style: Option<String>,
+        #[arg(long)]
+        locale: Option<String>,
+        #[arg(long)]
+        linkwrap: bool,
+    },
 }
 
 /// Parses a `key=value` command-line argument into a tuple, for `--field key=value`.

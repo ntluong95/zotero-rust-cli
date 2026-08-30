@@ -168,6 +168,39 @@ pub fn local_api_get_json(
     Ok(serde_json::from_str(&body)?)
 }
 
+/// `local_api_get_text()` (`zotero_http.py:236-240`): unlike
+/// [`local_api_get_json`], the `Accept` header is left at the request-layer
+/// default (`*/*`) rather than overridden to `application/json` -- matches
+/// Python's `local_api_get_text`, which only ever passes the
+/// `Zotero-API-Version` header through and never touches `Accept`.
+pub fn local_api_get_text(
+    port: u16,
+    path: &str,
+    params: &[(&str, String)],
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    let mut request = ureq::get(&base_url(port, path))
+        .header("Zotero-API-Version", LOCAL_API_VERSION)
+        .header("Accept", "*/*");
+    for (key, value) in params {
+        request = request.query(*key, value);
+    }
+    let mut response = request
+        .config()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .map_err(|err| anyhow::anyhow!("HTTP request failed for {path}: {err}"))?;
+    let status = response.status().as_u16();
+    let body = read_response_body(&mut response)
+        .map_err(|err| anyhow::anyhow!("Failed to read response body for {path}: {err}"))?;
+    if status != 200 {
+        anyhow::bail!("Local API returned HTTP {status} for {path}: {body}");
+    }
+    Ok(body)
+}
+
 /// Status/body-preserving counterpart to [`local_api_get_json`], for `write_router`'s
 /// post-write verification primitives (§Blocker 3). Unlike `local_api_get_json`, this never
 /// `bail!`s on a non-200 status -- a `404` after a `DELETE` is the *expected* success case for

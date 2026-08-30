@@ -19,6 +19,7 @@ pub mod paths;
 pub mod pdf_cascade;
 pub mod pdf_fetch;
 pub mod plugin;
+pub mod rendering;
 pub mod runtime;
 pub mod semantic;
 pub mod session;
@@ -29,9 +30,9 @@ use clap::{CommandFactory, Parser};
 use serde_json::Value;
 
 use cli::{
-    AddCommands, AppCommands, Cli, CollectionCommands, Commands, DocxCommands, ImportCommands,
-    ItemCommands, LibraryCommands, NoteCommands, SearchCommands, SessionCommands, StyleCommands,
-    TagCommands,
+    AddCommands, AppCommands, Cli, CollectionCommands, Commands, DocxCommands, ExportCommands,
+    ImportCommands, ItemCommands, LibraryCommands, NoteCommands, SearchCommands, SessionCommands,
+    StyleCommands, TagCommands,
 };
 use write::WriteOutcome;
 
@@ -584,6 +585,88 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             let (payload, is_success) = annotations::get_annotations(&bridge, &item_key);
             output::emit(json_mode, &payload);
             Ok(if is_success { 0 } else { 1 })
+        }
+        // `item_export()` (`zotero_cli.py:1249-1256`).
+        Commands::Item(ItemCommands::Export { item_ref, fmt }) => {
+            let runtime = build_runtime();
+            let payload =
+                rendering::export_item(&runtime, item_ref.as_deref(), &fmt.to_string(), &session)?;
+            if json_mode {
+                output::emit(json_mode, &serde_json::to_value(&payload)?);
+            } else {
+                output::emit(json_mode, &Value::String(payload.content));
+            }
+            Ok(0)
+        }
+        // `item_citation()` (`zotero_cli.py:1259-1268`).
+        Commands::Item(ItemCommands::Citation {
+            item_ref,
+            style,
+            locale,
+            linkwrap,
+        }) => {
+            let runtime = build_runtime();
+            let payload = rendering::citation_item(
+                &runtime,
+                item_ref.as_deref(),
+                style.as_deref(),
+                locale.as_deref(),
+                linkwrap,
+                &session,
+            )?;
+            if json_mode {
+                output::emit(json_mode, &serde_json::to_value(&payload)?);
+            } else {
+                output::emit(
+                    json_mode,
+                    &Value::String(payload.citation.unwrap_or_default()),
+                );
+            }
+            Ok(0)
+        }
+        // `item_bibliography()` (`zotero_cli.py:1271-1280`).
+        Commands::Item(ItemCommands::Bibliography {
+            item_ref,
+            style,
+            locale,
+            linkwrap,
+        }) => {
+            let runtime = build_runtime();
+            let payload = rendering::bibliography_item(
+                &runtime,
+                item_ref.as_deref(),
+                style.as_deref(),
+                locale.as_deref(),
+                linkwrap,
+                &session,
+            )?;
+            if json_mode {
+                output::emit(json_mode, &serde_json::to_value(&payload)?);
+            } else {
+                output::emit(
+                    json_mode,
+                    &Value::String(payload.bibliography.unwrap_or_default()),
+                );
+            }
+            Ok(0)
+        }
+        // `export_bib_command()` (`zotero_cli.py:1906-1955`).
+        Commands::Export(ExportCommands::Bib {
+            items,
+            collection_ref,
+            fmt,
+            output,
+        }) => {
+            let runtime = build_runtime();
+            export_bib_command(
+                &runtime,
+                &session,
+                json_mode,
+                items.as_deref(),
+                collection_ref.as_deref(),
+                &fmt.to_string(),
+                &output,
+            )
         }
         Commands::Collection(CollectionCommands::FindPdfs {
             collection_key,
@@ -1334,6 +1417,117 @@ fn item_update_command(
         return Ok(code);
     }
     render_bridge_item_after_write(&client, json_mode, library_id, &item.key, &body)
+}
+
+/// `_split_export_refs()` (`zotero_cli.py:1958-1962`).
+fn split_export_refs(items: &str) -> anyhow::Result<Vec<String>> {
+    let refs: Vec<String> = items
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
+    if refs.is_empty() {
+        return Err(
+            error::DomainError::new("--items must contain at least one item key or ID.").into(),
+        );
+    }
+    Ok(refs)
+}
+
+/// `export_bib_command()` (`zotero_cli.py:1912-1955`): exports real Zotero items to a standalone
+/// BibTeX/BibLaTeX file. The only command in this slice that writes to local disk -- always at
+/// the caller-supplied `--output` path, never elsewhere, and it always overwrites (Python's
+/// `Path.write_text` truncates unconditionally; there is no separate overwrite guard to port).
+fn export_bib_command(
+    runtime: &runtime::RuntimeContext,
+    session: &session::SessionState,
+    json_mode: bool,
+    items: Option<&str>,
+    collection_ref: Option<&str>,
+    fmt: &str,
+    output: &str,
+) -> anyhow::Result<i32> {
+    // `bool(items) == bool(collection_ref)` (`zotero_cli.py:1914`): Python's truthiness treats an
+    // empty string the same as `None`, so an empty `--items ""` / `--collection ""` is filtered
+    // here too rather than just checked for `Option::is_some()`.
+    let items = items.filter(|value| !value.is_empty());
+    let collection_ref = collection_ref.filter(|value| !value.is_empty());
+    if items.is_some() == collection_ref.is_some() {
+        return Err(error::DomainError::new("Pass exactly one of --items or --collection.").into());
+    }
+
+    let (refs, source) = if let Some(items) = items {
+        let refs = split_export_refs(items)?;
+        let source = serde_json::json!({"type": "items", "refs": refs});
+        (refs, source)
+    } else {
+        let collection_ref = collection_ref.expect("exactly one of items/collection_ref is Some");
+        let collection = catalog::get_collection(runtime, Some(collection_ref), session)?;
+        let refs: Vec<String> = catalog::collection_items(runtime, Some(collection_ref), session)?
+            .into_iter()
+            .filter(|item| {
+                item.type_name != "attachment"
+                    && item.type_name != "note"
+                    && item.type_name != "annotation"
+            })
+            .map(|item| item.key)
+            .collect();
+        let source = serde_json::json!({
+            "type": "collection",
+            "collection": serde_json::to_value(&collection)?,
+        });
+        (refs, source)
+    };
+
+    if refs.is_empty() {
+        return Err(error::DomainError::new("No exportable Zotero items found.").into());
+    }
+
+    let mut exported = Vec::with_capacity(refs.len());
+    for item_ref in &refs {
+        exported.push(rendering::export_item(
+            runtime,
+            Some(item_ref.as_str()),
+            fmt,
+            session,
+        )?);
+    }
+
+    let output_path = paths::expand_user_path(output);
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    // `"\n\n".join(entry["content"].strip() for entry in exported if entry.get("content"))`
+    // then `content + ("\n" if content else "")` (`zotero_cli.py:1942-1943`).
+    let content = exported
+        .iter()
+        .filter(|entry| !entry.content.is_empty())
+        .map(|entry| entry.content.trim())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let final_content = if content.is_empty() {
+        content
+    } else {
+        format!("{content}\n")
+    };
+    std::fs::write(&output_path, final_content)?;
+
+    let payload = serde_json::json!({
+        "action": "export-bib",
+        "format": fmt,
+        "output": output_path.to_string_lossy(),
+        "item_count": exported.len(),
+        "items": exported
+            .iter()
+            .map(|entry| serde_json::json!({"itemKey": entry.item_key, "libraryID": entry.library_id}))
+            .collect::<Vec<_>>(),
+        "source": source,
+    });
+    output::emit(json_mode, &payload);
+    Ok(0)
 }
 
 fn item_tag_command(
