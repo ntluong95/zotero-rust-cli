@@ -571,6 +571,24 @@ impl JSBridgeClient {
         self.execute_js(&code, 15)
     }
 
+    /// `core/jsbridge.py::collection_stats` (hardcoded `library_id = 1` at the CLI layer --
+    /// `collection stats` takes no `--library` option in Python, so a group-library collection
+    /// can never be targeted through this command). Read-only: counts regular (non-attachment,
+    /// non-note) items, PDF-attached vs. not, a publication-year histogram, and the top 10
+    /// journals by item count.
+    ///
+    /// A missing collection returns the bare string `"ERROR: collection <key> not found"` as
+    /// `data` (not a `{ok: false, ...}` object) -- matching Python's `emit_js`, this is a
+    /// *transport success* (exit code `0`, not `1`), the same `"ERROR: ..."`-string-is-still-
+    /// success quirk `get_annotations` already documents.
+    pub fn collection_stats(&self, library_id: u32, collection_key: &str) -> BridgeResponse {
+        let code = match templates::render_collection_stats(library_id, collection_key) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&code, 8)
+    }
+
     // ── Phase 7 Slice 4: Note creation (Bridge-only, single mutation attempt, no retry) ────
 
     /// `core/notes.py::add_note`'s inline JS block (`Zotero.Items.getByLibraryAndKey` ->

@@ -581,6 +581,12 @@ pub enum CollectionCommands {
         #[arg(long = "reset-resume")]
         reset_resume: bool,
     },
+    /// Read the collection currently selected in the Zotero GUI (via Connector) and persist it
+    /// as the CLI session's current library/collection.
+    UseSelected,
+    /// Get statistics for a Zotero collection (via JS bridge): item/attachment/PDF counts,
+    /// publication-year histogram, and top journals.
+    Stats { collection_key: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -634,6 +640,9 @@ pub enum SessionCommands {
         #[arg(long, default_value_t = 10)]
         limit: i64,
     },
+    /// Read the collection currently selected in the Zotero GUI (via Connector) and persist it
+    /// as the CLI session's current library/collection.
+    UseSelected,
 }
 
 #[derive(Subcommand, Debug)]

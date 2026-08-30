@@ -112,7 +112,7 @@ pub fn get_collection(
 ) -> anyhow::Result<Collection> {
     let resolved = collection_ref
         .map(str::to_string)
-        .or_else(|| session.current_collection.clone());
+        .or_else(|| crate::session::session_collection_ref(session));
     let Some(resolved) = resolved else {
         return Err(
             DomainError::new("Collection reference required or set it in session first").into(),
@@ -272,6 +272,20 @@ pub fn collection_items(
             ..Default::default()
         },
     )
+}
+
+/// `use_selected_collection()` (`catalog.py:88-91`): read-only Connector query -- never mutates
+/// Zotero library data. The caller (`collection use-selected` / `session use-selected`) persists
+/// the returned value into CLI-owned session state.
+pub fn use_selected_collection(runtime: &RuntimeContext) -> anyhow::Result<serde_json::Value> {
+    if !runtime.connector_available {
+        return Err(DomainError::new(format!(
+            "Zotero connector is not available: {}",
+            runtime.connector_message
+        ))
+        .into());
+    }
+    http::get_selected_collection(runtime.environment.port, Duration::from_secs(5))
 }
 
 /// `item_children()` (`catalog.py:162-164`).

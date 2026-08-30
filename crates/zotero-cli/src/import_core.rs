@@ -333,8 +333,8 @@ pub fn resolve_target<C: ConnectorImportClient>(
         .ok_or_else(|| anyhow::anyhow!("Collection not found: {collection_ref}"))?;
         return Ok(collection_target(&collection, "explicit"));
     }
-    if let Some(current) = session
-        .current_collection
+    let session_collection_ref = crate::session::session_collection_ref(session);
+    if let Some(current) = session_collection_ref
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {

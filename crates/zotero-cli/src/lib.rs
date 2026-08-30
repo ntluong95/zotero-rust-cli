@@ -309,7 +309,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         }
         Commands::Session(SessionCommands::UseCollection { collection_ref }) => {
             let mut state = session;
-            state.current_collection = Some(collection_ref.clone());
+            state.current_collection = Some(Value::String(collection_ref.clone()));
             session::save_session_state(&state)?;
             session::append_command_history(&format!("session use-collection {collection_ref}"))?;
             let payload = session::build_session_payload(&state);
@@ -355,6 +355,29 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         Commands::Session(SessionCommands::History { limit }) => {
             let entries = session::python_negative_tail_slice(&session.command_history, limit);
             let payload = serde_json::json!({ "history": entries });
+            output::emit(json_mode, &payload);
+            Ok(0)
+        }
+        // `session_use_selected()` (`zotero_cli.py:2371-2378`): same `catalog::use_selected_collection`
+        // Connector call as `collection use-selected` -- Python has no separate
+        // "getSelectedItems" endpoint -- but emits both the raw selection and the resulting
+        // session payload, not just the raw selection.
+        //
+        // `history_count` in that emitted `"session"` payload under-reports by one: like
+        // Python's `append_command_history()` (`session.py:95-103`), ours reloads its own fresh
+        // copy of on-disk state, appends, and saves that -- neither ever mutates the in-memory
+        // `state` this arm already holds. The append still lands correctly on disk (a later
+        // `session status` sees it); only this command's own echoed count is stale, exactly
+        // matching Python.
+        Commands::Session(SessionCommands::UseSelected) => {
+            let runtime = build_runtime();
+            let selected = catalog::use_selected_collection(&runtime)?;
+            let state = persist_selected_collection(&selected, session)?;
+            session::append_command_history("session use-selected")?;
+            let payload = serde_json::json!({
+                "selected": selected,
+                "session": session::build_session_payload(&state),
+            });
             output::emit(json_mode, &payload);
             Ok(0)
         }
@@ -723,6 +746,25 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             let code = exit_code_for(&payload);
             output::emit(json_mode, &payload);
             Ok(code)
+        }
+        // `collection_use_selected()` (`zotero_cli.py:789-796`).
+        Commands::Collection(CollectionCommands::UseSelected) => {
+            let runtime = build_runtime();
+            let selected = catalog::use_selected_collection(&runtime)?;
+            persist_selected_collection(&selected, session)?;
+            session::append_command_history("collection use-selected")?;
+            output::emit(json_mode, &selected);
+            Ok(0)
+        }
+        // `collection_stats_command()` (`zotero_cli.py:916-922`): `library_id` is hardcoded to
+        // `1`, matching Python's CLI layer (no `--library` option exists for this command --
+        // a group-library collection can never be targeted through it).
+        Commands::Collection(CollectionCommands::Stats { collection_key }) => {
+            let bridge = bridge::JSBridgeClient::with_default_port();
+            let transport = bridge.collection_stats(1, &collection_key);
+            let (payload, is_success) = bridge::client::classify_bridge_payload(&transport);
+            output::emit(json_mode, &payload);
+            Ok(if is_success { 0 } else { 1 })
         }
         Commands::Note(NoteCommands::Get { note_ref }) => {
             let runtime = build_runtime();
@@ -1417,6 +1459,22 @@ fn item_update_command(
         return Ok(code);
     }
     render_bridge_item_after_write(&client, json_mode, library_id, &item.key, &body)
+}
+
+/// `_persist_selected_collection()` (`zotero_cli.py:781-786`): overwrites `current_library` and
+/// `current_collection` with the Connector's raw `libraryID`/`id` fields verbatim (a JSON
+/// number, or `null` if either key is absent from the selection response), then saves. Shared by
+/// `collection use-selected` and `session use-selected` -- the only state mutation either command
+/// performs, and it is CLI-owned session state, never Zotero library data.
+fn persist_selected_collection(
+    selected: &Value,
+    session: session::SessionState,
+) -> anyhow::Result<session::SessionState> {
+    let mut state = session;
+    state.current_library = Some(selected.get("libraryID").cloned().unwrap_or(Value::Null));
+    state.current_collection = Some(selected.get("id").cloned().unwrap_or(Value::Null));
+    session::save_session_state(&state)?;
+    Ok(state)
 }
 
 /// `_split_export_refs()` (`zotero_cli.py:1958-1962`).
