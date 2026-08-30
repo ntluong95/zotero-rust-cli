@@ -39,6 +39,10 @@ pub const T_SEARCH_FULLTEXT: &str = include_str!("js/search_fulltext.js");
 pub const T_SEARCH_ANNOTATIONS: &str = include_str!("js/search_annotations.js");
 pub const T_GET_ANNOTATIONS: &str = include_str!("js/get_annotations.js");
 
+// Selection / Collection slice: `core/jsbridge.py::collection_stats` (read-only; counts items,
+// PDF attachments, publication years, and top journals for a collection).
+pub const T_COLLECTION_STATS: &str = include_str!("js/collection_stats.js");
+
 // Add/import composition Bridge primitives.
 pub const T_FIND_ITEMS_BY_DOI: &str = include_str!("js/find_items_by_doi.js");
 pub const T_IMPORT_FROM_DOI: &str = include_str!("js/import_from_doi.js");
@@ -300,6 +304,17 @@ pub fn render_get_annotations(library_id: u32, key: &str) -> Result<String, serd
         "key": key,
     });
     render(T_GET_ANNOTATIONS, &params)
+}
+
+pub fn render_collection_stats(
+    library_id: u32,
+    collection_key: &str,
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "collectionKey": collection_key,
+    });
+    render(T_COLLECTION_STATS, &params)
 }
 
 pub fn render_find_items_by_doi(

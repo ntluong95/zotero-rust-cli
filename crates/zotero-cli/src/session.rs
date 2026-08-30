@@ -26,10 +26,34 @@ pub(crate) static STATE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::n
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SessionState {
     pub current_library: Option<serde_json::Value>,
-    pub current_collection: Option<String>,
+    /// Polymorphic like `current_library`, not `Option<String>`: `session use-collection`
+    /// stores a plain string ref, but `collection use-selected`/`session use-selected`
+    /// (`_persist_selected_collection`, `zotero_cli.py:781-786`) store the Zotero Connector's
+    /// raw `selected["id"]` value verbatim, which is a JSON *number* (a collection ID), not a
+    /// string. `session_collection_ref` below is the read-side coercion back to a plain `&str`
+    /// ref for SQLite resolution, mirroring `catalog::session_library_ref`.
+    pub current_collection: Option<serde_json::Value>,
     pub current_item: Option<String>,
     #[serde(default)]
     pub command_history: Vec<serde_json::Value>,
+}
+
+/// Session's `current_collection` as an optional string ref, matching how Python's dynamic dict
+/// value -- a plain string ref from `session use-collection`, a numeric Zotero collection ID from
+/// `collection use-selected`/`session use-selected`, or `None` -- coerces when passed straight
+/// into `resolve_collection`. Mirrors `catalog::session_library_ref`'s handling of
+/// `current_library`.
+pub fn session_collection_ref(state: &SessionState) -> Option<String> {
+    match &state.current_collection {
+        None => None,
+        Some(Value::Null) => None,
+        Some(Value::String(s)) if s.is_empty() => None,
+        Some(v) => Some(match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            other => other.to_string(),
+        }),
+    }
 }
 
 /// `session_state_dir()` (`session.py:14-18`).
@@ -121,11 +145,7 @@ pub fn save_session_state(state: &SessionState) -> anyhow::Result<()> {
     );
     payload.insert(
         "current_collection".to_string(),
-        state
-            .current_collection
-            .clone()
-            .map(Value::String)
-            .unwrap_or(Value::Null),
+        state.current_collection.clone().unwrap_or(Value::Null),
     );
     payload.insert(
         "current_item".to_string(),
@@ -163,7 +183,7 @@ pub fn append_command_history(command_line: &str) -> anyhow::Result<()> {
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionPayload {
     pub current_library: Option<serde_json::Value>,
-    pub current_collection: Option<String>,
+    pub current_collection: Option<serde_json::Value>,
     pub current_item: Option<String>,
     pub state_path: String,
     pub history_count: usize,
@@ -305,6 +325,53 @@ mod tests {
         assert!(session_library_id(&state, 7).is_err());
     }
 
+    fn state_with_collection(current_collection: Option<Value>) -> SessionState {
+        SessionState {
+            current_collection,
+            ..SessionState::default()
+        }
+    }
+
+    #[test]
+    fn session_collection_ref_missing_is_none() {
+        assert_eq!(session_collection_ref(&state_with_collection(None)), None);
+    }
+
+    #[test]
+    fn session_collection_ref_null_is_none() {
+        assert_eq!(
+            session_collection_ref(&state_with_collection(Some(Value::Null))),
+            None
+        );
+    }
+
+    #[test]
+    fn session_collection_ref_empty_string_is_none() {
+        assert_eq!(
+            session_collection_ref(&state_with_collection(Some(json!("")))),
+            None
+        );
+    }
+
+    #[test]
+    fn session_collection_ref_string_passes_through() {
+        assert_eq!(
+            session_collection_ref(&state_with_collection(Some(json!("COLLABCD")))),
+            Some("COLLABCD".to_string())
+        );
+    }
+
+    // `collection use-selected`/`session use-selected` persist the Connector's raw numeric
+    // `selected["id"]` (a Zotero collection ID) verbatim -- this is the read-side coercion back
+    // to a plain string ref for SQLite resolution.
+    #[test]
+    fn session_collection_ref_number_stringifies() {
+        assert_eq!(
+            session_collection_ref(&state_with_collection(Some(json!(42)))),
+            Some("42".to_string())
+        );
+    }
+
     fn history(n: usize) -> Vec<Value> {
         (1..=n).map(|i| json!(i)).collect()
     }
@@ -397,12 +464,12 @@ mod tests {
 
         let mut state = load_session_state();
         state.current_library = Some(json!(2));
-        state.current_collection = Some("COLLABCD".to_string());
+        state.current_collection = Some(json!("COLLABCD"));
         save_session_state(&state).expect("save_session_state must succeed");
 
         let reloaded = load_session_state();
         assert_eq!(reloaded.current_library, Some(json!(2)));
-        assert_eq!(reloaded.current_collection, Some("COLLABCD".to_string()));
+        assert_eq!(reloaded.current_collection, Some(json!("COLLABCD")));
         assert_eq!(reloaded.current_item, None);
         assert_eq!(reloaded.command_history.len(), 0);
 
