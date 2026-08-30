@@ -1,6 +1,7 @@
 pub mod add_import;
 pub mod analysis;
 pub mod annotations;
+pub mod app_launch;
 pub mod audit;
 pub mod bridge;
 pub mod catalog;
@@ -147,6 +148,18 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             let code = exit_code_for(&payload);
             output::emit(json_mode, &payload);
             Ok(code)
+        }
+        // `app_launch()` (`zotero_cli.py:453-461`). `ctx.find_root().obj["runtime"] = None`
+        // has no Rust equivalent to port: that line invalidates a cross-command runtime cache
+        // that only matters across multiple commands in Python's REPL, which this build doesn't
+        // implement (`repl` is a dropped command, per the plan's Challenge C4) -- this process
+        // exits immediately after emitting `payload` regardless.
+        Commands::App(AppCommands::Launch { wait_timeout }) => {
+            let runtime = build_runtime();
+            let mut spawner = app_launch::RealProcessSpawner;
+            let payload = app_launch::launch_zotero(&runtime, wait_timeout, &mut spawner)?;
+            output::emit(json_mode, &payload);
+            Ok(0)
         }
         Commands::Item(ItemCommands::List { limit }) => {
             let runtime = build_runtime();
