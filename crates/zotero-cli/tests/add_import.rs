@@ -769,6 +769,62 @@ fn add_url_covers_arxiv_embedded_doi_http_failure_and_ambiguous_write() {
 }
 
 #[test]
+fn add_url_doi_extraction_stops_before_query_and_fragment() {
+    let runtime = runtime(true);
+    let mut bridge = MockBridge {
+        doi_imports: vec![
+            BridgeResponse::success(json!({
+                "ok": true,
+                "code": "IMPORTED",
+                "key": "QUERY01",
+                "title": "Query DOI",
+                "DOI": "10.1234/abc",
+                "source": "zotero-translator"
+            })),
+            BridgeResponse::success(json!({
+                "ok": true,
+                "code": "IMPORTED",
+                "key": "FRAG001",
+                "title": "Fragment DOI",
+                "DOI": "10.1234/abc",
+                "source": "zotero-translator"
+            })),
+        ],
+        ..Default::default()
+    };
+    let mut connector = MockConnector::default();
+    let mut fetcher = MockFetcher::default();
+    let options = AddImportOptions {
+        dedupe: false,
+        ..options()
+    };
+
+    let query = add_import::add_url_with_clients(
+        &runtime,
+        &mut bridge,
+        &mut connector,
+        &mut fetcher,
+        "https://doi.org/10.1234/abc?ref=xyz",
+        options.clone(),
+    );
+    assert_eq!(query["url_kind"], "doi");
+    assert_eq!(query["DOI"], "10.1234/abc");
+    assert_eq!(bridge.doi_import_calls[0].1, "10.1234/abc");
+
+    let fragment = add_import::add_url_with_clients(
+        &runtime,
+        &mut bridge,
+        &mut connector,
+        &mut fetcher,
+        "https://doi.org/10.1234/abc#frag",
+        options,
+    );
+    assert_eq!(fragment["url_kind"], "doi");
+    assert_eq!(fragment["DOI"], "10.1234/abc");
+    assert_eq!(bridge.doi_import_calls[1].1, "10.1234/abc");
+}
+
+#[test]
 fn add_file_reports_missing_and_unsupported_without_live_mutation() {
     let runtime = runtime(true);
     let mut bridge = zotero_cli::bridge::JSBridgeClient::new(9);
@@ -824,6 +880,7 @@ fn add_file_covers_pdf_doi_attach_and_standalone_branches() {
     assert_eq!(out["status"], "success");
     assert_eq!(out["code"], "IMPORTED_WITH_PDF");
     assert_eq!(out["DOI"], "10.1234/with?query#fragment");
+    assert_eq!(bridge.doi_import_calls[0].1, "10.1234/with?query#fragment");
     assert_eq!(
         out["attach_result"],
         Value::String("OK: ATTACH01 attached to PDF Item".to_string())
@@ -1015,6 +1072,24 @@ fn add_import_constants_match_python_pdf_fetch_and_http_acquisition() {
         add_import::ADD_IMPORT_HTTP_USER_AGENT,
         "cli-anything-zotero/1.2 (mailto:cli-anything@local; research agent)"
     );
+}
+
+#[test]
+fn composed_pdf_fetch_request_uses_python_45_second_timeouts_at_call_site() {
+    let mut opts = options();
+    opts.fetch_pdf = true;
+    opts.library_id = 7;
+    opts.pdf_sources = Some("zotero,arxiv".to_string());
+
+    let request = add_import::compose_pdf_fetch_request(&opts, "zotero,unpaywall").unwrap();
+
+    assert_eq!(
+        request.sources,
+        vec!["zotero".to_string(), "arxiv".to_string()]
+    );
+    assert_eq!(request.library_id, 7);
+    assert_eq!(request.zotero_timeout, 45);
+    assert_eq!(request.download_timeout, 45);
 }
 
 #[test]

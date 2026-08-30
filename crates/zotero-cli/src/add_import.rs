@@ -21,7 +21,10 @@ static ARXIV_ID_RE: LazyLock<Regex> =
 static BARE_ARXIV_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4}\.\d{4,5})").unwrap());
 static DOI_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)10\.\d{4,9}/[^\s"'<>]+"#).unwrap());
-static DOI_URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"10\.\d{4,9}/[^\s]+"#).unwrap());
+static DOI_URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"10\.\d{4,9}/[^\s?#]+"#).unwrap());
+static PDF_STEM_DOI_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"10\.\d{4,9}/[^\s]+"#).unwrap());
 static HTML_DOI_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"10\.\d{4,9}/[A-Za-z0-9./_;()-]+").unwrap());
 static TITLE_RE: LazyLock<Regex> =
@@ -32,6 +35,14 @@ static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub const ADD_IMPORT_HTTP_USER_AGENT: &str =
     "cli-anything-zotero/1.2 (mailto:cli-anything@local; research agent)";
 pub const ADD_IMPORT_PDF_FETCH_TIMEOUT_SECONDS: u64 = 45;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdfFetchRequest {
+    pub sources: Vec<String>,
+    pub library_id: i64,
+    pub zotero_timeout: u64,
+    pub download_timeout: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct AddImportOptions {
@@ -897,7 +908,7 @@ fn add_pdf_file<B: AddImportBridge>(
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .replace('_', "/");
-    let doi = DOI_URL_RE
+    let doi = PDF_STEM_DOI_RE
         .find(&stem)
         .map(|mat| normalize_doi(Some(mat.as_str())));
     if let Some(doi) = doi.filter(|doi| DOI_RE.is_match(doi)) {
@@ -1320,27 +1331,26 @@ fn maybe_fetch_pdf(
     let Some(key) = payload.get("key").and_then(Value::as_str) else {
         return;
     };
-    let sources =
-        match pdf_fetch::parse_sources(options.pdf_sources.as_deref().or(Some(default_sources))) {
-            Ok(sources) => sources,
-            Err(err) => {
-                object_insert(payload, "status", Value::from("partial_success"));
-                object_insert(payload, "code", Value::from("IMPORTED_PDF_MISSING"));
-                object_insert(
-                    payload,
-                    "pdf",
-                    result_payload(
-                        "item_fetch_pdf",
-                        false,
-                        "error",
-                        Some("PDF_SOURCES_INVALID"),
-                        Some(&err.to_string()),
-                        vec![],
-                    ),
-                );
-                return;
-            }
-        };
+    let request = match compose_pdf_fetch_request(options, default_sources) {
+        Ok(sources) => sources,
+        Err(err) => {
+            object_insert(payload, "status", Value::from("partial_success"));
+            object_insert(payload, "code", Value::from("IMPORTED_PDF_MISSING"));
+            object_insert(
+                payload,
+                "pdf",
+                result_payload(
+                    "item_fetch_pdf",
+                    false,
+                    "error",
+                    Some("PDF_SOURCES_INVALID"),
+                    Some(&err.to_string()),
+                    vec![],
+                ),
+            );
+            return;
+        }
+    };
     let client = UreqPdfClient;
     let pdf = pdf_fetch::fetch_pdf_for_item(
         runtime,
@@ -1348,10 +1358,10 @@ fn maybe_fetch_pdf(
         &client,
         &client,
         key,
-        &sources,
-        options.library_id,
-        ADD_IMPORT_PDF_FETCH_TIMEOUT_SECONDS,
-        ADD_IMPORT_PDF_FETCH_TIMEOUT_SECONDS,
+        &request.sources,
+        request.library_id,
+        request.zotero_timeout,
+        request.download_timeout,
         false,
     );
     object_insert(payload, "pdf", pdf.clone());
@@ -1361,6 +1371,20 @@ fn maybe_fetch_pdf(
         object_insert(payload, "status", Value::from("partial_success"));
         object_insert(payload, "code", Value::from("IMPORTED_PDF_MISSING"));
     }
+}
+
+pub fn compose_pdf_fetch_request(
+    options: &AddImportOptions,
+    default_sources: &str,
+) -> anyhow::Result<PdfFetchRequest> {
+    Ok(PdfFetchRequest {
+        sources: pdf_fetch::parse_sources(
+            options.pdf_sources.as_deref().or(Some(default_sources)),
+        )?,
+        library_id: options.library_id,
+        zotero_timeout: ADD_IMPORT_PDF_FETCH_TIMEOUT_SECONDS,
+        download_timeout: ADD_IMPORT_PDF_FETCH_TIMEOUT_SECONDS,
+    })
 }
 
 fn application_import_payload(transport: &BridgeResponse) -> Value {
