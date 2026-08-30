@@ -439,10 +439,6 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
                 all_other_collections,
             )
         }
-        Commands::Item(ItemCommands::Duplicates { limit }) => {
-            let runtime = build_runtime();
-            item_duplicates_command(&runtime, &session, json_mode, limit)
-        }
         Commands::Item(ItemCommands::Merge {
             keep_key,
             merge_keys,
@@ -579,20 +575,120 @@ fn write_outcome_failure(outcome: &WriteOutcome) -> Option<(i32, Value)> {
     }
 }
 
-/// §3.5's compatibility renderer for a Local-API-routed write: a deliberately narrow view built
-/// from `write_router::LocalApiItemSummary`, never the raw Local API response. Excludes
-/// `LocalApiItemSummary.version` on purpose -- the standing backend-identity denylist (§3.5/
-/// Testing Strategy) forbids a raw Local API `version` key from ever reaching stdout JSON.
-fn render_local_api_write_result(
-    summary: &write_router::LocalApiItemSummary,
+/// §3.5's compatibility renderer contract, generalized to be genuinely backend-neutral (review
+/// finding: the same command must never change JSON schema depending on which backend an
+/// invisible capability flag happened to select). A `CanonicalWriteView` is the one shape every
+/// write command renders through, regardless of whether it came from a Local API GET
+/// (`write_router::LocalApiItemSummary`) or a live JS Bridge readback (`parse_live_object`
+/// below) -- never from SQLite, which cannot be trusted to see a write made moments earlier by
+/// this same process (Zotero's exclusive SQLite lock / WAL checkpoint delay). Excludes any raw
+/// Local-API-internal `version` field on purpose -- the standing backend-identity denylist
+/// (§3.5/Testing Strategy) forbids it from ever reaching stdout JSON.
+struct CanonicalWriteView {
+    key: String,
+    library_id: i64,
+    item_type: String,
+    data: serde_json::Map<String, Value>,
+}
+
+impl From<&write_router::LocalApiItemSummary> for CanonicalWriteView {
+    fn from(summary: &write_router::LocalApiItemSummary) -> Self {
+        CanonicalWriteView {
+            key: summary.key.clone(),
+            library_id: summary.library_id,
+            item_type: summary.item_type.clone(),
+            data: summary.data.clone(),
+        }
+    }
+}
+
+/// Live Zotero-runtime item readback (never SQLite): returns the same envelope shape produced by
+/// `POST /cli-bridge/eval`'s ownership-gated `execute_js`, using the real `Item#toJSON()`/
+/// `Collection#toJSON()` Zotero API already relied on for sync -- a JSON shape close enough to
+/// the Local API's own `data` object that both sources normalize into one `CanonicalWriteView`.
+/// Written as an inline template (not a new `bridge/js/*.js` file) to stay within this slice's
+/// `cli.rs`/`lib.rs` file-ownership boundary; still routed through `bridge::templates::render`
+/// for the same D1 `JSON.parse`-based parameter safety every other Bridge call uses.
+const LIVE_ITEM_READBACK_JS: &str = r#"
+var item = Zotero.Items.getByLibraryAndKey(P.libraryID, P.key);
+if (!item) { return JSON.stringify({found: false}); }
+return JSON.stringify({found: true, key: item.key, libraryID: item.libraryID, data: item.toJSON()});
+"#;
+
+const LIVE_COLLECTION_READBACK_JS: &str = r#"
+var col = Zotero.Collections.getByLibraryAndKey(P.libraryID, P.key);
+if (!col) { return JSON.stringify({found: false}); }
+return JSON.stringify({found: true, key: col.key, libraryID: col.libraryID, data: col.toJSON()});
+"#;
+
+/// Runs a live readback template against the JS Bridge. Reuses the same
+/// `bridge_endpoint_active()` ownership gate and positive-probe cache every other Bridge call
+/// goes through (`execute_js`) -- a second live readback in the same process after an already-
+/// successful write costs exactly one more request, not a second ownership probe.
+fn bridge_live_read(
+    client: &bridge::JSBridgeClient,
+    template: &str,
+    library_id: u32,
+    key: &str,
+) -> anyhow::Result<Value> {
+    let params = serde_json::json!({ "libraryID": library_id, "key": key });
+    let code = bridge::templates::render(template, &params)?;
+    client.execute_raw_js(&code, 10)
+}
+
+/// Whether a `bridge_live_read` response reports the object absent (`{"found": false}`) -- the
+/// live equivalent of `write_router::PresenceCheck::Absent`, used for Bridge-routed delete/merge
+/// verification instead of a same-process SQLite re-read.
+fn is_live_object_absent(raw: &Value) -> bool {
+    raw.get("found").and_then(Value::as_bool) == Some(false)
+}
+
+/// Normalizes a `bridge_live_read` response into the same `CanonicalWriteView` shape a Local API
+/// GET produces. `what` is only used for the error message on an unexpectedly-absent object (a
+/// find-immediately-after-write mismatch, not a designed code path).
+fn parse_live_object(raw: &Value, what: &str) -> anyhow::Result<CanonicalWriteView> {
+    if is_live_object_absent(raw) {
+        anyhow::bail!("{what} was not found via the live Zotero-runtime readback");
+    }
+    let key = raw
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("live readback response missing `key`"))?
+        .to_string();
+    let library_id = raw
+        .get("libraryID")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow::anyhow!("live readback response missing `libraryID`"))?;
+    let data = raw
+        .get("data")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("live readback response missing `data`"))?;
+    let item_type = data
+        .get("itemType")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok(CanonicalWriteView {
+        key,
+        library_id,
+        item_type,
+        data,
+    })
+}
+
+/// The one renderer every write command's `Applied` case emits through, regardless of backend
+/// (§3.5, review Blocker 1). Never includes a raw Local-API-internal `version` field.
+fn render_write_result(
+    view: &CanonicalWriteView,
     mismatches: &[write_router::FieldMismatch],
 ) -> Value {
     let mut payload = serde_json::json!({
         "outcome": "applied",
-        "key": summary.key,
-        "library_id": summary.library_id,
-        "item_type": summary.item_type,
-        "data": Value::Object(summary.data.clone()),
+        "key": view.key,
+        "library_id": view.library_id,
+        "item_type": view.item_type,
+        "data": Value::Object(view.data.clone()),
     });
     if !mismatches.is_empty() {
         if let Value::Object(map) = &mut payload {
@@ -603,6 +699,81 @@ fn render_local_api_write_result(
         }
     }
     payload
+}
+
+/// §3.5's requested-vs-observed field diff, shared by every backend (previously Local-API-only
+/// logic hidden inside `write_router::verify_write`): a Local API PATCH that partially applies,
+/// or a Bridge script that silently drops a field, must surface a mismatch rather than a
+/// same-looking, silent success either way.
+fn diff_requested_fields(
+    requested: &serde_json::Map<String, Value>,
+    observed: &serde_json::Map<String, Value>,
+) -> Vec<write_router::FieldMismatch> {
+    let mut mismatches = Vec::new();
+    for (field, requested_value) in requested {
+        let observed_value = observed.get(field).cloned();
+        if observed_value.as_ref() != Some(requested_value) {
+            mismatches.push(write_router::FieldMismatch {
+                field: field.clone(),
+                requested: requested_value.clone(),
+                observed: observed_value,
+            });
+        }
+    }
+    mismatches
+}
+
+/// Re-reads `path` via the Local API after a successful write, converts it to the canonical
+/// write-result view, diffs `requested` against the observed fields, and emits the rendered
+/// result. Shared by every Local-API-routed CRUD command.
+fn render_local_api_object_after_write(
+    runtime: &runtime::RuntimeContext,
+    json_mode: bool,
+    path: &str,
+    requested: &serde_json::Map<String, Value>,
+) -> anyhow::Result<i32> {
+    match write_router::verify_present(runtime, path) {
+        write_router::PresenceCheck::Present(summary) => {
+            let view = CanonicalWriteView::from(&summary);
+            let mismatches = diff_requested_fields(requested, &view.data);
+            output::emit(json_mode, &render_write_result(&view, &mismatches));
+            Ok(0)
+        }
+        other => presence_check_error(path, other),
+    }
+}
+
+/// Re-reads an item live through the JS Bridge (never SQLite) after a successful Bridge write,
+/// converts it to the canonical write-result view, diffs `requested` against the observed
+/// fields, and emits the rendered result. The Bridge-side counterpart to
+/// `render_local_api_object_after_write` -- both converge on the exact same output shape.
+fn render_bridge_item_after_write(
+    client: &bridge::JSBridgeClient,
+    json_mode: bool,
+    library_id: u32,
+    key: &str,
+    requested: &serde_json::Map<String, Value>,
+) -> anyhow::Result<i32> {
+    let raw = bridge_live_read(client, LIVE_ITEM_READBACK_JS, library_id, key)?;
+    let view = parse_live_object(&raw, "item")?;
+    let mismatches = diff_requested_fields(requested, &view.data);
+    output::emit(json_mode, &render_write_result(&view, &mismatches));
+    Ok(0)
+}
+
+/// Collection counterpart to `render_bridge_item_after_write`.
+fn render_bridge_collection_after_write(
+    client: &bridge::JSBridgeClient,
+    json_mode: bool,
+    library_id: u32,
+    key: &str,
+    requested: &serde_json::Map<String, Value>,
+) -> anyhow::Result<i32> {
+    let raw = bridge_live_read(client, LIVE_COLLECTION_READBACK_JS, library_id, key)?;
+    let view = parse_live_object(&raw, "collection")?;
+    let mismatches = diff_requested_fields(requested, &view.data);
+    output::emit(json_mode, &render_write_result(&view, &mismatches));
+    Ok(0)
 }
 
 /// Maps every non-`Present` `PresenceCheck` (encountered while fetching an object's current
@@ -682,6 +853,10 @@ fn item_update_command(
         return Err(error::DomainError::new("At least one --field key=value is required").into());
     }
     let item = catalog::get_item(runtime, Some(item_key), session)?;
+    let mut body = serde_json::Map::new();
+    for (key, value) in fields {
+        body.insert(key.clone(), Value::String(value.clone()));
+    }
 
     if runtime.local_api_writes_available {
         let scope = catalog::local_api_scope(runtime, item.library_id)?;
@@ -690,10 +865,6 @@ fn item_update_command(
             write_router::PresenceCheck::Present(summary) => summary,
             other => return presence_check_error(&path, other),
         };
-        let mut body = serde_json::Map::new();
-        for (key, value) in fields {
-            body.insert(key.clone(), Value::String(value.clone()));
-        }
         let outcome = write_router::patch_item(
             runtime,
             &path,
@@ -705,12 +876,7 @@ fn item_update_command(
             output::emit(json_mode, &payload);
             return Ok(code);
         }
-        let (summary, mismatches) = write_router::verify_write(runtime, &path, &body)?;
-        output::emit(
-            json_mode,
-            &render_local_api_write_result(&summary, &mismatches),
-        );
-        return Ok(0);
+        return render_local_api_object_after_write(runtime, json_mode, &path, &body);
     }
 
     let library_id = library_id_u32(item.library_id)?;
@@ -725,9 +891,7 @@ fn item_update_command(
         output::emit(json_mode, &payload);
         return Ok(code);
     }
-    let refreshed = catalog::get_item(runtime, Some(&item.key), session)?;
-    output::emit(json_mode, &serde_json::to_value(refreshed)?);
-    Ok(0)
+    render_bridge_item_after_write(&client, json_mode, library_id, &item.key, &body)
 }
 
 fn item_tag_command(
@@ -768,24 +932,25 @@ fn item_tag_command(
             output::emit(json_mode, &payload);
             return Ok(code);
         }
-        let (summary, mismatches) = write_router::verify_write(runtime, &path, &body)?;
-        output::emit(
-            json_mode,
-            &render_local_api_write_result(&summary, &mismatches),
-        );
-        return Ok(0);
+        return render_local_api_object_after_write(runtime, json_mode, &path, &body);
     }
 
     let library_id = library_id_u32(item.library_id)?;
     let client = bridge::JSBridgeClient::with_default_port();
+    let pre_raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &item.key)?;
+    let pre_view = parse_live_object(&pre_raw, "item")?;
+    let empty = Value::Array(Vec::new());
+    let current_tags = pre_view.data.get("tags").unwrap_or(&empty);
+    let new_tags = compute_tag_array(current_tags, add, remove);
+    let mut body = serde_json::Map::new();
+    body.insert("tags".to_string(), Value::Array(new_tags));
+
     let outcome = client.item_tag(library_id, &item.key, add, remove)?;
     if let Some((code, payload)) = write_outcome_failure(&outcome) {
         output::emit(json_mode, &payload);
         return Ok(code);
     }
-    let refreshed = catalog::get_item(runtime, Some(&item.key), session)?;
-    output::emit(json_mode, &serde_json::to_value(refreshed)?);
-    Ok(0)
+    render_bridge_item_after_write(&client, json_mode, library_id, &item.key, &body)
 }
 
 fn item_delete_command(
@@ -826,10 +991,23 @@ fn item_delete_command(
         output::emit(json_mode, &payload);
         return Ok(code);
     }
-    // Bridge-routed delete has no Local-API-grade absence verification available: a SQLite
-    // re-read immediately after a same-process write is exactly the staleness hazard
-    // `write_router.rs` documents extensively, so it is not attempted here as proof of
-    // deletion -- the Bridge's own "DELETED:"-prefixed confirmation is the only signal used.
+    // Live Zotero-runtime absence check (never SQLite -- same staleness hazard as the Local API
+    // path's `verify_absent`, generalized to Bridge-routed deletes per review Blocker 2).
+    let raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &item.key)?;
+    if !is_live_object_absent(&raw) {
+        output::emit(
+            json_mode,
+            &serde_json::json!({
+                "outcome": "conflict",
+                "detail": format!(
+                    "Bridge reported the item deleted but the live Zotero runtime still resolves {}",
+                    item.key
+                ),
+                "needs_human_action": false,
+            }),
+        );
+        return Ok(1);
+    }
     output::emit(
         json_mode,
         &serde_json::json!({ "outcome": "applied", "deleted_key": item.key }),
@@ -855,9 +1033,13 @@ fn item_attach_command(
         output::emit(json_mode, &payload);
         return Ok(code);
     }
-    let refreshed = catalog::get_item(runtime, Some(&item.key), session)?;
-    output::emit(json_mode, &serde_json::to_value(refreshed)?);
-    Ok(0)
+    render_bridge_item_after_write(
+        &client,
+        json_mode,
+        library_id,
+        &item.key,
+        &serde_json::Map::new(),
+    )
 }
 
 fn item_add_to_collection_command(
@@ -903,24 +1085,28 @@ fn item_add_to_collection_command(
             output::emit(json_mode, &payload);
             return Ok(code);
         }
-        let (summary, mismatches) = write_router::verify_write(runtime, &path, &body)?;
-        output::emit(
-            json_mode,
-            &render_local_api_write_result(&summary, &mismatches),
-        );
-        return Ok(0);
+        return render_local_api_object_after_write(runtime, json_mode, &path, &body);
     }
 
     let library_id = library_id_u32(item.library_id)?;
     let client = bridge::JSBridgeClient::with_default_port();
+    let pre_raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &item.key)?;
+    let pre_view = parse_live_object(&pre_raw, "item")?;
+    let current_collections = extract_string_array(&pre_view.data, "collections");
+    let new_collections =
+        write_router::union_replace(&current_collections, std::slice::from_ref(&collection.key));
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "collections".to_string(),
+        serde_json::to_value(&new_collections)?,
+    );
+
     let outcome = client.item_add_to_collection(library_id, &item.key, &collection.key)?;
     if let Some((code, payload)) = write_outcome_failure(&outcome) {
         output::emit(json_mode, &payload);
         return Ok(code);
     }
-    let refreshed = catalog::get_item(runtime, Some(&item.key), session)?;
-    output::emit(json_mode, &serde_json::to_value(refreshed)?);
-    Ok(0)
+    render_bridge_item_after_write(&client, json_mode, library_id, &item.key, &body)
 }
 
 fn item_move_to_collection_command(
@@ -948,25 +1134,13 @@ fn item_move_to_collection_command(
             other => return presence_check_error(&path, other),
         };
         let current_collections = extract_string_array(&current.data, "collections");
-        let new_collections = if all_other_collections {
-            vec![collection.key.clone()]
-        } else if !from.is_empty() {
-            let mut from_keys = Vec::with_capacity(from.len());
-            for source_ref in from {
-                from_keys.push(catalog::get_collection(runtime, Some(source_ref), session)?.key);
-            }
-            let mut replaced = write_router::union_replace(
-                &current_collections,
-                std::slice::from_ref(&collection.key),
-            );
-            replaced = write_router::difference_replace(&replaced, &from_keys);
-            if !replaced.contains(&collection.key) {
-                replaced.push(collection.key.clone());
-            }
-            replaced
-        } else {
-            write_router::union_replace(&current_collections, std::slice::from_ref(&collection.key))
-        };
+        let from_keys = resolve_from_keys(runtime, session, from)?;
+        let new_collections = compute_move_to_collection_set(
+            &current_collections,
+            &collection.key,
+            &from_keys,
+            all_other_collections,
+        );
         let mut body = serde_json::Map::new();
         body.insert(
             "collections".to_string(),
@@ -983,12 +1157,7 @@ fn item_move_to_collection_command(
             output::emit(json_mode, &payload);
             return Ok(code);
         }
-        let (summary, mismatches) = write_router::verify_write(runtime, &path, &body)?;
-        output::emit(
-            json_mode,
-            &render_local_api_write_result(&summary, &mismatches),
-        );
-        return Ok(0);
+        return render_local_api_object_after_write(runtime, json_mode, &path, &body);
     }
 
     // The Bridge's `item_move_to_collection` primitive is a single add+remove transaction with
@@ -1009,6 +1178,18 @@ fn item_move_to_collection_command(
     };
     let library_id = library_id_u32(item.library_id)?;
     let client = bridge::JSBridgeClient::with_default_port();
+    let pre_raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &item.key)?;
+    let pre_view = parse_live_object(&pre_raw, "item")?;
+    let current_collections = extract_string_array(&pre_view.data, "collections");
+    let from_keys: Vec<String> = from_key.iter().cloned().collect();
+    let new_collections =
+        compute_move_to_collection_set(&current_collections, &collection.key, &from_keys, false);
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "collections".to_string(),
+        serde_json::to_value(&new_collections)?,
+    );
+
     let outcome = client.item_move_to_collection(
         library_id,
         &item.key,
@@ -1019,22 +1200,45 @@ fn item_move_to_collection_command(
         output::emit(json_mode, &payload);
         return Ok(code);
     }
-    let refreshed = catalog::get_item(runtime, Some(&item.key), session)?;
-    output::emit(json_mode, &serde_json::to_value(refreshed)?);
-    Ok(0)
+    render_bridge_item_after_write(&client, json_mode, library_id, &item.key, &body)
 }
 
-fn item_duplicates_command(
+/// Resolves each `--from` reference to its collection key -- callers may pass a name, not
+/// necessarily a key.
+fn resolve_from_keys(
     runtime: &runtime::RuntimeContext,
     session: &session::SessionState,
-    json_mode: bool,
-    limit: usize,
-) -> anyhow::Result<i32> {
-    let library_id = library_id_u32(catalog::default_library(runtime, session)?)?;
-    let client = bridge::JSBridgeClient::with_default_port();
-    let result = client.find_duplicates(library_id, limit)?;
-    output::emit(json_mode, &result);
-    Ok(0)
+    from: &[String],
+) -> anyhow::Result<Vec<String>> {
+    from.iter()
+        .map(|source_ref| Ok(catalog::get_collection(runtime, Some(source_ref), session)?.key))
+        .collect()
+}
+
+/// Computes `item move-to-collection`'s full replacement `collections` array: add `target`, then
+/// either strip every other membership (`--all-other-collections`) or strip only the named
+/// `from_keys` -- matching the Python contract's own three-way behavior (no flag: additive move
+/// alongside existing memberships; `--from`: remove only those sources; `--all-other-collections`:
+/// the item ends up in `target` alone).
+fn compute_move_to_collection_set(
+    current: &[String],
+    target: &str,
+    from_keys: &[String],
+    all_other_collections: bool,
+) -> Vec<String> {
+    if all_other_collections {
+        return vec![target.to_string()];
+    }
+    let target_key = target.to_string();
+    if from_keys.is_empty() {
+        return write_router::union_replace(current, std::slice::from_ref(&target_key));
+    }
+    let mut replaced = write_router::union_replace(current, std::slice::from_ref(&target_key));
+    replaced = write_router::difference_replace(&replaced, from_keys);
+    if !replaced.contains(&target_key) {
+        replaced.push(target_key);
+    }
+    replaced
 }
 
 fn item_merge_command(
@@ -1072,21 +1276,34 @@ fn item_merge_command(
         return Ok(code);
     }
 
-    // §3.5's merge sub-rule: assert the survivor is present and every merged-away key is gone
-    // or redirects, not just that the survivor's JSON renders correctly.
-    let survivor = catalog::get_item(runtime, Some(&keep_item.key), session)?;
-    let still_present: Vec<String> = resolved_merge_keys
-        .iter()
-        .filter(|key| catalog::get_item(runtime, Some(key), session).is_ok())
-        .cloned()
-        .collect();
+    // §3.5's merge sub-rule, verified live through the JS Bridge (never SQLite, which cannot be
+    // trusted to see a write made moments earlier by this same process -- review Blocker 2): the
+    // survivor must resolve, and every merged-away key must no longer resolve.
+    let survivor_raw =
+        bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &keep_item.key)?;
+    if is_live_object_absent(&survivor_raw) {
+        return Err(error::DomainError::new(format!(
+            "merge reported success but the survivor {} no longer resolves through the live \
+             Zotero runtime",
+            keep_item.key
+        ))
+        .into());
+    }
+    let mut still_present = Vec::new();
+    for key in &resolved_merge_keys {
+        let raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, key)?;
+        if !is_live_object_absent(&raw) {
+            still_present.push(key.clone());
+        }
+    }
     if !still_present.is_empty() {
         output::emit(
             json_mode,
             &serde_json::json!({
                 "outcome": "conflict",
                 "detail": format!(
-                    "merge reported success but {} merged-away key(s) are still present: {:?}",
+                    "merge reported success but {} merged-away key(s) still resolve through the \
+                     live Zotero runtime: {:?}",
                     still_present.len(),
                     still_present
                 ),
@@ -1096,7 +1313,8 @@ fn item_merge_command(
         return Ok(1);
     }
 
-    output::emit(json_mode, &serde_json::to_value(survivor)?);
+    let view = parse_live_object(&survivor_raw, "item")?;
+    output::emit(json_mode, &render_write_result(&view, &[]));
     Ok(0)
 }
 
@@ -1152,7 +1370,8 @@ fn collection_create_command(
                 Value::String(parent.key.clone()),
             );
         }
-        let (outcome, _raw) = write_router::post_create(runtime, &path, &Value::Object(body))?;
+        let (outcome, _raw) =
+            write_router::post_create(runtime, &path, &Value::Object(body.clone()))?;
         if let Some((code, payload)) = write_outcome_failure(&outcome) {
             output::emit(json_mode, &payload);
             return Ok(code);
@@ -1161,13 +1380,7 @@ fn collection_create_command(
             unreachable!("write_outcome_failure returns None only for Applied");
         };
         let item_path = format!("{scope}/collections/{affected_key}");
-        return match write_router::verify_present(runtime, &item_path) {
-            write_router::PresenceCheck::Present(summary) => {
-                output::emit(json_mode, &render_local_api_write_result(&summary, &[]));
-                Ok(0)
-            }
-            other => presence_check_error(&item_path, other),
-        };
+        return render_local_api_object_after_write(runtime, json_mode, &item_path, &body);
     }
 
     let bridge_library_id = library_id_u32(library_id)?;
@@ -1184,9 +1397,13 @@ fn collection_create_command(
     let WriteOutcome::Applied { affected_key } = outcome else {
         unreachable!("write_outcome_failure returns None only for Applied");
     };
-    let created = catalog::get_collection(runtime, Some(&affected_key), session)?;
-    output::emit(json_mode, &serde_json::to_value(created)?);
-    Ok(0)
+    render_bridge_collection_after_write(
+        &client,
+        json_mode,
+        bridge_library_id,
+        &affected_key,
+        &serde_json::Map::new(),
+    )
 }
 
 fn collection_rename_command(
@@ -1207,6 +1424,16 @@ fn collection_rename_command(
         Some(p) => Some(catalog::get_collection(runtime, Some(p), session)?),
         None => None,
     };
+    let mut body = serde_json::Map::new();
+    if let Some(name) = name {
+        body.insert("name".to_string(), Value::String(name.to_string()));
+    }
+    if let Some(parent) = &parent_collection {
+        body.insert(
+            "parentCollection".to_string(),
+            Value::String(parent.key.clone()),
+        );
+    }
 
     if runtime.local_api_writes_available {
         let scope = catalog::local_api_scope(runtime, collection.library_id)?;
@@ -1215,16 +1442,6 @@ fn collection_rename_command(
             write_router::PresenceCheck::Present(summary) => summary,
             other => return presence_check_error(&path, other),
         };
-        let mut body = serde_json::Map::new();
-        if let Some(name) = name {
-            body.insert("name".to_string(), Value::String(name.to_string()));
-        }
-        if let Some(parent) = &parent_collection {
-            body.insert(
-                "parentCollection".to_string(),
-                Value::String(parent.key.clone()),
-            );
-        }
         let outcome = write_router::patch_item(
             runtime,
             &path,
@@ -1236,12 +1453,7 @@ fn collection_rename_command(
             output::emit(json_mode, &payload);
             return Ok(code);
         }
-        let (summary, mismatches) = write_router::verify_write(runtime, &path, &body)?;
-        output::emit(
-            json_mode,
-            &render_local_api_write_result(&summary, &mismatches),
-        );
-        return Ok(0);
+        return render_local_api_object_after_write(runtime, json_mode, &path, &body);
     }
 
     let library_id = library_id_u32(collection.library_id)?;
@@ -1256,9 +1468,7 @@ fn collection_rename_command(
         output::emit(json_mode, &payload);
         return Ok(code);
     }
-    let refreshed = catalog::get_collection(runtime, Some(&collection.key), session)?;
-    output::emit(json_mode, &serde_json::to_value(refreshed)?);
-    Ok(0)
+    render_bridge_collection_after_write(&client, json_mode, library_id, &collection.key, &body)
 }
 
 fn collection_delete_command(
@@ -1301,6 +1511,28 @@ fn collection_delete_command(
     if let Some((code, payload)) = write_outcome_failure(&outcome) {
         output::emit(json_mode, &payload);
         return Ok(code);
+    }
+    // Live Zotero-runtime absence check (never SQLite -- review Blocker 2).
+    let raw = bridge_live_read(
+        &client,
+        LIVE_COLLECTION_READBACK_JS,
+        library_id,
+        &collection.key,
+    )?;
+    if !is_live_object_absent(&raw) {
+        output::emit(
+            json_mode,
+            &serde_json::json!({
+                "outcome": "conflict",
+                "detail": format!(
+                    "Bridge reported the collection deleted but the live Zotero runtime still \
+                     resolves {}",
+                    collection.key
+                ),
+                "needs_human_action": false,
+            }),
+        );
+        return Ok(1);
     }
     output::emit(
         json_mode,
@@ -1352,24 +1584,30 @@ fn collection_remove_item_command(
             output::emit(json_mode, &payload);
             return Ok(code);
         }
-        let (summary, mismatches) = write_router::verify_write(runtime, &path, &body)?;
-        output::emit(
-            json_mode,
-            &render_local_api_write_result(&summary, &mismatches),
-        );
-        return Ok(0);
+        return render_local_api_object_after_write(runtime, json_mode, &path, &body);
     }
 
     let library_id = library_id_u32(item.library_id)?;
     let client = bridge::JSBridgeClient::with_default_port();
+    let pre_raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &item.key)?;
+    let pre_view = parse_live_object(&pre_raw, "item")?;
+    let current_collections = extract_string_array(&pre_view.data, "collections");
+    let new_collections = write_router::difference_replace(
+        &current_collections,
+        std::slice::from_ref(&collection.key),
+    );
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "collections".to_string(),
+        serde_json::to_value(&new_collections)?,
+    );
+
     let outcome = client.collection_remove_item(library_id, &item.key, &collection.key)?;
     if let Some((code, payload)) = write_outcome_failure(&outcome) {
         output::emit(json_mode, &payload);
         return Ok(code);
     }
-    let refreshed = catalog::get_item(runtime, Some(&item.key), session)?;
-    output::emit(json_mode, &serde_json::to_value(refreshed)?);
-    Ok(0)
+    render_bridge_item_after_write(&client, json_mode, library_id, &item.key, &body)
 }
 
 fn js_command(json_mode: bool, code: &str, wait: u64) -> anyhow::Result<i32> {
@@ -1467,5 +1705,161 @@ fn print_collection_tree(nodes: &[db::CollectionNode], level: usize) {
             node.collection_name, node.collection_id
         );
         print_collection_tree(&node.children, level + 1);
+    }
+}
+
+#[cfg(test)]
+mod write_command_helper_tests {
+    use super::*;
+
+    #[test]
+    fn diff_requested_fields_reports_only_mismatching_fields() {
+        let mut requested = serde_json::Map::new();
+        requested.insert("title".to_string(), Value::String("New Title".to_string()));
+        requested.insert("date".to_string(), Value::String("2026".to_string()));
+
+        let mut observed = serde_json::Map::new();
+        observed.insert("title".to_string(), Value::String("New Title".to_string()));
+        observed.insert("date".to_string(), Value::String("2020".to_string()));
+
+        let mismatches = diff_requested_fields(&requested, &observed);
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].field, "date");
+        assert_eq!(mismatches[0].requested, Value::String("2026".to_string()));
+        assert_eq!(
+            mismatches[0].observed,
+            Some(Value::String("2020".to_string()))
+        );
+    }
+
+    #[test]
+    fn diff_requested_fields_reports_a_missing_field_as_none_observed() {
+        let mut requested = serde_json::Map::new();
+        requested.insert("title".to_string(), Value::String("X".to_string()));
+        let observed = serde_json::Map::new();
+
+        let mismatches = diff_requested_fields(&requested, &observed);
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].observed, None);
+    }
+
+    #[test]
+    fn compute_tag_array_add_preserves_unrelated_existing_tags() {
+        let current = serde_json::json!([{"tag": "existing"}, {"tag": "automatic", "type": 1}]);
+        let result = compute_tag_array(&current, &["new-tag".to_string()], &[]);
+        assert_eq!(
+            result,
+            vec![
+                serde_json::json!({"tag": "existing"}),
+                serde_json::json!({"tag": "automatic", "type": 1}),
+                serde_json::json!({"tag": "new-tag"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn compute_tag_array_remove_only_removes_the_named_tags() {
+        let current = serde_json::json!([
+            {"tag": "keep-me"},
+            {"tag": "remove-me"},
+            {"tag": "also-keep", "type": 1},
+        ]);
+        let result = compute_tag_array(&current, &[], &["remove-me".to_string()]);
+        assert_eq!(
+            result,
+            vec![
+                serde_json::json!({"tag": "keep-me"}),
+                serde_json::json!({"tag": "also-keep", "type": 1}),
+            ]
+        );
+    }
+
+    #[test]
+    fn compute_tag_array_add_does_not_duplicate_an_existing_tag() {
+        let current = serde_json::json!([{"tag": "dup"}]);
+        let result = compute_tag_array(&current, &["dup".to_string()], &[]);
+        assert_eq!(result, vec![serde_json::json!({"tag": "dup"})]);
+    }
+
+    #[test]
+    fn extract_string_array_reads_a_plain_string_array_field() {
+        let mut data = serde_json::Map::new();
+        data.insert("collections".to_string(), serde_json::json!(["AAA", "BBB"]));
+        assert_eq!(
+            extract_string_array(&data, "collections"),
+            vec!["AAA".to_string(), "BBB".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_string_array_defaults_to_empty_when_field_missing() {
+        let data = serde_json::Map::new();
+        assert_eq!(
+            extract_string_array(&data, "collections"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn compute_move_to_collection_set_all_other_collections_leaves_only_the_target() {
+        let current = vec!["EXISTC1".to_string(), "EXISTC2".to_string()];
+        let result = compute_move_to_collection_set(&current, "TARGET1", &[], true);
+        assert_eq!(result, vec!["TARGET1".to_string()]);
+    }
+
+    #[test]
+    fn compute_move_to_collection_set_from_removes_only_named_sources() {
+        let current = vec!["EXISTC1".to_string(), "EXISTC2".to_string()];
+        let result =
+            compute_move_to_collection_set(&current, "TARGET1", &["EXISTC1".to_string()], false);
+        assert_eq!(result, vec!["EXISTC2".to_string(), "TARGET1".to_string()]);
+    }
+
+    #[test]
+    fn compute_move_to_collection_set_with_no_from_is_purely_additive() {
+        let current = vec!["EXISTC1".to_string()];
+        let result = compute_move_to_collection_set(&current, "TARGET1", &[], false);
+        assert_eq!(result, vec!["EXISTC1".to_string(), "TARGET1".to_string()]);
+    }
+
+    #[test]
+    fn is_live_object_absent_recognizes_the_not_found_envelope() {
+        assert!(is_live_object_absent(&serde_json::json!({"found": false})));
+        assert!(!is_live_object_absent(
+            &serde_json::json!({"found": true, "key": "X"})
+        ));
+    }
+
+    #[test]
+    fn parse_live_object_extracts_the_canonical_view() {
+        let raw = serde_json::json!({
+            "found": true,
+            "key": "ITEM0001",
+            "libraryID": 1,
+            "data": {"itemType": "document", "title": "X"},
+        });
+        let view = parse_live_object(&raw, "item").unwrap();
+        assert_eq!(view.key, "ITEM0001");
+        assert_eq!(view.library_id, 1);
+        assert_eq!(view.item_type, "document");
+    }
+
+    #[test]
+    fn parse_live_object_errors_when_absent() {
+        let raw = serde_json::json!({"found": false});
+        assert!(parse_live_object(&raw, "item").is_err());
+    }
+
+    #[test]
+    fn render_write_result_never_includes_a_version_key() {
+        let view = CanonicalWriteView {
+            key: "ITEM0001".to_string(),
+            library_id: 1,
+            item_type: "document".to_string(),
+            data: serde_json::Map::new(),
+        };
+        let rendered = render_write_result(&view, &[]);
+        assert!(rendered.get("version").is_none());
+        assert_eq!(rendered["outcome"], "applied");
     }
 }

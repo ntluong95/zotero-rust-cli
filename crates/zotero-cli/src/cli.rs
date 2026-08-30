@@ -284,11 +284,6 @@ pub enum ItemCommands {
         #[arg(long = "all-other-collections")]
         all_other_collections: bool,
     },
-    /// Find duplicate items in a library (privileged; JS Bridge only).
-    Duplicates {
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
     /// Merge one or more items into a target item (privileged; JS Bridge only).
     Merge {
         keep_key: String,

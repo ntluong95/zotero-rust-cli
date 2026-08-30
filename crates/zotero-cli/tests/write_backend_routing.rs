@@ -249,6 +249,18 @@ fn local_api_unavailable_falls_back_to_our_owned_bridge() {
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
         ScriptedResponse::bridge_string(200, "OK: updated Test Item One"),
+        // Post-write live Zotero-runtime readback (never SQLite) -- the positive ownership
+        // probe is cached for the rest of this process, so this costs exactly one more
+        // request, not a second ownership ping.
+        ScriptedResponse::json(
+            200,
+            json!({
+                "found": true,
+                "key": "ITEM0001",
+                "libraryID": 1,
+                "data": {"itemType": "document", "title": "New Title"},
+            }),
+        ),
     ]);
 
     let (code, payload) = run_cli(
@@ -261,16 +273,18 @@ fn local_api_unavailable_falls_back_to_our_owned_bridge() {
     let requests = server.finish();
     assert_eq!(
         requests.len(),
-        4,
-        "ping, probe, bridge-ownership-ping, bridge-eval"
+        5,
+        "ping, probe, bridge-ownership-ping, write-eval, live-readback-eval"
     );
     assert_eq!(requests[3].path, "/cli-bridge/eval");
+    assert_eq!(requests[4].path, "/cli-bridge/eval");
 
     assert_eq!(code, 0, "payload: {payload}");
     assert_eq!(
         payload["key"], "ITEM0001",
-        "Bridge path re-reads via SQLite"
+        "Bridge path re-reads live through the Bridge, never SQLite"
     );
+    assert_eq!(payload["data"]["title"], "New Title");
 }
 
 // ── F. Local API writes unavailable + Bridge inactive -> deterministic failure ──
@@ -474,4 +488,470 @@ fn bare_invocation_prints_help_and_exits_zero() {
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Agent-native Zotero CLI"));
+}
+
+// ── Review Blocker 1: backend-neutral output schema ──
+
+fn sorted_keys(payload: &serde_json::Value) -> Vec<String> {
+    let mut keys: Vec<String> = payload.as_object().unwrap().keys().cloned().collect();
+    keys.sort_unstable();
+    keys
+}
+
+#[test]
+fn item_update_output_schema_is_identical_across_local_api_and_bridge_backends() {
+    let local_dir = TestDir::new("equivalence-item-update-local-api");
+    build_fixture_sqlite(local_dir.path());
+    let local_server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        item_get_response(5, vec![]),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".to_string(), "6".to_string())],
+            body: Vec::new(),
+        },
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "ITEM0001", "version": 6, "library": {"id": 0},
+                "data": {"itemType": "document", "title": "New Title", "collections": [], "tags": []},
+            }),
+        ),
+    ]);
+    let (local_code, local_payload) = run_cli(
+        local_dir.path(),
+        local_server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["item", "update", "ITEM0001", "--field", "title=New Title"],
+    );
+    local_server.finish();
+    assert_eq!(local_code, 0, "local API payload: {local_payload}");
+
+    let bridge_dir = TestDir::new("equivalence-item-update-bridge");
+    build_fixture_sqlite(bridge_dir.path());
+    let bridge_server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        ScriptedResponse::bridge_string(200, "OK: updated Test Item One"),
+        ScriptedResponse::json(
+            200,
+            json!({
+                "found": true,
+                "key": "ITEM0001",
+                "libraryID": 1,
+                "data": {"itemType": "document", "title": "New Title"},
+            }),
+        ),
+    ]);
+    let (bridge_code, bridge_payload) = run_cli(
+        bridge_dir.path(),
+        bridge_server.port,
+        &[],
+        &["item", "update", "ITEM0001", "--field", "title=New Title"],
+    );
+    bridge_server.finish();
+    assert_eq!(bridge_code, 0, "bridge payload: {bridge_payload}");
+
+    assert_eq!(
+        sorted_keys(&local_payload),
+        sorted_keys(&bridge_payload),
+        "the same command must produce the same JSON schema regardless of backend: \
+         local={local_payload} bridge={bridge_payload}"
+    );
+    assert_eq!(local_payload["outcome"], bridge_payload["outcome"]);
+    assert_eq!(local_payload["key"], bridge_payload["key"]);
+    assert_eq!(
+        local_payload["data"]["title"],
+        bridge_payload["data"]["title"]
+    );
+}
+
+#[test]
+fn collection_rename_output_schema_is_identical_across_local_api_and_bridge_backends() {
+    let local_dir = TestDir::new("equivalence-collection-rename-local-api");
+    build_fixture_sqlite(local_dir.path());
+    let local_server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "COLLE001", "version": 1, "library": {"id": 0},
+                "data": {"name": "Test Collection"},
+            }),
+        ),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".to_string(), "2".to_string())],
+            body: Vec::new(),
+        },
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "COLLE001", "version": 2, "library": {"id": 0},
+                "data": {"name": "Renamed Collection"},
+            }),
+        ),
+    ]);
+    let (local_code, local_payload) = run_cli(
+        local_dir.path(),
+        local_server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &[
+            "collection",
+            "rename",
+            "COLLE001",
+            "--name",
+            "Renamed Collection",
+        ],
+    );
+    local_server.finish();
+    assert_eq!(local_code, 0, "local API payload: {local_payload}");
+
+    let bridge_dir = TestDir::new("equivalence-collection-rename-bridge");
+    build_fixture_sqlite(bridge_dir.path());
+    let bridge_server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        ScriptedResponse::bridge_string(200, "OK: updated collection Renamed Collection"),
+        ScriptedResponse::json(
+            200,
+            json!({
+                "found": true,
+                "key": "COLLE001",
+                "libraryID": 1,
+                "data": {"name": "Renamed Collection"},
+            }),
+        ),
+    ]);
+    let (bridge_code, bridge_payload) = run_cli(
+        bridge_dir.path(),
+        bridge_server.port,
+        &[],
+        &[
+            "collection",
+            "rename",
+            "COLLE001",
+            "--name",
+            "Renamed Collection",
+        ],
+    );
+    bridge_server.finish();
+    assert_eq!(bridge_code, 0, "bridge payload: {bridge_payload}");
+
+    assert_eq!(
+        sorted_keys(&local_payload),
+        sorted_keys(&bridge_payload),
+        "local={local_payload} bridge={bridge_payload}"
+    );
+    assert_eq!(
+        local_payload["data"]["name"],
+        bridge_payload["data"]["name"]
+    );
+}
+
+// ── Array-preservation tests (review-required) ──
+
+#[test]
+fn item_tag_add_preserves_unrelated_existing_tags() {
+    let dir = TestDir::new("array-tag-add");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "ITEM0001", "version": 5, "library": {"id": 0},
+                "data": {"itemType": "document", "title": "Test Item One", "collections": [],
+                         "tags": [{"tag": "keep-me"}]},
+            }),
+        ),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".to_string(), "6".to_string())],
+            body: Vec::new(),
+        },
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "ITEM0001", "version": 6, "library": {"id": 0},
+                "data": {"itemType": "document", "title": "Test Item One", "collections": [],
+                         "tags": [{"tag": "keep-me"}, {"tag": "new-tag"}]},
+            }),
+        ),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["item", "tag", "ITEM0001", "--add", "new-tag"],
+    );
+
+    let requests = server.finish();
+    let patch_body = requests[3].body_json();
+    assert_eq!(
+        patch_body["tags"],
+        json!([{"tag": "keep-me"}, {"tag": "new-tag"}]),
+        "adding a tag must not drop the item's existing tags"
+    );
+
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(payload.get("field_mismatches"), None);
+}
+
+#[test]
+fn item_tag_remove_removes_only_the_named_tag() {
+    let dir = TestDir::new("array-tag-remove");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "ITEM0001", "version": 5, "library": {"id": 0},
+                "data": {"itemType": "document", "title": "Test Item One", "collections": [],
+                         "tags": [{"tag": "keep-me"}, {"tag": "remove-me"}]},
+            }),
+        ),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".to_string(), "6".to_string())],
+            body: Vec::new(),
+        },
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "ITEM0001", "version": 6, "library": {"id": 0},
+                "data": {"itemType": "document", "title": "Test Item One", "collections": [],
+                         "tags": [{"tag": "keep-me"}]},
+            }),
+        ),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["item", "tag", "ITEM0001", "--remove", "remove-me"],
+    );
+
+    let requests = server.finish();
+    let patch_body = requests[3].body_json();
+    assert_eq!(
+        patch_body["tags"],
+        json!([{"tag": "keep-me"}]),
+        "removing one tag must not remove unrelated tags"
+    );
+
+    assert_eq!(code, 0, "payload: {payload}");
+}
+
+#[test]
+fn item_move_to_collection_from_removes_only_the_named_source() {
+    let dir = TestDir::new("array-move-from");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        item_get_response(5, vec!["EXISTC1", "EXISTC2"]),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".to_string(), "6".to_string())],
+            body: Vec::new(),
+        },
+        item_get_response(6, vec!["EXISTC2", "COLLE001"]),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &[
+            "item",
+            "move-to-collection",
+            "ITEM0001",
+            "COLLE001",
+            "--from",
+            "EXISTC1",
+        ],
+    );
+
+    let requests = server.finish();
+    let patch_body = requests[3].body_json();
+    assert_eq!(
+        patch_body["collections"],
+        json!(["EXISTC2", "COLLE001"]),
+        "must remove only the named --from source, matching the Python contract, and must \
+         preserve EXISTC2"
+    );
+
+    assert_eq!(code, 0, "payload: {payload}");
+}
+
+#[test]
+fn item_move_to_collection_all_other_collections_leaves_only_the_target() {
+    let dir = TestDir::new("array-move-all-other");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        item_get_response(5, vec!["EXISTC1", "EXISTC2"]),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".to_string(), "6".to_string())],
+            body: Vec::new(),
+        },
+        item_get_response(6, vec!["COLLE001"]),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &[
+            "item",
+            "move-to-collection",
+            "ITEM0001",
+            "COLLE001",
+            "--all-other-collections",
+        ],
+    );
+
+    let requests = server.finish();
+    let patch_body = requests[3].body_json();
+    assert_eq!(
+        patch_body["collections"],
+        json!(["COLLE001"]),
+        "--all-other-collections must leave the item in the target collection alone"
+    );
+
+    assert_eq!(code, 0, "payload: {payload}");
+}
+
+#[test]
+fn collection_remove_item_preserves_unrelated_collection_memberships() {
+    let dir = TestDir::new("array-collection-remove-item");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        item_get_response(5, vec!["EXISTC1", "COLLE001"]),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".to_string(), "6".to_string())],
+            body: Vec::new(),
+        },
+        item_get_response(6, vec!["EXISTC1"]),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["collection", "remove-item", "COLLE001", "ITEM0001"],
+    );
+
+    let requests = server.finish();
+    let patch_body = requests[3].body_json();
+    assert_eq!(
+        patch_body["collections"],
+        json!(["EXISTC1"]),
+        "removing from one collection must not disturb the item's other memberships"
+    );
+
+    assert_eq!(code, 0, "payload: {payload}");
+}
+
+// ── Review Blocker 2: item merge verified live through the Bridge, never SQLite ──
+
+#[test]
+fn item_merge_succeeds_when_survivor_resolves_live_and_merged_away_key_does_not() {
+    let dir = TestDir::new("merge-success");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        ScriptedResponse::bridge_string(200, "OK: merged 1 items into Test Item One"),
+        ScriptedResponse::json(
+            200,
+            json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": {"itemType": "document", "title": "Test Item One"}}),
+        ),
+        ScriptedResponse::json(200, json!({"found": false})),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "merge", "ITEM0001", "ITEM0002", "--confirm"],
+    );
+
+    let requests = server.finish();
+    assert_eq!(
+        requests.len(),
+        6,
+        "ping, probe, ownership-ping, merge-eval, survivor-live-read, merged-away-live-read"
+    );
+
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(payload["outcome"], "applied");
+    assert_eq!(payload["key"], "ITEM0001");
+}
+
+#[test]
+fn item_merge_reports_conflict_when_a_merged_away_key_still_resolves_live() {
+    let dir = TestDir::new("merge-conflict");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        ScriptedResponse::bridge_string(200, "OK: merged 1 items into Test Item One"),
+        ScriptedResponse::json(
+            200,
+            json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": {"itemType": "document", "title": "Test Item One"}}),
+        ),
+        // The Bridge reported success, but a live re-read still finds the merged-away item --
+        // this must never be silently reported as `applied`.
+        ScriptedResponse::json(
+            200,
+            json!({"found": true, "key": "ITEM0002", "libraryID": 1, "data": {"itemType": "document", "title": "Test Item Two"}}),
+        ),
+    ]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "merge", "ITEM0001", "ITEM0002", "--confirm"],
+    );
+
+    server.finish();
+
+    assert_eq!(code, 1, "payload: {payload}");
+    assert_eq!(payload["outcome"], "conflict");
+    assert_ne!(payload["outcome"], "applied");
+}
+
+// ── Review Blocker 3: `item duplicates` deferred, removed from the public CLI surface ──
+
+#[test]
+fn item_duplicates_is_no_longer_a_recognized_subcommand() {
+    let output = std::process::Command::new(common::bin_path())
+        .args(["item", "duplicates"])
+        .output()
+        .unwrap();
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "item duplicates must be rejected as an unrecognized subcommand, not silently accepted \
+         with a partial --by contract"
+    );
 }

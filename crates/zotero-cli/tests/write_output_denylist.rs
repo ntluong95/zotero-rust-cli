@@ -124,6 +124,15 @@ fn bridge_item_update_output_never_leaks_backend_identity() {
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
         ScriptedResponse::bridge_string(200, "OK: updated Test Item One"),
+        ScriptedResponse::json(
+            200,
+            json!({
+                "found": true,
+                "key": "ITEM0001",
+                "libraryID": 1,
+                "data": {"itemType": "document", "title": "New Title"},
+            }),
+        ),
     ]);
 
     let (code, payload) = run_cli(
