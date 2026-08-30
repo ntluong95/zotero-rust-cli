@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
@@ -19,13 +20,16 @@ use zotero_cli::docx::xml::{create_run_with_text, parse_xml, serialize_xml, visi
 struct TestDir(PathBuf);
 impl TestDir {
     fn new(name: &str) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "zotero-docx-struct-test-{}-{}",
+            "zotero-docx-struct-test-{}-{}-{}-{}",
             name,
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::create_dir_all(&p);
         Self(p)
