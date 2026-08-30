@@ -39,6 +39,12 @@ pub const T_SEARCH_FULLTEXT: &str = include_str!("js/search_fulltext.js");
 pub const T_SEARCH_ANNOTATIONS: &str = include_str!("js/search_annotations.js");
 pub const T_GET_ANNOTATIONS: &str = include_str!("js/get_annotations.js");
 
+// Add/import composition Bridge primitives.
+pub const T_FIND_ITEMS_BY_DOI: &str = include_str!("js/find_items_by_doi.js");
+pub const T_IMPORT_FROM_DOI: &str = include_str!("js/import_from_doi.js");
+pub const T_IMPORT_FROM_PMID: &str = include_str!("js/import_from_pmid.js");
+pub const T_STANDALONE_PDF_IMPORT: &str = include_str!("js/standalone_pdf_import.js");
+
 /// Renders a JavaScript snippet by binding `params` safely via `JSON.parse`
 /// into the constant `P`.
 ///
@@ -294,4 +300,64 @@ pub fn render_get_annotations(library_id: u32, key: &str) -> Result<String, serd
         "key": key,
     });
     render(T_GET_ANNOTATIONS, &params)
+}
+
+pub fn render_find_items_by_doi(
+    library_id: u32,
+    doi: &str,
+    limit: i64,
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "doi": doi,
+        "limit": limit,
+    });
+    render(T_FIND_ITEMS_BY_DOI, &params)
+}
+
+pub fn render_import_from_doi(
+    library_id: u32,
+    doi: &str,
+    collection_key: Option<&str>,
+    tags: Option<&[String]>,
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "doi": doi,
+        "collectionKey": collection_key,
+        "tags": tags,
+    });
+    render(T_IMPORT_FROM_DOI, &params)
+}
+
+pub fn render_import_from_pmid(
+    library_id: u32,
+    pmid: &str,
+    collection_key: Option<&str>,
+    tags: Option<&[String]>,
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "pmid": pmid,
+        "collectionKey": collection_key,
+        "tags": tags,
+    });
+    render(T_IMPORT_FROM_PMID, &params)
+}
+
+pub fn render_standalone_pdf_import(
+    library_id: u32,
+    file_path: &str,
+    title: &str,
+    collection_key: Option<&str>,
+    tags: &[String],
+) -> Result<String, serde_json::Error> {
+    let params = json!({
+        "libraryID": library_id,
+        "filePath": file_path,
+        "title": title,
+        "collectionKey": collection_key,
+        "tags": tags,
+    });
+    render(T_STANDALONE_PDF_IMPORT, &params)
 }

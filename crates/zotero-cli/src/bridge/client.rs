@@ -663,6 +663,66 @@ impl JSBridgeClient {
         };
         self.execute_js(&code, 5)
     }
+
+    // ── Add/import composition Bridge primitives ────
+
+    pub fn find_items_by_doi(&self, library_id: u32, doi: &str, limit: i64) -> BridgeResponse {
+        let code = match templates::render_find_items_by_doi(library_id, doi, limit) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&code, 10)
+    }
+
+    pub fn import_from_doi(
+        &self,
+        library_id: u32,
+        doi: &str,
+        collection_key: Option<&str>,
+        tags: Option<&[String]>,
+    ) -> BridgeResponse {
+        let code = match templates::render_import_from_doi(library_id, doi, collection_key, tags) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&code, 45)
+    }
+
+    pub fn import_from_pmid(
+        &self,
+        library_id: u32,
+        pmid: &str,
+        collection_key: Option<&str>,
+        tags: Option<&[String]>,
+    ) -> BridgeResponse {
+        let code = match templates::render_import_from_pmid(library_id, pmid, collection_key, tags)
+        {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&code, 45)
+    }
+
+    pub fn standalone_pdf_import(
+        &self,
+        library_id: u32,
+        file_path: &str,
+        title: &str,
+        collection_key: Option<&str>,
+        tags: &[String],
+    ) -> BridgeResponse {
+        let code = match templates::render_standalone_pdf_import(
+            library_id,
+            file_path,
+            title,
+            collection_key,
+            tags,
+        ) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&code, 30)
+    }
 }
 
 /// Mirrors `zotero_cli.py::emit_js`'s payload/exit classification for a raw Bridge transport
