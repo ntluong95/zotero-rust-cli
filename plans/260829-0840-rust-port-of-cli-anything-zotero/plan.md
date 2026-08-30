@@ -82,6 +82,7 @@ of implementation language.
 |---|---|---|---|
 | Bare `zotero-cli` (no subcommand) | Enters REPL, **blocks on stdin** | Prints help, exits 0 | A blocking stdin read is the worst failure mode for a non-interactive agent caller. |
 | `item move-to-collection` | **Only** works with `--experimental`, direct SQLite write, Zotero must be **closed** | Works by default via one dedicated JS bridge operation with Zotero **running**; `--experimental` removed | Verified: this command has no bridge path upstream (`_require_experimental_flag` fires unconditionally). v1 implements one Zotero-side operation equivalent to add target + remove sources, with rollback/compensation requirements. Strictly more usable, but it is new work and a real behaviour change — not a like-for-like port. |
+| `app check-update` | Polls upstream's version file over the network | No network poll; always reports current | A fork must not poll upstream's own version-check endpoint on the user's behalf. Package managers (Homebrew, Scoop, direct release downloads) already own the update-notification job for this distribution. |
 
 ### What actually changes for the three `--experimental` commands
 
