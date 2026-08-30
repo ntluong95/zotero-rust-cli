@@ -493,4 +493,48 @@ impl JSBridgeClient {
         let resp = self.execute_js(&code, 15);
         Ok(map_text_outcome(&resp, "OK:", target_key))
     }
+
+    // ── Phase 7 Slice 3: PDF cascade discovery primitives ──────────────────
+
+    /// Triggers Zotero's own "Find Available PDF" for one item
+    /// (`Zotero.Attachments.addAvailablePDF`). Returns the raw transport response --
+    /// `"FOUND: <key>"` / `"NOT_FOUND: ..."` / `"ERROR: ..."` -- for the caller to interpret,
+    /// matching `core/jsbridge.py::find_pdf`'s own layering (this method never parses the
+    /// prefix itself).
+    ///
+    /// On an ambiguous timeout (the addAvailablePDF call's own error message contains
+    /// "timed out"), this does **not** retry `addAvailablePDF` -- a second, unrelated
+    /// download could already be in flight server-side. Instead it issues one cheap
+    /// read-only verification call that inspects the item's current attachments directly,
+    /// so an ambiguous transport failure never risks a duplicate download.
+    pub fn find_pdf(&self, library_id: u32, key: &str, timeout_secs: u64) -> BridgeResponse {
+        let code = match templates::render_find_pdf(library_id, key) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        let resp = self.execute_js(&code, timeout_secs.max(10));
+        let is_timeout = resp
+            .error_message()
+            .map(|msg| msg.to_lowercase().contains("timed out"))
+            .unwrap_or(false);
+        if resp.is_ok() || !is_timeout {
+            return resp;
+        }
+        let verify_code = match templates::render_find_pdf_verify(library_id, key, timeout_secs) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&verify_code, 10)
+    }
+
+    /// Lists regular items in a collection that have no `application/pdf`-typed attachment
+    /// yet. Returns the raw transport response (`data` is `{ok, total, missing, missing_count}`
+    /// on success) for the caller to interpret -- matches `core/jsbridge.py::list_items_missing_pdf`.
+    pub fn list_items_missing_pdf(&self, library_id: u32, collection_key: &str) -> BridgeResponse {
+        let code = match templates::render_list_items_missing_pdf(library_id, collection_key) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&code, 15)
+    }
 }
