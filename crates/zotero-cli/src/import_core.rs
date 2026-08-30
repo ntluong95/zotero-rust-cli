@@ -320,7 +320,7 @@ pub fn resolve_target<C: ConnectorImportClient>(
     session: &SessionState,
     client: &mut C,
 ) -> anyhow::Result<Value> {
-    if let Some(collection_ref) = collection_ref.filter(|value| !value.trim().is_empty()) {
+    if let Some(collection_ref) = collection_ref.filter(|value| !value.is_empty()) {
         if is_tree_view_ref(collection_ref) {
             return Ok(library_or_collection_target(collection_ref, "explicit"));
         }

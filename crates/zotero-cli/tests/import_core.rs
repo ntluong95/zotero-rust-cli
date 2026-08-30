@@ -251,6 +251,53 @@ fn import_json_target_resolution_and_trimmed_tags() {
 }
 
 #[test]
+fn explicit_whitespace_collection_ref_errors_instead_of_falling_back() {
+    let dir = common::TestDir::new("target-whitespace");
+    let sqlite = common::build_fixture_sqlite(dir.path());
+    let mut opts = options();
+    opts.collection_ref = Some("   ".to_string());
+    let mut client = MockConnector {
+        selected: json!({"libraryID":1,"libraryName":"My Library"}),
+        ..Default::default()
+    };
+
+    let err = import_core::resolve_target(
+        &runtime(5, &sqlite, true),
+        opts.collection_ref.as_deref(),
+        &opts.session,
+        &mut client,
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("Collection not found"));
+    assert_eq!(client.selected_calls, 0);
+}
+
+#[test]
+fn empty_collection_ref_is_absent_and_can_use_selected_target() {
+    let dir = common::TestDir::new("target-empty");
+    let sqlite = common::build_fixture_sqlite(dir.path());
+    let mut opts = options();
+    opts.collection_ref = Some(String::new());
+    let mut client = MockConnector {
+        selected: json!({"id":9,"name":"Chosen","libraryID":1,"libraryName":"My Library"}),
+        ..Default::default()
+    };
+
+    let target = import_core::resolve_target(
+        &runtime(5, &sqlite, true),
+        opts.collection_ref.as_deref(),
+        &opts.session,
+        &mut client,
+    )
+    .unwrap();
+
+    assert_eq!(target["source"], "selected");
+    assert_eq!(target["treeViewID"], "C9");
+    assert_eq!(client.selected_calls, 1);
+}
+
+#[test]
 fn import_file_content_type_mappings_and_errors() {
     let dir = common::TestDir::new("import-file-map");
     let sqlite = common::build_fixture_sqlite(dir.path());
