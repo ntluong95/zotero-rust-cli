@@ -1,4 +1,5 @@
 pub mod add_import;
+pub mod analysis;
 pub mod annotations;
 pub mod audit;
 pub mod bridge;
@@ -12,9 +13,11 @@ pub mod docx;
 pub mod error;
 pub mod fulltext;
 pub mod http;
+pub mod hygiene;
 pub mod import_attachments;
 pub mod import_core;
 pub mod import_normalization;
+pub mod metrics;
 pub mod notes;
 pub mod output;
 pub mod paths;
@@ -719,6 +722,83 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
                     json_mode,
                     &Value::String(payload.bibliography.unwrap_or_default()),
                 );
+            }
+            Ok(0)
+        }
+        Commands::Item(ItemCommands::Context {
+            item_ref,
+            include_notes,
+            include_bibtex,
+            include_csljson,
+            include_links,
+        }) => {
+            let runtime = build_runtime();
+            let payload = analysis::build_item_context(
+                &runtime,
+                item_ref.as_deref(),
+                include_notes,
+                include_bibtex,
+                include_csljson,
+                include_links,
+                &session,
+            )?;
+            if json_mode {
+                output::emit(json_mode, &serde_json::to_value(&payload)?);
+            } else {
+                println!("{}", payload.prompt_context);
+            }
+            Ok(0)
+        }
+        Commands::Item(ItemCommands::Duplicates { by, limit }) => match by {
+            cli::DuplicatesBy::Zotero => {
+                let bridge = bridge::JSBridgeClient::with_default_port();
+                let (payload, exit_code) = hygiene::find_duplicates_zotero(&bridge, limit);
+                output::emit(json_mode, &payload);
+                Ok(exit_code)
+            }
+            cli::DuplicatesBy::Doi | cli::DuplicatesBy::Title => {
+                let runtime = build_runtime();
+                let library_id = session::session_library_id(&session, 1)?;
+                let payload = hygiene::find_duplicates(
+                    &runtime.environment.sqlite_path,
+                    by,
+                    library_id,
+                    limit,
+                )?;
+                output::emit(json_mode, &serde_json::to_value(&payload)?);
+                Ok(0)
+            }
+        },
+        Commands::Item(ItemCommands::Metrics { ref_id, pmid }) => {
+            let runtime = build_runtime();
+            let payload = metrics::item_metrics(&runtime, &ref_id, pmid, &session)?;
+            output::emit(json_mode, &payload);
+            let exit_code = if payload.get("error").is_some() { 1 } else { 0 };
+            Ok(exit_code)
+        }
+        Commands::Item(ItemCommands::Analyze {
+            item_ref,
+            question,
+            model,
+            include_notes,
+            include_bibtex,
+            include_csljson,
+        }) => {
+            let runtime = build_runtime();
+            let payload = analysis::analyze_item(
+                &runtime,
+                item_ref.as_deref(),
+                &question,
+                &model,
+                include_notes,
+                include_bibtex,
+                include_csljson,
+                &session,
+            )?;
+            if json_mode {
+                output::emit(json_mode, &serde_json::to_value(&payload)?);
+            } else {
+                println!("{}", payload.answer);
             }
             Ok(0)
         }

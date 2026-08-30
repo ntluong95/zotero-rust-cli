@@ -459,6 +459,68 @@ pub enum ItemCommands {
         #[arg(long)]
         linkwrap: bool,
     },
+    /// Build LLM-ready context for an item.
+    Context {
+        #[arg(value_name = "REF")]
+        item_ref: Option<String>,
+        #[arg(long = "include-notes")]
+        include_notes: bool,
+        #[arg(long = "include-bibtex")]
+        include_bibtex: bool,
+        #[arg(long = "include-csljson")]
+        include_csljson: bool,
+        #[arg(long = "include-links")]
+        include_links: bool,
+    },
+    /// Find duplicate items (by DOI, title, or native Zotero detector).
+    Duplicates {
+        #[arg(long, value_enum, default_value_t = DuplicatesBy::Doi)]
+        by: DuplicatesBy,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Fetch NIH iCite citation metrics for an item (by PMID or item key).
+    Metrics {
+        #[arg(value_name = "REF")]
+        ref_id: String,
+        /// Treat REF as a PMID directly instead of a Zotero item key.
+        #[arg(long = "pmid")]
+        pmid: bool,
+    },
+    /// Analyze a Zotero item using an OpenAI-compatible LLM.
+    Analyze {
+        #[arg(value_name = "REF")]
+        item_ref: Option<String>,
+        #[arg(long = "question", required = true)]
+        question: String,
+        #[arg(long = "model", required = true)]
+        model: String,
+        #[arg(long = "include-notes")]
+        include_notes: bool,
+        #[arg(long = "include-bibtex")]
+        include_bibtex: bool,
+        #[arg(long = "include-csljson")]
+        include_csljson: bool,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[value(rename_all = "lower")]
+pub enum DuplicatesBy {
+    Doi,
+    Title,
+    Zotero,
+}
+
+impl std::fmt::Display for DuplicatesBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            DuplicatesBy::Doi => "doi",
+            DuplicatesBy::Title => "title",
+            DuplicatesBy::Zotero => "zotero",
+        };
+        write!(f, "{s}")
+    }
 }
 
 /// Parses a `key=value` command-line argument into a tuple, for `--field key=value`.
