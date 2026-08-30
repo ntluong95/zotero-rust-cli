@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use regex::Regex;
 use serde_json::{Map, Value};
 
+use crate::bridge::client::classify_bridge_payload_with_options;
 use crate::bridge::{BridgeResponse, JSBridgeClient, WriteOutcome};
 use crate::csl::value_to_python_string;
 use crate::import_core::{self, ConnectorImportClient, HttpConnectorImportClient, ImportOptions};
@@ -20,8 +21,7 @@ static ARXIV_ID_RE: LazyLock<Regex> =
 static BARE_ARXIV_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4}\.\d{4,5})").unwrap());
 static DOI_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)10\.\d{4,9}/[^\s"'<>]+"#).unwrap());
-static DOI_URL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"10\.\d{4,9}/[^\s?#]+"#).unwrap());
+static DOI_URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"10\.\d{4,9}/[^\s]+"#).unwrap());
 static HTML_DOI_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"10\.\d{4,9}/[A-Za-z0-9./_;()-]+").unwrap());
 static TITLE_RE: LazyLock<Regex> =
@@ -29,6 +29,9 @@ static TITLE_RE: LazyLock<Regex> =
 static SPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub const ADD_IMPORT_HTTP_USER_AGENT: &str =
+    "cli-anything-zotero/1.2 (mailto:cli-anything@local; research agent)";
+pub const ADD_IMPORT_PDF_FETCH_TIMEOUT_SECONDS: u64 = 45;
 
 #[derive(Debug, Clone)]
 pub struct AddImportOptions {
@@ -89,12 +92,7 @@ pub trait AddImportBridge {
         item_key: &str,
         add_tags: &[String],
     ) -> anyhow::Result<WriteOutcome>;
-    fn attach_pdf(
-        &mut self,
-        library_id: u32,
-        item_key: &str,
-        path: &Path,
-    ) -> anyhow::Result<WriteOutcome>;
+    fn attach_pdf(&mut self, library_id: u32, item_key: &str, path: &Path) -> BridgeResponse;
     fn standalone_pdf_import(
         &mut self,
         library_id: u32,
@@ -148,13 +146,17 @@ impl AddImportBridge for JSBridgeClient {
         JSBridgeClient::item_tag(self, library_id, item_key, add_tags, &[])
     }
 
-    fn attach_pdf(
-        &mut self,
-        library_id: u32,
-        item_key: &str,
-        path: &Path,
-    ) -> anyhow::Result<WriteOutcome> {
-        JSBridgeClient::item_attach(self, library_id, item_key, path)
+    fn attach_pdf(&mut self, library_id: u32, item_key: &str, path: &Path) -> BridgeResponse {
+        let abs_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let code = match crate::bridge::templates::render_item_attach(
+            library_id,
+            item_key,
+            &abs_path.to_string_lossy(),
+        ) {
+            Ok(code) => code,
+            Err(err) => return BridgeResponse::failure(err.to_string()),
+        };
+        self.execute_js(&code, 4)
     }
 
     fn standalone_pdf_import(
@@ -213,7 +215,7 @@ impl AddImportFetcher for UreqAddImportFetcher {
             &format!("https://arxiv.org/bibtex/{arxiv_id}"),
             timeout,
             "application/x-bibtex,text/plain,*/*",
-            None,
+            Some(ADD_IMPORT_HTTP_USER_AGENT),
         )
         .and_then(|body| require_bibtex(body, "empty arXiv bibtex"))
     }
@@ -223,7 +225,12 @@ impl AddImportFetcher for UreqAddImportFetcher {
         url: &str,
         timeout: Duration,
     ) -> anyhow::Result<(Option<String>, Option<String>, String)> {
-        let body = fetch_text(url, timeout, "text/html,*/*", None)?;
+        let body = fetch_text(
+            url,
+            timeout,
+            "text/html,*/*",
+            Some(ADD_IMPORT_HTTP_USER_AGENT),
+        )?;
         let title = TITLE_RE.captures(&body).and_then(|captures| {
             captures.get(1).and_then(|m| {
                 let collapsed = SPACE_RE.replace_all(m.as_str(), " ");
@@ -537,6 +544,15 @@ pub fn add_file(
     path: &Path,
     options: AddImportOptions,
 ) -> Value {
+    add_file_with_bridge(runtime, bridge, path, options)
+}
+
+pub fn add_file_with_bridge<B: AddImportBridge>(
+    runtime: &RuntimeContext,
+    bridge: &mut B,
+    path: &Path,
+    options: AddImportOptions,
+) -> Value {
     let source = expand_user_path(&path.to_string_lossy());
     if !source.is_file() {
         return result_payload(
@@ -753,12 +769,12 @@ pub fn import_pmid<B: AddImportBridge>(
         collection_key,
         (!tags.is_empty()).then_some(tags),
     );
-    application_import_payload(&transport)
+    classify_bridge_payload_with_options(&transport, true).0
 }
 
-fn add_file_existing(
+fn add_file_existing<B: AddImportBridge>(
     runtime: &RuntimeContext,
-    bridge: &mut JSBridgeClient,
+    bridge: &mut B,
     source: &Path,
     options: AddImportOptions,
 ) -> Value {
@@ -870,9 +886,9 @@ fn add_file_existing(
     )
 }
 
-fn add_pdf_file(
+fn add_pdf_file<B: AddImportBridge>(
     runtime: &RuntimeContext,
-    bridge: &mut JSBridgeClient,
+    bridge: &mut B,
     source: &Path,
     options: AddImportOptions,
 ) -> Value {
@@ -885,24 +901,34 @@ fn add_pdf_file(
         .find(&stem)
         .map(|mat| normalize_doi(Some(mat.as_str())));
     if let Some(doi) = doi.filter(|doi| DOI_RE.is_match(doi)) {
-        let imported = import_doi(runtime, bridge, &doi, options.clone());
+        let mut connector = HttpConnectorImportClient;
+        let mut fetcher = UreqAddImportFetcher;
+        let imported = import_doi_with_clients(
+            runtime,
+            bridge,
+            &mut connector,
+            &mut fetcher,
+            &doi,
+            options.clone(),
+        );
         if imported.get("ok") == Some(&Value::Bool(true)) {
             if let Some(key) = imported.get("key").and_then(Value::as_str) {
                 let attach = bridge.attach_pdf(options.library_id.max(0) as u32, key, source);
+                let attach_data = attach.data.clone().unwrap_or(Value::Null);
                 return result_payload(
                     "add_file",
                     true,
-                    if attach.is_ok() {
+                    if attach.ok {
                         "success"
                     } else {
                         "partial_success"
                     },
-                    Some(if attach.is_ok() {
+                    Some(if attach.ok {
                         "IMPORTED_WITH_PDF"
                     } else {
                         "IMPORTED_ATTACH_FAILED"
                     }),
-                    attach.as_ref().err().map(|e| e.to_string()).as_deref(),
+                    attach.error.as_deref(),
                     vec![
                         ("path", Value::from(source.to_string_lossy().into_owned())),
                         ("kind", Value::from("pdf")),
@@ -913,7 +939,7 @@ fn add_pdf_file(
                             imported.get("title").cloned().unwrap_or(Value::Null),
                         ),
                         ("import_result", imported),
-                        ("attach_result", Value::from(format!("{attach:?}"))),
+                        ("attach_result", attach_data),
                     ],
                 );
             }
@@ -1324,8 +1350,8 @@ fn maybe_fetch_pdf(
         key,
         &sources,
         options.library_id,
-        30,
-        30,
+        ADD_IMPORT_PDF_FETCH_TIMEOUT_SECONDS,
+        ADD_IMPORT_PDF_FETCH_TIMEOUT_SECONDS,
         false,
     );
     object_insert(payload, "pdf", pdf.clone());

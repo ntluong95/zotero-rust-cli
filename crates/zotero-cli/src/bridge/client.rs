@@ -726,23 +726,64 @@ impl JSBridgeClient {
 }
 
 /// Mirrors `zotero_cli.py::emit_js`'s payload/exit classification for a raw Bridge transport
-/// response (minus the `require_data` flag, which none of Slice 5's commands pass): a
-/// transport-level failure returns the whole envelope with `false`; a transport success whose
-/// `data` is an object carrying `"ok": false` is application-level failure; anything else --
-/// including a bare `"ERROR: ..."` string -- is success, returned as-is. Returns
-/// `(payload_to_emit, is_success)`.
-pub fn classify_bridge_payload(transport: &BridgeResponse) -> (Value, bool) {
+/// response: a transport-level failure returns the whole envelope with `false`; a transport
+/// success whose `data` is an object carrying `"ok": false` is application-level failure;
+/// anything else -- including a bare `"ERROR: ..."` string -- is success, returned as-is.
+/// Returns `(payload_to_emit, is_success)`.
+pub fn classify_bridge_payload_with_options(
+    transport: &BridgeResponse,
+    require_data: bool,
+) -> (Value, bool) {
     if !transport.ok {
-        return (
-            serde_json::to_value(transport).unwrap_or(Value::Null),
-            false,
+        let mut payload = serde_json::Map::new();
+        payload.insert("ok".to_string(), Value::Bool(false));
+        payload.insert("data".to_string(), Value::Null);
+        payload.insert(
+            "error".to_string(),
+            transport
+                .error
+                .clone()
+                .map(Value::from)
+                .unwrap_or(Value::Null),
         );
+        if let Some(error_name) = &transport.error_name {
+            payload.insert("error_name".to_string(), Value::from(error_name.clone()));
+        }
+        if let Some(error_stack) = &transport.error_stack {
+            payload.insert("error_stack".to_string(), Value::from(error_stack.clone()));
+        }
+        if let Some(error_raw) = &transport.error_raw {
+            payload.insert("error_raw".to_string(), Value::from(error_raw.clone()));
+        }
+        return (Value::Object(payload), false);
     }
     match &transport.data {
+        Some(Value::Null) if require_data => (
+            serde_json::json!({
+                "ok": false,
+                "data": null,
+                "error": "JS bridge returned empty success (data is null)",
+                "code": "EMPTY_RESULT",
+            }),
+            false,
+        ),
         Some(Value::Object(map)) if map.get("ok") == Some(&Value::Bool(false)) => {
             (Value::Object(map.clone()), false)
         }
         Some(data) => (data.clone(), true),
+        None if require_data => (
+            serde_json::json!({
+                "ok": false,
+                "data": null,
+                "error": "JS bridge returned empty success (data is null)",
+                "code": "EMPTY_RESULT",
+            }),
+            false,
+        ),
         None => (serde_json::to_value(transport).unwrap_or(Value::Null), true),
     }
+}
+
+pub fn classify_bridge_payload(transport: &BridgeResponse) -> (Value, bool) {
+    classify_bridge_payload_with_options(transport, false)
 }
