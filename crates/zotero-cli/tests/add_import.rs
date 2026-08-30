@@ -825,6 +825,13 @@ fn add_url_doi_extraction_stops_before_query_and_fragment() {
 }
 
 #[test]
+fn doi_normalization_and_stem_pattern_preserves_special_characters_without_filesystem() {
+    let stem_raw = "10.1234_with?query#fragment".replace('_', "/");
+    let normalized = import_normalization::normalize_doi(Some(&stem_raw));
+    assert_eq!(normalized, "10.1234/with?query#fragment");
+}
+
+#[test]
 fn add_file_reports_missing_and_unsupported_without_live_mutation() {
     let runtime = runtime(true);
     let mut bridge = zotero_cli::bridge::JSBridgeClient::new(9);
@@ -852,7 +859,7 @@ fn add_file_reports_missing_and_unsupported_without_live_mutation() {
 fn add_file_covers_pdf_doi_attach_and_standalone_branches() {
     let runtime = runtime(true);
     let dir = common::TestDir::new("add-file-pdf");
-    let doi_pdf = dir.path().join("10.1234_with?query#fragment.pdf");
+    let doi_pdf = dir.path().join("10.1234_sample-doi.pdf");
     std::fs::write(&doi_pdf, b"%PDF- fake").unwrap();
     let mut bridge = MockBridge {
         doi_imports: vec![BridgeResponse::success(json!({
@@ -860,7 +867,7 @@ fn add_file_covers_pdf_doi_attach_and_standalone_branches() {
             "code": "IMPORTED",
             "key": "PDFITEM1",
             "title": "PDF Item",
-            "DOI": "10.1234/with?query#fragment",
+            "DOI": "10.1234/sample-doi",
             "source": "zotero-translator"
         }))],
         attach_response: Some(BridgeResponse::success(Value::String(
@@ -879,8 +886,8 @@ fn add_file_covers_pdf_doi_attach_and_standalone_branches() {
     );
     assert_eq!(out["status"], "success");
     assert_eq!(out["code"], "IMPORTED_WITH_PDF");
-    assert_eq!(out["DOI"], "10.1234/with?query#fragment");
-    assert_eq!(bridge.doi_import_calls[0].1, "10.1234/with?query#fragment");
+    assert_eq!(out["DOI"], "10.1234/sample-doi");
+    assert_eq!(bridge.doi_import_calls[0].1, "10.1234/sample-doi");
     assert_eq!(
         out["attach_result"],
         Value::String("OK: ATTACH01 attached to PDF Item".to_string())
