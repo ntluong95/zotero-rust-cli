@@ -225,7 +225,7 @@ pub fn find_items(
     db::find_items_by_title(
         &runtime.environment.sqlite_path,
         query,
-        Some(library_id),
+        &db::SearchLibraries::One(library_id),
         collection_id,
         limit,
         exact_title,

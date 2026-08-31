@@ -303,6 +303,20 @@ pub enum ItemCommands {
         /// Zotero Local API quick-search scope.
         #[arg(long, value_enum, default_value_t = SearchScope::TitleCreatorYear)]
         scope: SearchScope,
+        /// Search every user and group library instead of only the current one.
+        ///
+        /// Use this when you know a title, DOI or author but not which library holds the item.
+        /// Each result reports its own `libraryID`, so two same-titled items in different
+        /// libraries stay distinguishable. Session state is never modified. Cannot be combined
+        /// with --collection, which already pins a single library.
+        #[arg(long = "all-libraries")]
+        all_libraries: bool,
+        /// Also search feed libraries under --all-libraries.
+        ///
+        /// Off by default: a feed item is an unsaved RSS entry, not a library item, so it cannot
+        /// be the target of a typed write.
+        #[arg(long = "include-feeds", requires = "all_libraries")]
+        include_feeds: bool,
     },
     /// List child items (notes, attachments, annotations) of an item.
     Children {

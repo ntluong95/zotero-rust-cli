@@ -28,6 +28,7 @@ pub mod pdf_fetch;
 pub mod plugin;
 pub mod rendering;
 pub mod runtime;
+pub mod search;
 pub mod semantic;
 pub mod session;
 pub mod target;
@@ -168,7 +169,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         Commands::App(AppCommands::Doctor) => {
             let runtime = build_runtime();
             let bridge = bridge::JSBridgeClient::new(runtime.environment.port);
-            let payload = doctor::run_doctor(&runtime, &bridge);
+            // The same default staging directory `app install-plugin` writes to, so doctor can
+            // tell "staged, awaiting the Zotero dialog" from "nothing staged at all".
+            let payload = doctor::run_doctor(&runtime, &bridge, &plugin_output_dir(None));
             let code = exit_code_for(&payload);
             output::emit(json_mode, &payload);
             Ok(code)
@@ -203,16 +206,32 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             limit,
             exact_title,
             scope,
+            all_libraries,
+            include_feeds,
         }) => {
+            // `item find` reads, so it never launches Zotero -- but it does prefer a Bridge that
+            // is already up, which is the only way to search while Zotero holds the database
+            // lock. `live_bridge` would launch on an unreachable endpoint, so the client is
+            // built directly from the resolved port and simply declines when nothing answers.
             let runtime = build_runtime();
-            let items = catalog::find_items(
+            let bridge = runtime.bridge_client();
+            let libraries = if all_libraries {
+                search::SearchScopeRequest::AllLibraries { include_feeds }
+            } else {
+                search::SearchScopeRequest::CurrentLibrary
+            };
+            let (items, _source) = search::find_items(
                 &runtime,
-                &query,
-                collection.as_deref(),
-                limit,
-                exact_title,
-                &scope.to_string(),
+                &bridge,
                 &session,
+                search::SearchRequest {
+                    query: &query,
+                    collection_ref: collection.as_deref(),
+                    limit,
+                    exact_title,
+                    scope: &scope.to_string(),
+                    libraries,
+                },
             )?;
             output::emit(json_mode, &serde_json::to_value(items)?);
             Ok(0)
@@ -311,8 +330,11 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             Ok(0)
         }
         Commands::Library(LibraryCommands::List) => {
+            // Live-first, like `item find`: discovering which library to work in must not
+            // require closing Zotero. Falls back to SQLite when no Bridge answers.
             let runtime = build_runtime();
-            let libraries = catalog::list_libraries(&runtime)?;
+            let bridge = runtime.bridge_client();
+            let (libraries, _source) = search::list_libraries(&runtime, &bridge)?;
             output::emit(json_mode, &serde_json::to_value(libraries)?);
             Ok(0)
         }
@@ -638,7 +660,8 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             )
         }
         Commands::App(AppCommands::InstallPlugin { output_dir }) => {
-            app_install_plugin_command(json_mode, output_dir.as_deref())
+            let runtime = build_runtime();
+            app_install_plugin_command(&runtime, json_mode, output_dir.as_deref())
         }
         Commands::App(AppCommands::PluginStatus { output_dir }) => {
             let runtime = build_runtime();
@@ -2667,15 +2690,73 @@ fn plugin_output_dir(output_dir: Option<&str>) -> std::path::PathBuf {
     }
 }
 
-fn app_install_plugin_command(json_mode: bool, output_dir: Option<&str>) -> anyhow::Result<i32> {
+/// Stages the bundled CLI Bridge XPI and reports exactly what the human has to do next.
+///
+/// The binary already carries the plugin (`plugin::build_xpi` assembles it from compiled-in
+/// assets), so nothing is downloaded and no version has to be matched by hand -- but the
+/// previous output said only "install manually via Zotero", with no version and no ordered
+/// steps, which left a first-run user to guess.
+///
+/// Staging deliberately remains the whole of the CLI's role: it writes an `.xpi` to a directory
+/// it owns and never touches the Zotero profile. Installation goes through Zotero's own
+/// Add-ons dialog so the user's normal plugin-consent flow is not bypassed, and `app doctor`
+/// verifies the result afterwards.
+fn app_install_plugin_command(
+    runtime: &runtime::RuntimeContext,
+    json_mode: bool,
+    output_dir: Option<&str>,
+) -> anyhow::Result<i32> {
     let dir = plugin_output_dir(output_dir);
     let xpi_path = plugin::stage_xpi(&dir)?;
+    let display_path = xpi_path.to_string_lossy().into_owned();
+    let profile_dir = runtime.environment.profile_dir.as_deref();
+    let installed_version = paths::installed_plugin_version(profile_dir);
+    let bundled_version = paths::bundled_plugin_version();
+    let already_installed = paths::plugin_installed(profile_dir);
+
+    // Ordered, literal steps -- including the exact path to select -- rather than one prose
+    // sentence the caller has to parse. Structured so an agent can surface them verbatim.
+    let install_steps = vec![
+        "Open Zotero.".to_string(),
+        "Go to Tools → Plugins.".to_string(),
+        "Click the gear icon → Install Add-on From File…".to_string(),
+        format!("Select: {display_path}"),
+        "Restart Zotero.".to_string(),
+        "Verify with: zotero-cli app doctor".to_string(),
+    ];
+
+    let message = if already_installed && installed_version == bundled_version {
+        format!(
+            "CLI Bridge {} is already installed. The bundled copy has been staged at {} in case \
+             you need to reinstall it.",
+            bundled_version.as_deref().unwrap_or("(unknown)"),
+            display_path
+        )
+    } else if already_installed {
+        format!(
+            "CLI Bridge {} is installed; {} is bundled with this CLI. Install the staged copy to \
+             upgrade, then restart Zotero.",
+            installed_version.as_deref().unwrap_or("(unknown)"),
+            bundled_version.as_deref().unwrap_or("(unknown)")
+        )
+    } else {
+        "Bundled CLI Bridge staged. Install it through Zotero's Add-ons dialog (steps below), \
+         then restart Zotero."
+            .to_string()
+    };
+
     output::emit(
         json_mode,
         &serde_json::json!({
-            "staged_xpi_path": xpi_path.to_string_lossy(),
-            "message": "XPI staged. Install manually via Zotero: Tools > Plugins/Add-ons > \
-                        Install Add-on From File, then restart Zotero.",
+            "action": "app_install_plugin",
+            "ok": true,
+            "status": "success",
+            "staged_xpi_path": display_path,
+            "bundled_version": bundled_version,
+            "installed_version": installed_version,
+            "already_installed": already_installed,
+            "install_steps": install_steps,
+            "message": message,
         }),
     );
     Ok(0)

@@ -84,16 +84,24 @@ left as explicit follow-up scope.
 
 ## Layer B — command-level read-backend routing
 
-**Not implemented in this pass**, per the plan's own scope (`catalog.rs` routing is separable
-follow-up work). What *is* done: every one of the 24 SQLite-backed read commands now has a
-concrete, evidence-based answer for whether the Local API can represent it — see the full matrix in
-`phase-14-zotero-10-compatibility-gate.md` §1c. Summary:
+**Pre-v1 update (2026-08-31):** two discovery reads now have safe live routing
+for the exact state that motivated this document. `item find` tries its normal
+SQLite path first; only if that path refuses with the tagged WAL/busy
+`DatabaseLocked` error does it ask the owned CLI Bridge to run Zotero's own
+read-only quicksearch. `library list` follows the same SQLite-first rule, using
+the Bridge only after the database lock refusal. No path uses `immutable=1` on a
+locked WAL database, and neither command autolaunches Zotero.
+
+The original compatibility pass did not route most SQLite-backed reads through a live backend,
+per that plan's own scope (`catalog.rs` routing was separable follow-up work). It did produce
+a concrete, evidence-based answer for whether the Local API can represent each SQLite-backed read
+command — see the full matrix in `phase-14-zotero-10-compatibility-gate.md` §1c. Current summary:
 
 | Backend answer | Commands |
 |---|---|
 | Local API confirmed sufficient (LIVE VERIFIED) | `collection list/find/get/items/tree`, `item list/get/children/notes/attachments/file`, `tag list/items` |
 | Local API confirmed sufficient (already landed) | `item find` (Local-API-first since before this phase) |
-| No Local API equivalent — SQLite-only, LIVE VERIFIED | `library list`, `session use-library` |
+| No Local API equivalent — SQLite/Bridge only, LIVE VERIFIED | `library list`, `session use-library` |
 | Local API likely sufficient — DOC-VERIFIED only | `search list`/`search get` (see below) |
 | No SQLite path at all (unaffected by this phase) | `search items`, `style list`, `session status`/`use-collection`/`use-item`/`clear-*`/`history` |
 | Not SQLite-backed; HTTP-mediated | `session use-selected`, `collection use-selected` |

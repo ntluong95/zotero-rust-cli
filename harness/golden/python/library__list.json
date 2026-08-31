@@ -5,7 +5,7 @@
     "library",
     "list"
   ],
-  "compatibility_class": "Exact",
+  "compatibility_class": "Semantic",
   "fixture_state": "group-library",
   "fixture_root": "<ROOT>/fixture",
   "exit_code": 0,

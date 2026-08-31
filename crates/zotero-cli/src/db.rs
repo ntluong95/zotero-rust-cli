@@ -203,6 +203,16 @@ pub struct Library {
     #[serde(rename = "lastSync")]
     pub last_sync: Option<i64>,
     pub archived: i64,
+    /// Human-readable library name. Additive field with no canonical equivalent: upstream only
+    /// ever surfaces the numeric `libraryID`, which makes `library list` unusable for both
+    /// humans and agents ("which of these eleven numbers is my group?").
+    ///
+    /// Resolved entirely from the local database, so it works offline and adds no backend
+    /// dependency: `groups.name` for a group, `feeds.name` for a feed, and Zotero's own constant
+    /// name for the personal library (live-confirmed: `Zotero.Libraries.get(1).name` is
+    /// `"My Library"`). `None` when the joined row is absent or the type is unrecognized -- a
+    /// name is never invented.
+    pub name: Option<String>,
 }
 
 /// `connect_readonly()` (`zotero_sqlite.py:25-32`), corrected for Zotero 10's
@@ -237,6 +247,28 @@ pub struct Library {
 /// database is not in WAL mode, so `immutable=1` cannot miss anything it
 /// wasn't already going to miss; falling back there matches the
 /// unconditional pre-10 behavior exactly.
+/// Marker attached to the WAL/busy refusal so callers can recognize it structurally.
+///
+/// Its presence means exactly one thing: *this* database cannot be read safely right now
+/// because Zotero holds it. It never means the data is missing, and it must never be treated
+/// as permission to read unsafely -- the only valid response is to use a live backend instead,
+/// or to report the refusal unchanged.
+#[derive(Debug)]
+pub struct DatabaseLocked;
+
+impl std::fmt::Display for DatabaseLocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "zotero database is locked by a running Zotero")
+    }
+}
+
+impl std::error::Error for DatabaseLocked {}
+
+/// Whether `error` is the WAL/busy refusal (at any depth in the chain).
+pub fn is_database_locked(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| e.is::<DatabaseLocked>())
+}
+
 pub fn connect_readonly(sqlite_path: &Path) -> anyhow::Result<Connection> {
     if !sqlite_path.exists() {
         return Err(DomainError::new(format!(
@@ -258,15 +290,20 @@ pub fn connect_readonly(sqlite_path: &Path) -> anyhow::Result<Connection> {
         Ok(conn) => Ok(conn),
         Err(err) if is_sqlite_busy(&err) => {
             if wal_sidecar_path(sqlite_path).exists() {
-                Err(DomainError::new(format!(
-                    "Zotero appears to be running and holds an exclusive lock on the \
+                // Tagged, not just worded: callers that have a safe live read path (see
+                // `search.rs`) need to recognize *this specific* condition to try it, and
+                // matching on message text would silently stop working the day the wording
+                // changes. The message itself is unchanged and still what the user sees.
+                Err(
+                    anyhow::Error::new(DatabaseLocked).context(DomainError::new(format!(
+                        "Zotero appears to be running and holds an exclusive lock on the \
                      WAL-mode database ({}). Reading with immutable=1 would silently \
                      skip uncheckpointed commits, so this refuses instead of returning \
                      stale data. Close Zotero and retry, or use a command backed by the \
                      Zotero Local API while Zotero is running.",
-                    sqlite_path.display()
-                ))
-                .into())
+                        sqlite_path.display()
+                    ))),
+                )
             } else {
                 open_and_probe(&format!("file:{posix_path}?mode=ro&immutable=1"))
             }
@@ -333,6 +370,71 @@ pub fn normalize_library_ref(library_ref: &str) -> anyhow::Result<i64> {
     Err(DomainError::new(format!("Unsupported library reference: {library_ref}")).into())
 }
 
+/// Zotero's own name for the personal library. Not localized here: the CLI has no locale
+/// machinery, and this is the string Zotero's own API reports for `libraryType == "user"`.
+pub const USER_LIBRARY_NAME: &str = "My Library";
+
+/// The `name` column [`library_select`] projects, resolved per library type.
+fn library_name_from_row(row: &Row) -> rusqlite::Result<Option<String>> {
+    let kind: String = row.get("type")?;
+    match kind.as_str() {
+        // The personal library has no name row anywhere in Zotero's schema -- the name is a
+        // property of the library *type*, not stored data.
+        "user" => Ok(Some(USER_LIBRARY_NAME.to_string())),
+        // `groupName`/`feedName` come from `LEFT JOIN`s, so both are `NULL` when the joined row
+        // is missing (or the table does not exist in a minimal fixture). That stays `None`
+        // rather than becoming a placeholder: an invented name is worse than an absent one.
+        "group" => row.get("groupName"),
+        "feed" => row.get("feedName"),
+        _ => Ok(None),
+    }
+}
+
+/// The canonical eight `libraries` columns, plus the two `LEFT JOIN`ed name sources.
+///
+/// `LEFT JOIN` (not `JOIN`) on purpose: a library whose `groups`/`feeds` row is missing must
+/// still be listed, and several test fixtures build a `libraries` table with no `groups` or
+/// `feeds` table at all. `library_name_from_row` turns the resulting `NULL` into `None`.
+fn library_select(has_groups: bool, has_feeds: bool) -> String {
+    let group_name = if has_groups {
+        "g.name AS groupName"
+    } else {
+        "NULL AS groupName"
+    };
+    let feed_name = if has_feeds {
+        "f.name AS feedName"
+    } else {
+        "NULL AS feedName"
+    };
+    let group_join = if has_groups {
+        "LEFT JOIN groups g ON g.libraryID = l.libraryID"
+    } else {
+        ""
+    };
+    let feed_join = if has_feeds {
+        "LEFT JOIN feeds f ON f.libraryID = l.libraryID"
+    } else {
+        ""
+    };
+    format!(
+        "SELECT l.libraryID, l.type, l.editable, l.filesEditable, l.version, l.storageVersion, \
+         l.lastSync, l.archived, {group_name}, {feed_name} \
+         FROM libraries l {group_join} {feed_join}"
+    )
+}
+
+/// Whether `name` exists as a table in this database. Zotero always has `groups` and `feeds`,
+/// but the minimal fixtures used across this crate's tests generally do not, and `library list`
+/// must keep working against them.
+fn table_exists(conn: &Connection, name: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [name],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
 fn library_from_row(row: &Row) -> rusqlite::Result<Library> {
     Ok(Library {
         library_id: row.get("libraryID")?,
@@ -343,17 +445,18 @@ fn library_from_row(row: &Row) -> rusqlite::Result<Library> {
         storage_version: row.get("storageVersion")?,
         last_sync: row.get("lastSync")?,
         archived: row.get("archived")?,
+        name: library_name_from_row(row)?,
     })
 }
 
 /// `fetch_libraries()` (`zotero_sqlite.py:105-114`).
 pub fn fetch_libraries(sqlite_path: &Path) -> anyhow::Result<Vec<Library>> {
     let conn = connect_readonly(sqlite_path)?;
-    let mut stmt = conn.prepare(
-        "SELECT libraryID, type, editable, filesEditable, version, storageVersion, lastSync, archived
-         FROM libraries
-         ORDER BY libraryID",
-    )?;
+    let sql = format!(
+        "{} ORDER BY l.libraryID",
+        library_select(table_exists(&conn, "groups"), table_exists(&conn, "feeds"))
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], library_from_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
@@ -362,11 +465,11 @@ pub fn fetch_libraries(sqlite_path: &Path) -> anyhow::Result<Vec<Library>> {
 pub fn resolve_library(sqlite_path: &Path, library_ref: &str) -> anyhow::Result<Option<Library>> {
     let library_id = normalize_library_ref(library_ref)?;
     let conn = connect_readonly(sqlite_path)?;
-    let mut stmt = conn.prepare(
-        "SELECT libraryID, type, editable, filesEditable, version, storageVersion, lastSync, archived
-         FROM libraries
-         WHERE libraryID = ?1",
-    )?;
+    let sql = format!(
+        "{} WHERE l.libraryID = ?1",
+        library_select(table_exists(&conn, "groups"), table_exists(&conn, "feeds"))
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query_map([library_id], library_from_row)?;
     Ok(rows.next().transpose()?)
 }
@@ -1174,10 +1277,55 @@ pub fn fetch_items(sqlite_path: &Path, filter: FetchItemsFilter) -> anyhow::Resu
 }
 
 /// `find_items_by_title()` (`zotero_sqlite.py:449-512`).
+/// Which libraries a title search covers.
+///
+/// Canonical only ever searches one (`_default_library`, or the collection's), which is why an
+/// agent that does not already know the right `libraryID` gets `[]` and has no way forward.
+/// `SearchLibraries` expresses the additive `--all-libraries` scope without duplicating the
+/// query builder or making an empty resolved set accidentally search every library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchLibraries {
+    /// Exactly one library -- canonical behavior.
+    One(i64),
+    /// An explicit set, already filtered to the types the caller wants. An empty set matches
+    /// nothing rather than everything, so a caller that resolved zero eligible libraries never
+    /// silently widens to all of them.
+    Some(Vec<i64>),
+    /// No library predicate at all.
+    All,
+}
+
+impl SearchLibraries {
+    fn push_predicate(
+        &self,
+        where_clauses: &mut Vec<String>,
+        params: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    ) {
+        match self {
+            SearchLibraries::One(library_id) => {
+                where_clauses.push("i.libraryID = ?".to_string());
+                params.push(Box::new(*library_id));
+            }
+            SearchLibraries::Some(ids) => {
+                if ids.is_empty() {
+                    where_clauses.push("0 = 1".to_string());
+                    return;
+                }
+                let placeholders = vec!["?"; ids.len()].join(", ");
+                where_clauses.push(format!("i.libraryID IN ({placeholders})"));
+                for id in ids {
+                    params.push(Box::new(*id));
+                }
+            }
+            SearchLibraries::All => {}
+        }
+    }
+}
+
 pub fn find_items_by_title(
     sqlite_path: &Path,
     query: &str,
-    library_id: Option<i64>,
+    libraries: &SearchLibraries,
     collection_id: Option<i64>,
     limit: i64,
     exact_title: bool,
@@ -1204,10 +1352,7 @@ pub fn find_items_by_title(
     ";
     let mut where_clauses = vec!["1=1".to_string()];
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-    if let Some(library_id) = library_id {
-        where_clauses.push("i.libraryID = ?".to_string());
-        params.push(Box::new(library_id));
-    }
+    libraries.push_predicate(&mut where_clauses, &mut params);
     if let Some(collection_id) = collection_id {
         where_clauses.push(
             "EXISTS (SELECT 1 FROM collectionItems ci WHERE ci.itemID = i.itemID AND ci.collectionID = ?)"
@@ -1332,6 +1477,31 @@ pub fn resolve_item(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A resolved-but-empty library set must match nothing. Treating it as "no predicate" would
+    /// silently widen a scoped search to every library -- the opposite of what the caller asked.
+    #[test]
+    fn an_empty_search_library_set_matches_nothing_rather_than_everything() {
+        let mut where_clauses = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        SearchLibraries::Some(Vec::new()).push_predicate(&mut where_clauses, &mut params);
+        assert_eq!(where_clauses, vec!["0 = 1".to_string()]);
+        assert!(params.is_empty());
+
+        let mut where_clauses = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        SearchLibraries::All.push_predicate(&mut where_clauses, &mut params);
+        assert!(where_clauses.is_empty(), "All adds no library predicate");
+    }
+
+    #[test]
+    fn a_search_library_set_binds_one_placeholder_per_id() {
+        let mut where_clauses = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        SearchLibraries::Some(vec![1, 7, 9]).push_predicate(&mut where_clauses, &mut params);
+        assert_eq!(where_clauses, vec!["i.libraryID IN (?, ?, ?)".to_string()]);
+        assert_eq!(params.len(), 3);
+    }
 
     // Regression coverage for bugs a review pass found in scenarios the
     // parity harness's fixed golden fixtures don't exercise.

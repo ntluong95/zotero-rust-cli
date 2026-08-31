@@ -99,6 +99,9 @@ These never start anything, by design:
   diagnostics observe state, they do not change it. With Zotero closed they say so.
 - Every read that works offline from the local database (`item get/list/find`,
   collection/library/tag reads, `session *`, `docx *`, `audit *`, `export *`).
+  If Zotero already holds a WAL-mode database lock, `item find` and `library list`
+  may use an already-running owned CLI Bridge instead; they still never autolaunch
+  Zotero and never use stale SQLite reads.
 - `item merge` without `--confirm` — the default preview stays a zero-mutation,
   offline-capable dry run.
 
@@ -122,14 +125,47 @@ If that approval is missing, a write command stops and reports
 `authorization_failed` / `needs_human_action` — the CLI never approves on your
 behalf, and never prints stored credential material.
 
+### Finding items when you do not know the library
+
+Use `item find --all-libraries` when you know the title, DOI, or author but not
+which Zotero library contains the item. The command searches user and group
+libraries together, leaves your session state untouched, and keeps returning
+`libraryID` plus `key` for every match so follow-up commands can target the
+right item.
+
+Feed libraries are excluded by default because feed entries are unsaved RSS
+items, not normal library items. Add `--include-feeds` only when you explicitly
+want those entries included.
+
+`--all-libraries` cannot be combined with `--collection`: a collection already
+belongs to exactly one library.
+
+`library list` includes a `name` field where Zotero stores or exposes one:
+`"My Library"` for the personal library, group names from Zotero's `groups`
+table, feed names from `feeds`, and `null` when no safe name source exists.
+
+### Installing the CLI Bridge
+
+The binary already bundles the CLI Bridge XPI. To stage it, run:
+
+```bash
+zotero-cli app install-plugin
+```
+
+The command reports the staged `.xpi` path, bundled version, installed version
+when present, whether the Bridge is already installed, and ordered install
+steps. Installation itself still happens through Zotero's own Add-ons dialog;
+the CLI does not write into the Zotero profile or bypass plugin consent.
+
 ### Reading `app doctor`
 
 `write_ready` means *at least one approved write backend is usable right now*.
 `write_backends` says which: an authorized Local API, the owned CLI Bridge, or
 both. The `bridge.state` field distinguishes the cases that a single boolean
-used to blur together — `not_installed`, `installed_zotero_closed`,
-`installed_not_loaded`, `ownership_invalid`, `eval_failing`, `healthy` — and
-`bridge.port` reports the port Bridge commands in that same invocation will use.
+used to blur together — `not_installed`, `staged_not_installed`,
+`installed_zotero_closed`, `installed_not_loaded`, `ownership_invalid`,
+`eval_failing`, `healthy` — and `bridge.port` reports the port Bridge commands
+in that same invocation will use.
 
 ### For AI agents
 
