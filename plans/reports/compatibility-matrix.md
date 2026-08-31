@@ -64,7 +64,7 @@ moves to **Migrated** when `compare.py` classifies it **Exact** (or
 | `item find` | Exact | **Exact** (byte-identical) | `catalog`, `db`, `http` | Exercises the Local-API-hit path (`unicode-cjk` fixture, CJK query correctly percent-encoded). **SQL-fallback path now covered**: row 98, `item find (sql-fallback)` — `--exact-title` forces `find_items_by_title` regardless of Local API state; matches `REG12345` by its literal `"Sample Title"` — **Exact** |
 | `app status (unreachable)` | Exact | **Exact** (byte-identical) | `runtime`, `paths`, `http` | Row 97; no fake HTTP server started, real closed-port connection refusal; `connector_message`/`local_api_message` normalized to `<CONNECTION_REFUSED>` per the accepted-divergence decision above — everything else compared unweakened |
 | `collection list` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Pure SQLite, no HTTP dependency for data |
-| `library list` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Trivial wrapper over `fetch_libraries` |
+| `library list` | Exact | **Semantic** (additive field) | `catalog`, `db`, `search` | Was byte-identical. The pre-v1 agent-discovery package adds an additive `name` field (`groups.name` / `feeds.name` / `"My Library"`), which upstream has no equivalent for, so byte-identity is not achievable while implementing that feature. All eight canonical fields are preserved in place and unchanged. Also gains a live read path (Bridge) that engages **only** after SQLite refuses with `DatabaseLocked`, so an offline run issues the same requests it always did. |
 | `collection find` | Exact | **Exact** (byte-identical) | `catalog`, `db` | `LIKE`-search with exact/prefix/substring ranking `CASE` |
 | `collection get` | Exact | **Exact** (byte-identical) | `catalog`, `db` | `ref: None` now falls back to session — see `get_collection` signature fix below |
 | `collection items` | Exact | **Exact** (byte-identical) | `catalog`, `db` | Composes `get_collection` + `fetch_items` |
@@ -263,7 +263,7 @@ done. Real bugs found and fixed:
 | 59 | `item export` | `rendering` | `rendering` | `<REF> --format` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
 | 60 | `item fetch-pdf` | `pdf_fetch, session` | `pdf_fetch, session` | `<ITEM_KEY> --sources --force --zotero-timeout --download-timeout` | **Semantic** | Integrated | Network-dependent; compare status enums |
 | 61 | `item file` | `catalog` | `catalog` | `<REF>` | **Exact** | Integrated | Deterministic from SQLite / local state |
-| 62 | `item find` | `catalog` | `catalog` | `<QUERY> --collection --limit --exact-title --scope` | **Exact** | Integrated | Deterministic from SQLite / local state |
+| 62 | `item find` | `catalog` | `catalog`, `search` | `<QUERY> --collection --limit --exact-title --scope` + additive `--all-libraries --include-feeds` | **Exact** | Integrated | Still byte-identical: the additive flags change nothing when absent, and the live Bridge path engages **only** after SQLite refuses with `DatabaseLocked` — a state no offline fixture reaches — so the recorded `http_calls` sequence is unchanged. |
 | 63 | `item find-pdf` | `(cli only)` | `cli` | `<ITEM_KEY> --timeout` | **Semantic** | Integrated | Network-dependent; compare status enums |
 | 64 | `item get` | `catalog` | `catalog` | `<REF>` | **Exact** | Integrated | Deterministic from SQLite / local state |
 | 65 | `item list` | `catalog` | `catalog` | `--limit` | **Exact** | Integrated | Deterministic from SQLite / local state |
@@ -278,7 +278,7 @@ done. Real bugs found and fixed:
 | 74 | `item tag` | `(cli only)` | `cli` | `<ITEM_KEY> --add... --remove...` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
 | 75 | `item update` | `(cli only)` | `cli` | `<ITEM_KEY> --field...` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
 | 76 | `js` | `(cli only)` | `cli` | `<CODE> --wait` | **Exact** | Integrated | Raw JS passthrough |
-| 77 | `library list` | `catalog` | `catalog` | `—` | **Exact** | Integrated | Deterministic from SQLite / local state |
+| 77 | `library list` | `catalog` | `catalog`, `search` | `—` | **Semantic** | Integrated | Additive `name` field (see the class table above); accounting status unchanged. |
 | 78 | `note add` | `notes` | `notes` | `<ITEM_REF> --text --file --format` | **Semantic** | Integrated | Connector-mediated |
 | 79 | `note get` | `notes` | `notes` | `<REF>` | **Semantic** | Integrated | Connector-mediated |
 | 80 | `repl` | `(cli only)` | `—` | `—` | **Dropped** | Dropped | REPL excluded from v1 (challenge decision C4). |
@@ -303,12 +303,17 @@ done. Real bugs found and fixed:
 
 | Class | Count | Share | v1 status |
 |---|---|---|---|
-| Semantic | 52 | 54% | Ported |
-| Exact | 34 | 35% | Ported |
+| Semantic | 53 | 55% | Ported |
+| Exact | 33 | 34% | Ported |
 | Deferred | 7 | 7% | Not in v1 — Phase 12 |
 | Changed | 2 | 2% | Ported (behaviour changed) |
 | Dropped | 1 | 1% | Not ported |
 | **Total** | **96** | 100% | **88 ported in v1** |
+
+`library list` moved Exact → Semantic in the pre-v1 agent-discovery package: implementing a
+human-readable library name necessarily adds a field upstream does not emit, so byte-identity and
+that feature are mutually exclusive. Its canonical fields are unchanged and its Phase 10 status
+below is unaffected.
 
 ## Phase 10 canonical classification (2026-08-30)
 
@@ -317,6 +322,9 @@ Python CLI commands has a Rust implementation attempt except the 7 explicitly de
 chain commands. This section adds the Phase 10 certification-status classification (`Phase 10 Class`
 column in the table above) on top of — not instead of — the existing per-row `Class` column above,
 which is left untouched.
+
+The pre-v1 agent-discovery package does not move any command between these buckets: every change
+it makes is an additive flag, an additive JSON field, or a fix to Rust-side guidance text.
 
 | Phase 10 Class | Count |
 |---|---|
@@ -334,8 +342,8 @@ absent or forgotten.
 
 **Reconciliation logic.** The `Phase 10 Class` column is a certification/integration-status overlay,
 orthogonal to the historical `Class` compatibility-tier column (Exact/Semantic/Changed/Deferred/
-Dropped), which is not retroactively changed by this section. `Integrated` (86) starts from the old
-table's 34 `Exact` + 52 `Semantic` rows (86 exactly), then swaps two rows: `app enable-local-api`
+Dropped), which is not retroactively changed by this section. `Integrated` (86) starts from the current
+table's 33 `Exact` + 53 `Semantic` rows (86 exactly), then swaps two rows: `app enable-local-api`
 (row 8, `Class: Semantic`) moves *out* to `Excluded`, because its Rust successor
 (`app authorize-local-api`) performs a real Local API write-authorization handshake that blocks on a
 human consent dialog inside the live Zotero application — no automated harness fixture can drive that

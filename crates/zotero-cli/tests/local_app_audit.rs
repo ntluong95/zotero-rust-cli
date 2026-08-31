@@ -217,6 +217,16 @@ fn app_doctor_healthy_fixture_all_checks_pass() {
     );
 }
 
+/// `next_steps` as plain strings, for readable assertions.
+fn next_steps(value: &serde_json::Value) -> Vec<String> {
+    value["next_steps"]
+        .as_array()
+        .expect("doctor always emits next_steps")
+        .iter()
+        .map(|s| s.as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
 #[test]
 fn app_doctor_degraded_when_connector_unavailable() {
     let dir = TestDir::new("app-doctor-connector-down");
@@ -246,11 +256,20 @@ fn app_doctor_degraded_when_connector_unavailable() {
     assert_eq!(value["code"], "DEGRADED");
     assert_eq!(value["ready"], false);
     assert_eq!(value["checks"]["connector"]["ok"], false);
-    assert!(value["next_steps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| s.as_str().unwrap().contains("Start Zotero desktop")));
+    // The Local API is answering here, so Zotero is demonstrably running: the guidance must
+    // describe *that* -- a connector that is not responding on a live Zotero -- rather than
+    // telling the user to start an application that is already open.
+    let steps = next_steps(&value);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s.contains("connector is not answering")),
+        "expected a connector-specific step, got {steps:?}"
+    );
+    assert!(
+        !steps.iter().any(|s| s.contains("Zotero is not running")),
+        "must not claim Zotero is closed while its Local API answers: {steps:?}"
+    );
 }
 
 #[test]
@@ -344,11 +363,21 @@ fn app_doctor_degraded_when_local_api_unavailable() {
     assert_eq!(value["ok"], false);
     assert_eq!(value["status"], "degraded");
     assert_eq!(value["checks"]["local_api"]["ok"], false);
-    assert!(value["next_steps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| s.as_str().unwrap().contains("Enable Local API")));
+    let steps = next_steps(&value);
+    // This fixture's profile does not enable the Local API, so enabling it *is* the right
+    // advice -- and it must point at Zotero's own settings, never at `app enable-local-api`,
+    // which this CLI deliberately does not implement (canonical behavior, Excluded on safety
+    // grounds).
+    assert!(
+        steps
+            .iter()
+            .any(|s| s.contains("Enable the Local API in Zotero")),
+        "expected setup guidance, got {steps:?}"
+    );
+    assert!(
+        !steps.iter().any(|s| s.contains("enable-local-api")),
+        "must never recommend the Excluded `app enable-local-api` command: {steps:?}"
+    );
 }
 
 #[test]
@@ -414,11 +443,17 @@ fn app_doctor_plugin_missing_diagnostic() {
     assert_eq!(value["ok"], false);
     assert_eq!(value["checks"]["plugin"]["ok"], false);
     assert_eq!(value["checks"]["plugin"]["xpi_installed"], false);
-    assert!(value["next_steps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| s.as_str().unwrap().contains("Install CLI Bridge")));
+    assert_eq!(value["checks"]["bridge"]["state"], "not_installed");
+    let steps = next_steps(&value);
+    // A new user has no way to know the Bridge exists, so the step has to say what is missing,
+    // why it matters, and the exact command -- not just "not available".
+    assert!(
+        steps
+            .iter()
+            .any(|s| s.contains("CLI Bridge is not installed")
+                && s.contains("zotero-cli app install-plugin")),
+        "expected actionable Bridge onboarding, got {steps:?}"
+    );
 }
 
 // ── audit path ───────────────────────────────────────────────────────────

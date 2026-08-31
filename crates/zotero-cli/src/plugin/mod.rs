@@ -69,6 +69,17 @@ pub fn stage_xpi(output_dir: &Path) -> Result<PathBuf> {
     Ok(xpi_path)
 }
 
+/// The staged XPI's path in `output_dir`, if one has already been written there.
+///
+/// Distinguishes "the bundled plugin has been staged but the human has not completed Zotero's
+/// install dialog yet" from "nothing has happened at all" -- the state a first-run user is in
+/// between `app install-plugin` and restarting Zotero, and precisely when they are most likely
+/// to ask the CLI what to do next.
+pub fn staged_xpi_path(output_dir: &Path) -> Option<PathBuf> {
+    let xpi_path = output_dir.join(XPI_FILENAME);
+    xpi_path.is_file().then_some(xpi_path)
+}
+
 /// Removes only the fork-owned staged XPI file from the specified output directory.
 ///
 /// NOTE: This only removes the staged `.xpi` artifact file on disk. It does NOT touch any

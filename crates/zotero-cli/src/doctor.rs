@@ -7,9 +7,14 @@ use crate::paths;
 use crate::runtime::RuntimeContext;
 
 /// `run_doctor()` (`doctor.py:13-133`): aggregate connector / local API / plugin / bridge health.
-pub fn run_doctor(runtime: &RuntimeContext, bridge: &JSBridgeClient) -> Value {
+pub fn run_doctor(
+    runtime: &RuntimeContext,
+    bridge: &JSBridgeClient,
+    staging_dir: &std::path::Path,
+) -> Value {
     let profile_dir = runtime.environment.profile_dir.as_deref();
     let xpi_path = paths::plugin_xpi_path(profile_dir);
+    let staged_xpi = crate::plugin::staged_xpi_path(staging_dir);
     let installed = paths::plugin_installed(profile_dir);
     let installed_version = paths::installed_plugin_version(profile_dir);
     let bundled_version = paths::bundled_plugin_version();
@@ -57,13 +62,19 @@ pub fn run_doctor(runtime: &RuntimeContext, bridge: &JSBridgeClient) -> Value {
     // The five plugin/Bridge states the CLI must be able to tell apart, so a diagnostic never
     // collapses "not installed" and "installed but Zotero is closed" into one unhelpful boolean:
     //
-    //   not_installed              -- no XPI in the profile's extensions directory
+    //   not_installed              -- no XPI in the profile's extensions directory, none staged
+    //   staged_not_installed       -- the bundled XPI has been staged, but Zotero's own install
+    //                                 dialog has not been completed yet
     //   installed_zotero_closed    -- XPI present, but nothing answers Zotero's HTTP port
     //   installed_not_loaded       -- Zotero is up, but /cli-bridge/eval does not answer
     //   ownership_invalid          -- the endpoint answered but failed the fork+id handshake
     //   healthy                    -- owned endpoint answered and an eval round-tripped
     let bridge_state = if !installed {
-        "not_installed"
+        if staged_xpi.is_some() {
+            "staged_not_installed"
+        } else {
+            "not_installed"
+        }
     } else if !runtime.zotero_http_responding() {
         "installed_zotero_closed"
     } else if !active {
@@ -124,23 +135,81 @@ pub fn run_doctor(runtime: &RuntimeContext, bridge: &JSBridgeClient) -> Value {
             // a port mismatch visible in the diagnostic itself rather than only as a downstream
             // "endpoint not available" from an unrelated command.
             "port": runtime.environment.port,
+            // Where the bundled XPI is waiting, when it has been staged but not yet installed --
+            // so the next step can name the exact file to select in Zotero's dialog.
+            "staged_xpi_path": staged_xpi.as_ref().map(|p| p.to_string_lossy()),
         },
     });
 
+    // Next steps are generated from the *combination* of facts, not from each check in
+    // isolation. The previous version keyed the Local API advice off `local_api_available`
+    // (reachability) alone, so a perfectly configured install with Zotero merely closed was told
+    // to "enable" what it had already enabled -- and told to do it with `app enable-local-api`,
+    // a command this CLI deliberately does not implement (the canonical behavior is Excluded on
+    // safety grounds; `app authorize-local-api` is the approved consent path). Following that
+    // advice was impossible, and pointed at the very workflow the exclusion exists to prevent.
+    let zotero_running = runtime.zotero_http_responding();
     let mut next_steps: Vec<String> = Vec::new();
-    if !runtime.connector_available {
-        next_steps.push("Start Zotero desktop (connector is not available).".to_string());
-    }
-    if !runtime.local_api_available {
+
+    if !zotero_running {
         next_steps.push(
-            "Enable Local API: zotero-cli app enable-local-api --launch (or Zotero Settings → Advanced → allow other apps)."
+            "Zotero is not running. Commands that need a live backend start it automatically; \
+             to start it yourself run: zotero-cli app launch."
                 .to_string(),
         );
+    } else if !runtime.connector_available {
+        next_steps.push(format!(
+            "Zotero is running but its connector is not answering ({}). Restart Zotero, then \
+             re-run: zotero-cli app doctor.",
+            runtime.connector_message
+        ));
     }
+
+    match (
+        runtime.environment.local_api_enabled_configured,
+        runtime.local_api_available,
+        zotero_running,
+    ) {
+        // Reachable: nothing to configure. Authorization is a separate fact, reported below.
+        (_, true, _) => {}
+        // Configured, unreachable, Zotero closed -- the cause is the closed Zotero, already
+        // reported above. Saying "enable the Local API" here would be actively wrong.
+        (true, false, false) => next_steps.push(
+            "The Local API is already enabled in Zotero's settings; it is unavailable only \
+             because Zotero is not running."
+                .to_string(),
+        ),
+        // Configured, unreachable, Zotero running -- genuinely unexpected, so say so rather
+        // than repeating setup advice the user has already followed.
+        (true, false, true) => next_steps.push(
+            "The Local API is enabled in Zotero's settings but the running Zotero is not \
+             serving it. Restart Zotero, then check Settings → Advanced → \
+             \"Allow other applications on this computer to communicate with Zotero\"."
+                .to_string(),
+        ),
+        // Not configured: this is the only case where enabling is the right advice. There is
+        // deliberately no CLI command for it -- the setting is changed in Zotero itself.
+        (false, false, _) => next_steps.push(
+            "Enable the Local API in Zotero: Settings → Advanced → \"Allow other applications \
+             on this computer to communicate with Zotero\"."
+                .to_string(),
+        ),
+    }
+
     if !installed {
-        next_steps.push(
-            "Install CLI Bridge: zotero-cli app install-plugin, then restart Zotero.".to_string(),
-        );
+        next_steps.push(match staged_xpi.as_ref() {
+            // Staged but not installed: name the exact file, because the Zotero dialog asks for
+            // a path and hunting for it is the step people get stuck on.
+            Some(path) => format!(
+                "CLI Bridge is staged but not installed yet. In Zotero: Tools → Plugins → gear \
+                 icon → Install Add-on From File… → select {} → restart Zotero.",
+                path.display()
+            ),
+            None => "CLI Bridge is not installed. Some live operations (raw JS, sync, \
+                     cross-library search while Zotero is running) require it. Run: \
+                     zotero-cli app install-plugin"
+                .to_string(),
+        });
     } else if update_available {
         next_steps.push(format!(
             "Upgrade CLI Bridge {} → {}: zotero-cli app install-plugin, then restart Zotero.",

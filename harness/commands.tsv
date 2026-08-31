@@ -75,7 +75,7 @@ id	command	args_json	class	fixture_state	notes
 74	item tag	["--json","item","tag","{item}","--add","fixture-tag"]	Semantic	local-api-on	Fake bridge
 75	item update	["--json","item","update","{item}","--field","title=Updated Fixture"]	Semantic	local-api-on	Fake bridge
 76	js	["--json","js","return Zotero.version"]	Exact	local-api-on	Raw bridge passthrough
-77	library list	["--json","library","list"]	Exact	group-library	Upstream helper includes user and group libraries
+77	library list	["--json","library","list"]	Semantic	group-library	Upstream helper includes user and group libraries. Semantic, not Exact: the Rust build adds an additive `name` field (groups.name / feeds.name / "My Library"), which upstream has no equivalent for, so stdout cannot be byte-identical. All eight canonical fields are unchanged in place.
 78	note add	["--json","note","add","{item}","--text","Fixture note"]	Semantic	local-api-on	Fake connector
 79	note get	["--json","note","get","NOTEKEY"]	Semantic	local-api-on	SQLite note read
 80	repl	["repl"]	Dropped	live-only	Interactive only
