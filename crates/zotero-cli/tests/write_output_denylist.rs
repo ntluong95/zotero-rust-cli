@@ -47,6 +47,15 @@ fn local_api_item_update_output_never_leaks_backend_identity_or_raw_local_api_ve
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        // Live target resolution: write commands resolve through the same live backend they
+        // write with, never SQLite, which a running Zotero holds locked.
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "ITEM0001", "version": 5, "library": {"id": 0},
+                "data": {"itemType": "document", "title": "Test Item One", "collections": [], "tags": []},
+            }),
+        ),
         ScriptedResponse::json(
             200,
             json!({
@@ -87,6 +96,8 @@ fn local_api_collection_create_output_never_leaks_backend_identity_or_raw_local_
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        // `collection create`'s duplicate-name guard reads the collection list live.
+        ScriptedResponse::json(200, json!([])),
         ScriptedResponse::json(
             201,
             json!({"successful": {"0": {"key": "NEWCOL01", "version": 1}}}),
@@ -123,6 +134,18 @@ fn bridge_item_update_output_never_leaks_backend_identity() {
         connector_ping_ok(),
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
+        ScriptedResponse::json(
+            200,
+            json!(json!({
+                "found": true,
+                "key": "ITEM0001",
+                "libraryID": 1,
+                "libraryType": "user",
+                "itemType": "document",
+                "itemID": 1,
+            })
+            .to_string()),
+        ),
         ScriptedResponse::bridge_string(200, "OK: updated Test Item One"),
         ScriptedResponse::json(
             200,

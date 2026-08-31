@@ -79,3 +79,65 @@ installed or linked last generally wins on `PATH`. Check with
 `which -a zotero-cli` (macOS/Linux) or `where.exe zotero-cli` (Windows), and
 uninstall the Python version once you've migrated (see Phase 13 of the
 implementation plan for retirement criteria).
+
+## Runtime behaviour: when the CLI starts Zotero, and when it does not
+
+Some commands need a *live* Zotero (the Connector, the Local API, or the CLI
+Bridge). When one of those is invoked and nothing is answering Zotero's HTTP
+port, the CLI discovers and starts Zotero itself, waits for the specific
+backend that command needs, and then continues — no `app launch` → wait →
+retry choreography required.
+
+It launches Zotero **at most once**, and only when Zotero appears to be
+closed. If Zotero is already answering, no second process is ever started; a
+capability that is missing on a running Zotero (Local API disabled, plugin not
+loaded) is reported as that specific problem instead.
+
+These never start anything, by design:
+
+- `app doctor`, `app status`, `app ping`, `app version`, `app plugin-status` —
+  diagnostics observe state, they do not change it. With Zotero closed they say so.
+- Every read that works offline from the local database (`item get/list/find`,
+  collection/library/tag reads, `session *`, `docx *`, `audit *`, `export *`).
+- `item merge` without `--confirm` — the default preview stays a zero-mutation,
+  offline-capable dry run.
+
+To suppress automatic launching entirely (headless machines, shared systems,
+CI), set:
+
+```bash
+export ZOTERO_CLI_NO_AUTOLAUNCH=1
+```
+
+Commands that need a live backend then fail with a message telling you to start
+Zotero yourself. `ZOTERO_CLI_LAUNCH_TIMEOUT` (seconds, default 60) bounds how
+long the CLI waits for a freshly started Zotero to expose the backend.
+
+### Automatic launch never grants consent
+
+Starting Zotero is not the same as being allowed to write through it. Local API
+writes still require the one-time human approval obtained with
+`zotero-cli app authorize-local-api`, which shows Zotero's own consent dialog.
+If that approval is missing, a write command stops and reports
+`authorization_failed` / `needs_human_action` — the CLI never approves on your
+behalf, and never prints stored credential material.
+
+### Reading `app doctor`
+
+`write_ready` means *at least one approved write backend is usable right now*.
+`write_backends` says which: an authorized Local API, the owned CLI Bridge, or
+both. The `bridge.state` field distinguishes the cases that a single boolean
+used to blur together — `not_installed`, `installed_zotero_closed`,
+`installed_not_loaded`, `ownership_invalid`, `eval_failing`, `healthy` — and
+`bridge.port` reports the port Bridge commands in that same invocation will use.
+
+### For AI agents
+
+Prefer the typed, high-level commands. They validate the target, choose an
+approved write backend, verify the result, and record an audit entry.
+
+`zotero-cli js` is an expert/debugging escape hatch, **not** a write fallback.
+If a supported high-level write command fails while `app doctor` reports the
+environment ready, stop and report that contradiction — it is a bug. Do not
+perform the mutation with raw JS instead: that bypasses the write routing and
+safety checks the typed command exists to provide.

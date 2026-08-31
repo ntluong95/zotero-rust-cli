@@ -30,6 +30,9 @@ pub mod runtime {
 pub mod session {
     pub use zotero_cli::session::*;
 }
+pub mod target {
+    pub use zotero_cli::target::*;
+}
 
 #[path = "common/mod.rs"]
 mod common;
@@ -267,6 +270,28 @@ fn bridge_ownership_ok() -> ScriptedResponse {
     )
 }
 
+/// The live target-resolution response `notes::add_note` now consumes before it writes.
+///
+/// `add_note` resolves its parent through the same live Zotero runtime the note is written into,
+/// not through SQLite -- a running Zotero holds an exclusive lock on its WAL-mode database, so
+/// the previous SQLite lookup made the command fail during target lookup in exactly the
+/// situation it exists for. The resolution template returns a JSON *string*, so the transport
+/// body is a quoted string the resolver parses once more.
+fn bridge_resolve_parent_ok() -> ScriptedResponse {
+    ScriptedResponse::json(
+        200,
+        json!(json!({
+            "found": true,
+            "key": "DOC00001",
+            "libraryID": 1,
+            "libraryType": "user",
+            "itemType": "document",
+            "itemID": 1,
+        })
+        .to_string()),
+    )
+}
+
 fn note_add_success_response() -> ScriptedResponse {
     ScriptedResponse::json(
         200,
@@ -280,7 +305,11 @@ fn test_add_note_valid_regular_parent_succeeds() {
     let runtime = test_runtime(build_notes_fixture(dir.path()));
     let session = SessionState::default();
 
-    let server = ScriptedServer::start(vec![bridge_ownership_ok(), note_add_success_response()]);
+    let server = ScriptedServer::start(vec![
+        bridge_ownership_ok(),
+        bridge_resolve_parent_ok(),
+        note_add_success_response(),
+    ]);
     let bridge = JSBridgeClient::new(server.port);
 
     let result = notes::add_note(
@@ -304,10 +333,20 @@ fn test_add_note_valid_regular_parent_succeeds() {
     let requests = server.finish();
     assert_eq!(
         requests.len(),
-        2,
-        "exactly one ownership probe + one write attempt"
+        3,
+        "exactly one ownership probe + one live parent resolution + one write attempt"
     );
-    let code = String::from_utf8_lossy(&requests[1].body);
+    // The parent lookup must be a read-only resolution, never a mutation, and must never reach
+    // SQLite -- this is the whole point of resolving through the live runtime.
+    let resolve_code = String::from_utf8_lossy(&requests[1].body);
+    assert!(resolve_code.contains("Zotero.Items.getByLibraryAndKey"));
+    for verb in ["saveTx", "eraseTx", "new Zotero.Item"] {
+        assert!(
+            !resolve_code.contains(verb),
+            "parent resolution must stay read-only but contains {verb:?}"
+        );
+    }
+    let code = String::from_utf8_lossy(&requests[2].body);
     assert!(code.contains("new Zotero.Item('note')"));
     assert!(code.contains("Zotero.Items.getByLibraryAndKey"));
 }
@@ -420,7 +459,11 @@ fn test_add_note_from_utf8_file() {
     std::fs::write(&note_file, "Héllo wörld 你好 🎉").unwrap();
     let file_path_str = note_file.to_string_lossy().into_owned();
 
-    let server = ScriptedServer::start(vec![bridge_ownership_ok(), note_add_success_response()]);
+    let server = ScriptedServer::start(vec![
+        bridge_ownership_ok(),
+        bridge_resolve_parent_ok(),
+        note_add_success_response(),
+    ]);
     let bridge = JSBridgeClient::new(server.port);
 
     let result = notes::add_note(
@@ -553,6 +596,7 @@ fn test_add_note_result_handles_missing_item_id_gracefully() {
 
     let server = ScriptedServer::start(vec![
         bridge_ownership_ok(),
+        bridge_resolve_parent_ok(),
         ScriptedResponse::json(200, json!({"key": "N1", "title": "x"})),
     ]);
     let bridge = JSBridgeClient::new(server.port);
@@ -633,6 +677,7 @@ fn test_add_note_accepts_i64_max_item_id() {
 
     let server = ScriptedServer::start(vec![
         bridge_ownership_ok(),
+        bridge_resolve_parent_ok(),
         ScriptedResponse::json(
             200,
             json!({"key": "MAXNOTE1", "itemID": i64::MAX, "title": "Doc One"}),
@@ -706,12 +751,16 @@ fn test_note_add_no_retry_after_ambiguous_transport_failure() {
         "unexpected error: {err}"
     );
 
+    // Generous on the *positive* waits (a loaded CI runner has been observed to take longer
+    // than 2s to schedule the second accept, producing a spurious failure) and deliberately
+    // unchanged on the negative wait below -- the short window is what actually proves "no
+    // automatic retry", so lengthening these does not weaken that claim.
     assert!(
-        rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+        rx.recv_timeout(Duration::from_secs(15)).is_ok(),
         "the ownership probe connection must have arrived"
     );
     assert!(
-        rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+        rx.recv_timeout(Duration::from_secs(15)).is_ok(),
         "exactly one write-attempt connection must have arrived"
     );
     assert!(
@@ -730,7 +779,11 @@ fn test_add_note_preview_strips_markup_and_decodes_entities() {
     let runtime = test_runtime(build_notes_fixture(dir.path()));
     let session = SessionState::default();
 
-    let server = ScriptedServer::start(vec![bridge_ownership_ok(), note_add_success_response()]);
+    let server = ScriptedServer::start(vec![
+        bridge_ownership_ok(),
+        bridge_resolve_parent_ok(),
+        note_add_success_response(),
+    ]);
     let bridge = JSBridgeClient::new(server.port);
 
     let result = notes::add_note(
@@ -758,7 +811,11 @@ fn test_add_note_preview_from_markdown_strips_tags() {
     let runtime = test_runtime(build_notes_fixture(dir.path()));
     let session = SessionState::default();
 
-    let server = ScriptedServer::start(vec![bridge_ownership_ok(), note_add_success_response()]);
+    let server = ScriptedServer::start(vec![
+        bridge_ownership_ok(),
+        bridge_resolve_parent_ok(),
+        note_add_success_response(),
+    ]);
     let bridge = JSBridgeClient::new(server.port);
 
     let result = notes::add_note(

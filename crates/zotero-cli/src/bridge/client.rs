@@ -19,6 +19,21 @@ pub const DEFAULT_PORT: u16 = 23119;
 static POSITIVE_PROBES: LazyLock<Mutex<HashSet<u16>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
+/// What a single ownership probe found, in one request.
+///
+/// The distinction matters to the lifecycle helper: `Foreign` means something is serving that
+/// path, so Zotero is up and launching another one would be wrong, whereas `Unreachable` is the
+/// only state in which starting Zotero can help.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeProbe {
+    /// 200, and the fork+id handshake verified this as our own plugin.
+    Owned,
+    /// Something answered that path, but it is not our fork. Never authorized for a call.
+    Foreign,
+    /// Nothing answered at all.
+    Unreachable,
+}
+
 /// Clears positive probe cache. Primarily for testing.
 pub fn clear_probe_cache() {
     if let Ok(mut guard) = POSITIVE_PROBES.lock() {
@@ -202,13 +217,14 @@ impl JSBridgeClient {
         Self { port }
     }
 
-    pub fn with_default_port() -> Self {
-        let port = std::env::var("ZOTERO_HTTP_PORT")
-            .ok()
-            .and_then(|p| p.trim().parse::<u16>().ok())
-            .unwrap_or(DEFAULT_PORT);
-        Self::new(port)
-    }
+    // NOTE: there is deliberately no port-discovering constructor here. Callers build a client
+    // from `RuntimeContext::bridge_client()`, whose port comes from `paths::get_http_port`
+    // (`ZOTERO_HTTP_PORT` -> the profile's `extensions.zotero.httpServer.port` pref -> 23119,
+    // honoring `--profile-dir`). An earlier `with_default_port()` consulted only the environment
+    // variable before falling back to `DEFAULT_PORT`, so on any profile configured with a
+    // non-default port every Bridge-routed command probed a dead socket while `app doctor` --
+    // the one caller already using the runtime port -- reported the Bridge healthy. Two
+    // resolution paths for one fact was the bug; keep exactly one.
 
     pub fn bridge_url(&self) -> String {
         format!("http://127.0.0.1:{}/cli-bridge/eval", self.port)
@@ -219,14 +235,39 @@ impl JSBridgeClient {
     /// but never caches negative or unverified probes so retries after installation work immediately.
     /// An HTTP 200 response alone is NOT sufficient; fork ownership verification must succeed.
     pub fn bridge_endpoint_active(&self) -> bool {
-        {
-            if let Ok(guard) = POSITIVE_PROBES.lock() {
-                if guard.contains(&self.port) {
-                    return true;
-                }
+        self.probe_bridge() == BridgeProbe::Owned
+    }
+
+    /// Whether *anything* answers `/cli-bridge/eval` with a 200, regardless of ownership.
+    ///
+    /// Diagnostics only: this is how `app doctor` tells "the plugin is not loaded" apart from
+    /// "something is serving this path but it is not our fork". No execution path may use this
+    /// as a gate -- only [`BridgeProbe::Owned`] authorizes a Bridge call, so an unowned endpoint
+    /// can never receive a script.
+    pub fn bridge_endpoint_responds(&self) -> bool {
+        self.probe_bridge() != BridgeProbe::Unreachable
+    }
+
+    /// One ownership probe, served from the positive cache when this port already verified.
+    ///
+    /// A non-`Owned` result is deliberately **not** cached, preserving the existing invariant
+    /// (`test_probe_caching_and_ownership_invariants`): a probe that failed ownership must be
+    /// retried, so installing the plugin and retrying works immediately rather than being
+    /// remembered as broken.
+    pub fn probe_bridge(&self) -> BridgeProbe {
+        if let Ok(guard) = POSITIVE_PROBES.lock() {
+            if guard.contains(&self.port) {
+                return BridgeProbe::Owned;
             }
         }
+        self.probe_bridge_uncached()
+    }
 
+    /// The network probe itself, bypassing the positive cache.
+    ///
+    /// The readiness wait after an automatic launch uses this so a Zotero that is still starting
+    /// is re-asked on every poll rather than answered from a stale memo.
+    pub fn probe_bridge_uncached(&self) -> BridgeProbe {
         let resp = ureq::post(&self.bridge_url())
             .header("Content-Type", "text/plain")
             .config()
@@ -237,26 +278,26 @@ impl JSBridgeClient {
 
         match resp {
             Ok(mut response) => {
-                if response.status().as_u16() == 200 {
-                    if let Ok(bytes) = response.body_mut().read_to_vec() {
-                        if let Ok(val) = serde_json::from_slice::<Value>(&bytes) {
-                            if val.get("fork").and_then(|v| v.as_str()) == Some("zotero-rust-cli")
-                                && val.get("id").and_then(|v| v.as_str())
-                                    == Some("cli-bridge@cli-anything-rust.dev")
-                            {
-                                if let Ok(mut guard) = POSITIVE_PROBES.lock() {
-                                    guard.insert(self.port);
-                                }
-                                return true;
+                if response.status().as_u16() != 200 {
+                    // A non-200 still means something is listening on that path.
+                    return BridgeProbe::Foreign;
+                }
+                if let Ok(bytes) = response.body_mut().read_to_vec() {
+                    if let Ok(val) = serde_json::from_slice::<Value>(&bytes) {
+                        if val.get("fork").and_then(|v| v.as_str()) == Some("zotero-rust-cli")
+                            && val.get("id").and_then(|v| v.as_str())
+                                == Some("cli-bridge@cli-anything-rust.dev")
+                        {
+                            if let Ok(mut guard) = POSITIVE_PROBES.lock() {
+                                guard.insert(self.port);
                             }
+                            return BridgeProbe::Owned;
                         }
                     }
-                    false
-                } else {
-                    false
                 }
+                BridgeProbe::Foreign
             }
-            Err(_) => false,
+            Err(_) => BridgeProbe::Unreachable,
         }
     }
 

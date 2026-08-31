@@ -44,6 +44,25 @@ fn bridge_ownership_ok() -> ScriptedResponse {
     )
 }
 
+/// A live target-resolution response, as `target::resolve_item` expects it: the resolution
+/// template returns a JSON *string*, so the transport body is a quoted string that the resolver
+/// parses once more. `--confirm` resolves its targets through the live Zotero runtime rather
+/// than SQLite, so each resolved key costs one of these.
+fn bridge_resolve_item_ok(key: &str, item_id: i64) -> ScriptedResponse {
+    ScriptedResponse::json(
+        200,
+        json!(json!({
+            "found": true,
+            "key": key,
+            "libraryID": 1,
+            "libraryType": "user",
+            "itemType": "document",
+            "itemID": item_id,
+        })
+        .to_string()),
+    )
+}
+
 /// Two items ("keep" + "other A") share a tag and a collection with a second "other B" item, so
 /// dedup-on-accumulate (not naive set-union) is actually exercised. Schema matches
 /// `common::build_fixture_sqlite`; see inline comments for what each row is used to prove.
@@ -607,6 +626,8 @@ fn confirm_flag_still_executes_the_existing_bridge_merge_mutation_path() {
         connector_ping_ok(),
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
+        bridge_resolve_item_ok("KEEP0001", 1),
+        bridge_resolve_item_ok("OTHR0001", 2),
         ScriptedResponse::bridge_string(200, "OK: merged 1 items into Keep Item"),
         ScriptedResponse::json(
             200,
@@ -625,8 +646,9 @@ fn confirm_flag_still_executes_the_existing_bridge_merge_mutation_path() {
     let requests = server.finish();
     assert_eq!(
         requests.len(),
-        6,
-        "the pre-existing confirm path is untouched by this fix"
+        8,
+        "confirm resolves both targets through the live Zotero runtime (never SQLite), then \
+         mutates and verifies"
     );
     assert_eq!(code, 0, "payload: {payload}");
     assert_eq!(payload["outcome"], "applied");
@@ -643,6 +665,8 @@ fn when_both_flags_given_confirm_last_wins_and_mutates() {
         connector_ping_ok(),
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
+        bridge_resolve_item_ok("KEEP0001", 1),
+        bridge_resolve_item_ok("OTHR0001", 2),
         ScriptedResponse::bridge_string(200, "OK: merged 1 items into Keep Item"),
         ScriptedResponse::json(
             200,
@@ -667,7 +691,7 @@ fn when_both_flags_given_confirm_last_wins_and_mutates() {
 
     assert_eq!(
         server.finish().len(),
-        6,
+        8,
         "confirm (given last) must win and mutate"
     );
     assert_eq!(code, 0, "payload: {payload}");
@@ -718,8 +742,13 @@ fn human_mode_preview_output_matches_json_mode_shape() {
         .arg(dir.path())
         .args(["item", "merge", "KEEP0001", "OTHR0001"])
         .env("ZOTERO_HTTP_PORT", server.port.to_string())
+        // Per-test isolation, as documented on `common::run_cli`.
+        .env(
+            "CLI_ANYTHING_ZOTERO_STATE_DIR",
+            dir.path().join("cli-state"),
+        )
+        .env("ZOTERO_CLI_NO_AUTOLAUNCH", "1")
         .env_remove("ZOTERO_LOCAL_API_KEY")
-        .env_remove("CLI_ANYTHING_ZOTERO_STATE_DIR")
         .output()
         .expect("failed to run zotero-cli binary");
 

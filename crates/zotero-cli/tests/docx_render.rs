@@ -12,7 +12,7 @@ use zotero_cli::docx::static_render::{combined_citation, plain_text};
 use zotero_cli::docx::working::build_working_docx;
 use zotero_cli::docx::xml::parse_xml;
 use zotero_cli::runtime::{build_runtime_context, BuildEnvironmentArgs};
-use zotero_cli::session::load_session_state;
+use zotero_cli::session::SessionState;
 
 struct TestDir(PathBuf);
 impl TestDir {
@@ -163,7 +163,10 @@ fn test_build_working_docx_generates_valid_hyperlinks_and_rels() {
         profile_dir: None,
         executable: None,
     });
-    let session = load_session_state();
+    // An empty session, not `SessionState()`: that reads the *developer's* real
+    // `~/.config/cli-anything-zotero/session.json`, so a leftover `current_library` from actual
+    // CLI use silently scoped this fixture query to a library the fixture does not contain.
+    let session = SessionState::default();
 
     let result = build_working_docx(&runtime, &src, &out, &session, true, "auto").unwrap();
     assert_eq!(result["ok"], true);

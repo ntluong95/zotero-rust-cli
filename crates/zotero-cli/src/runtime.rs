@@ -47,6 +47,26 @@ struct StatusPayload {
 }
 
 impl RuntimeContext {
+    /// The one way to build a JS Bridge client for the Zotero instance this invocation targets.
+    ///
+    /// The port comes from `paths::get_http_port` (`ZOTERO_HTTP_PORT` -> the profile's
+    /// `extensions.zotero.httpServer.port` pref -> 23119), so it honors `--profile-dir` and a
+    /// profile configured with a non-default port. Before this existed, only `app doctor` and
+    /// `app plugin-status` used the runtime port while every other Bridge caller hard-coded
+    /// 23119 -- which is exactly how `doctor` could report a healthy Bridge that `js` then
+    /// declared unavailable in the same second.
+    pub fn bridge_client(&self) -> crate::bridge::JSBridgeClient {
+        crate::bridge::JSBridgeClient::new(self.environment.port)
+    }
+
+    /// Whether *some* Zotero HTTP surface answered this invocation's probes. Used by the
+    /// lifecycle helper to tell "Zotero is closed" (nothing answered -- launching is
+    /// appropriate) apart from "Zotero is running but this one capability is unavailable"
+    /// (launching a second process would be wrong).
+    pub fn zotero_http_responding(&self) -> bool {
+        self.connector_available || self.local_api_available || self.server_id.is_some()
+    }
+
     /// `to_status_payload()` (`discovery.py:22-33`): environment fields
     /// first, then the four probe fields, in that exact order — matches
     /// `app__status.json`'s golden field order (`#[serde(flatten)]`

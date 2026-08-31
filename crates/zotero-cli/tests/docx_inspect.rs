@@ -13,7 +13,7 @@ use zotero_cli::docx::inspect::{
 };
 use zotero_cli::docx::{inspect_citations, inspect_placeholders, validate_placeholders};
 use zotero_cli::runtime::{build_runtime_context, BuildEnvironmentArgs};
-use zotero_cli::session::load_session_state;
+use zotero_cli::session::SessionState;
 
 struct TestDir(PathBuf);
 impl TestDir {
@@ -285,7 +285,10 @@ fn test_validate_placeholders_with_mock_db() {
         profile_dir: None,
         executable: None,
     });
-    let session = load_session_state();
+    // An empty session, not `SessionState()`: that reads the *developer's* real
+    // `~/.config/cli-anything-zotero/session.json`, so a leftover `current_library` from actual
+    // CLI use silently scoped this fixture query to a library the fixture does not contain.
+    let session = SessionState::default();
 
     let rep = validate_placeholders(&runtime, &p_docx, 10, &session).unwrap();
     assert_eq!(rep["ok"], false);
