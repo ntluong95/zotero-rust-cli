@@ -17,24 +17,28 @@ Every claim below is tagged with how it was established:
 These tags describe **what is known**. They are separate from, and unaffected by, the merge-gate
 status below, which describes **what blocks integrating this branch**.
 
-## Merge-gate status (2026-08-29)
+## Status at v1.0.0 (2026-08-31)
 
 The Layer A fix (the critical WAL/`immutable=1` bug), capability detection, HTTP hardening, and the
-Layer B read-backend specification are complete and verified — see the sections below. The
-remaining open items fall into three buckets:
+Layer B read-backend specification are complete and verified — see the sections below. Two items
+that were open when this document was first written have since been resolved by Phase 6 and are
+marked inline: the XPI now exists and declares `strict_max_version: 10.0.*` (Open Question 4), and
+Local API write-consent handling shipped with a CLI-owned credential store (Open Question 5).
 
-| Bucket | Items | Why it doesn't block this branch |
-|---|---|---|
-| **Deferred to Phase 6** | XPI Zotero 10 compatibility (OQ4); Local API write-consent persistence (OQ5) | Structurally owned by Phase 6: no `plugin/` exists yet to test the XPI against, and confirming consent persistence needs an actual write, which Phase 6's first disposable write spike is the right place to do (not this read-only pass) |
-| **Deferred compatibility verification** | Live Zotero ≤9 sweep across all 31 commands; migrated saved-search live verification (OQ6) | Tracked gaps, not regressions — the ≤9 code paths are unchanged from before this phase and no ≤9 instance or migrated library was available here |
-| **Required before merge** | Green CI on all 5 targets | The actual gate for this PR; local verification (macOS/aarch64 only) doesn't substitute for it |
+What remains genuinely unverified at v1.0.0:
+
+| Item | Why it is still open |
+|---|---|
+| Live Zotero ≤9 sweep across all commands | No ≤9 instance was available in any development environment. The ≤9 code paths are structurally reasoned and covered by synthetic tests, not live-tested. |
+| Migrated saved-search live verification (OQ6) | No library that has been through Zotero's saved-search migration was available. |
+| `search list` / `search get` shape on a populated saved search | DOC-VERIFIED only — see the Layer B section. |
 
 ## Support matrix
 
 | Zotero version | Journal mode | SQLite reads | Local API writes | JS-Bridge (XPI) writes |
 |---|---|---|---|---|
-| ≤9 | Rollback journal | Supported, `mode=ro` with `immutable=1` fallback (unchanged from pre-10 behavior) | Not available | Required (XPI not yet built in this repo — Phase 6) |
-| 10+ | WAL | Supported, `mode=ro` preferred; refuses (not silently stale) when Zotero holds the lock | Available, gated on `Zotero-Server-ID` capability detection | Available as fallback once XPI ports (Phase 6) |
+| ≤9 | Rollback journal | Supported, `mode=ro` with `immutable=1` fallback (unchanged from pre-10 behavior) | Not available | Required — the CLI Bridge XPI is bundled in the binary and staged by `app install-plugin` |
+| 10+ | WAL | Supported, `mode=ro` preferred; refuses (not silently stale) when Zotero holds the lock | Available, gated on `Zotero-Server-ID` capability detection, and on one-time human consent via `app authorize-local-api` | Available as fallback, and required for privileged operations the Local API cannot express |
 
 ## Layer A — SQLite connection policy (`db::connect_readonly`)
 
@@ -166,6 +170,14 @@ semantics and never needs to handle a list.
 
 ## Local API write authorization persistence (Open Question 5)
 
+> **Resolved in Phase 6.** `POST /api/local/authorize` re-prompts for human consent on *every*
+> call, even with an existing "Always Allow" grant — so a stateless CLI process cannot rely on
+> Zotero's own persistence to write unattended. The port therefore persists the issued key itself,
+> scoped to a specific `Zotero-Server-ID`, in a restrictive-permission file beside `session.json`,
+> and still handles the server's own 401 rejection rather than assuming a stored entry is valid
+> forever. See `crates/zotero-cli/src/credentials.rs` and [`SECURITY.md`](SECURITY.md). The
+> original read-only-pass finding is preserved below for the record.
+
 **Partially observed, LIVE VERIFIED (UI only) — BLOCKED for full verification.** Zotero's Advanced
 settings expose a "Clear Write Authorizations" control, enabled only after at least one write
 authorization has been granted — its existence confirms Zotero persists write authorizations beyond
@@ -176,16 +188,21 @@ production Zotero library, not a disposable fixture. Remains open for Phase 6.
 
 ## XPI Zotero 10 compatibility (Open Question 4)
 
-**BLOCKED.** No `plugin/` directory or `manifest.json` exists anywhere in this repository yet — the
-XPI is created in Phase 6, which this pass was explicitly instructed not to start. There is nothing
-to update `strict_max_version` on, and no `/cli-bridge/eval` endpoint to test Zotero 10's HTTP
-hardening against.
+> **Resolved in Phase 6.** The fork-owned CLI Bridge XPI now exists, embedded in the binary at
+> `crates/zotero-cli/src/plugin/assets/{manifest.json,bootstrap.js}`. It declares
+> `strict_min_version: 6.999` / `strict_max_version: 10.0.*`, uses its own addon id
+> (`cli-bridge@cli-anything-rust.dev`), and registers both `/cli-bridge/eval` and
+> `/cli-bridge/ownership`. LIVE VERIFIED against Zotero 10.0.1: `app doctor` reports
+> `bridge.state: healthy` with a successful privileged eval round-trip.
 
-## Not evaluated this pass
+The original finding — no `plugin/` directory existed at the time of the read-only compatibility
+pass, so there was nothing to set `strict_max_version` on and no endpoint to test Zotero 10's HTTP
+hardening against — is superseded.
+
+## Not evaluated
 
 - Migrated saved searches (Open Question 6) — no library that has gone through Zotero's saved-search
   migration was available.
-- A live Zotero ≤9 instance — none was available in this environment; the ≤9 code paths are
-  DOC-VERIFIED/structurally reasoned (see phase-14 §Success Criteria) rather than live-tested.
-- Full CI matrix (5 targets) — `cargo build`/`test`/`clippy`/`fmt` all pass locally on this
-  session's host (macOS/aarch64); the branch was not pushed to trigger the actual CI run.
+- A live Zotero ≤9 instance — none was available in any development environment; the ≤9 code paths
+  are DOC-VERIFIED/structurally reasoned (see phase-14 §Success Criteria) rather than live-tested.
+  This remains true at v1.0.0.
