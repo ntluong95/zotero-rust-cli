@@ -2,6 +2,12 @@
 
 Phase 1 harness for comparing the Python reference CLI against the Rust port.
 
+> **Maintainer tooling only.** This directory (and `reference/`) is the parity
+> oracle used to verify Rust behaviour against the frozen upstream Python
+> implementation. It requires Python; **`zotero-cli` itself does not.** Nothing
+> here is on any user install or runtime path — see
+> [`../docs/INSTALL.md`](../docs/INSTALL.md).
+
 ## Layout
 
 - `commands.tsv` lists all 96 leaf commands plus 3 rows dedicated to covering a specific branch a

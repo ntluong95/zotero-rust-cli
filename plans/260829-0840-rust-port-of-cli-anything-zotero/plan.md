@@ -149,12 +149,48 @@ harness is built first (Phase 1) and runs continuously rather than as a late gat
 | 7 | [Ingest, Attachments and PDF Cascade](./phase-07-ingest-attachments-and-pdf-cascade.md) | `add`/`import`/`note`/PDF cascade/hygiene/metrics (18 public CLI commands). Merged across PRs #12-#19 (latest: PR #18 `a47006e`, PR #19 `568d90a`). | Complete |
 | 8 | [Semantic Search Vector Store](./phase-08-semantic-search-vector-store.md) | 3 commands (`item build-index`, `item semantic-search`, `item similar`); fixes D2; ~73× cosine speedup. Verified complete on main. | Complete |
 | 9 | [Pure OOXML DOCX Commands](./phase-09-pure-ooxml-docx-commands.md) | 4 subprocess-free DOCX commands (`inspect-citations`, `inspect-placeholders`, `validate-placeholders`, `render-citations`). Verified complete on main. | Complete |
-| — | **[Post-Phase-7 Remaining V1 Implementation](#post-phase-7-remaining-v1-implementation-parity-tail)** | **ACTIVE IMPLEMENTATION TAIL.** 17 canonical commands across 4 slices (Rendering/Export, Local App/Audit, Selection/Collection, Analysis/Hygiene). | **In Progress** |
-| 10 | [Parity Certification and Cross-Platform](./phase-10-parity-certification-and-cross-platform.md) | Full matrix green on 3 OSes, `PARITY-REPORT.md`, cross-platform hardening, upstream drift check. Gated on remaining v1 command implementation. | **Waiting for Remaining V1 Implementation** |
-| 11 | [Agent Skill, Docs and License Compliance](./phase-11-agent-skill-docs-and-license-compliance.md) | Regenerated SKILL.md, migration guide, Apache-2.0 compliance | Pending |
-| 12 | [DOCX Zoterify Chain (deferred, gated)](./phase-12-docx-zoterify-chain-deferred-gated.md) | The 7 external-process DOCX commands (gated after Phase 10) | Pending |
-| 13 | [Python Retirement](./phase-13-python-retirement.md) | Criteria-driven decommission | Pending |
+| — | **[Post-Phase-7 Remaining V1 Implementation](#post-phase-7-remaining-v1-implementation-parity-tail)** | 17 canonical commands across 4 slices (Rendering/Export, Local App/Audit, Selection/Collection, Analysis/Hygiene). Merged across PRs #20-#25. | Complete |
+| 10 | [Parity Certification and Cross-Platform](./phase-10-parity-certification-and-cross-platform.md) | Full matrix green on 3 OSes, `PARITY-REPORT.md`, cross-platform hardening, upstream drift check. Canonical 96-command accounting reconciled; RC1/RC2 cut and verified. | Complete |
+| 11 | [Agent Skill, Docs and License Compliance](./phase-11-agent-skill-docs-and-license-compliance.md) | Documentation set (`README.md`, `docs/INSTALL.md`, `AGENTS.md`, `MIGRATION.md`, `ARCHITECTURE.md`, `SECURITY.md`) + Apache-2.0 compliance. **`SKILL.md` and its generator remain outstanding** — see the note below. | **Docs complete; Agent Skill outstanding** |
+| 12 | [DOCX Zoterify Chain (deferred, gated)](./phase-12-docx-zoterify-chain-deferred-gated.md) | The 7 external-process DOCX commands | **DEFERRED TO POST-v1** — gate not run for v1; tracked in [issue #30](https://github.com/ntluong95/zotero-rust-cli/issues/30) |
+| 13 | [Python Retirement](./phase-13-python-retirement.md) | Criteria-driven decommission | Pending (v1.0.0 verified the no-Python end-user promise; the formal retirement decision is post-v1) |
 | 14 | [**Zotero 10 Compatibility Gate**](./phase-14-zotero-10-compatibility-gate.md) | **BLOCKS P6.** WAL-safe reads, WAL fixture, XPI 10.0.*, capability detection. Merged in PR #4 (`7ee7c70`). | Complete |
+
+### v1.0.0 release status (2026-08-31)
+
+`v1.0.0` ships Phases 1-11 (minus the Agent Skill, below) with the canonical
+96-command accounting unchanged: **Integrated 86 · Missing 0 · Changed 1 ·
+Excluded 1 · Dropped 1 · Deferred 7 · Total 96**.
+
+**Phase 11 — partial.** The user-facing documentation set and the Apache-2.0
+obligations are complete: `README.md`, `docs/INSTALL.md`, `docs/AGENTS.md`,
+`docs/MIGRATION.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`,
+`docs/ZOTERO-COMPATIBILITY.md`, `LICENSE`, `NOTICE-CHANGES.md`,
+`THIRD-PARTY-LICENSES.md`. **Not delivered:** `SKILL.md`, the
+`--dump-command-tree` flag, the skill generator, and the CI staleness check —
+explicitly descoped from the v1.0.0 release by the maintainer. Those success
+criteria remain open and are not claimed as met.
+
+**Phase 12 — DEFERRED TO POST-v1.** The go/no-go gate was not run for v1; the
+decision was to ship v1.0.0 without the dynamic DOCX chain rather than block on
+it. Tracked in [issue #30](https://github.com/ntluong95/zotero-rust-cli/issues/30).
+
+| v1.0.0 DOCX support | Commands |
+|---|---|
+| **Supported** (pure OOXML, no Word/LibreOffice) | `docx inspect-citations`, `docx inspect-placeholders`, `docx validate-placeholders`, `docx render-citations` |
+| **Deferred** (LibreOffice/Java/GUI automation) | `docx cite`, `docx doctor`, `docx insert-citations`, `docx prepare-zotero-import`, `docx zoterify`, `docx zoterify-preflight`, `docx zoterify-probe` |
+
+This deferral changes no command's canonical classification — the seven have been
+`Deferred` since the original matrix.
+
+**Phase 13 — partially discharged.** Criterion 4 (binaries install and run with
+no Python, pip, Rust, or Cargo) and criterion 7 (the seven Phase 12 commands
+formally deferred with users notified, via `README.md`, `docs/MIGRATION.md`,
+`docs/AGENTS.md`, and issue #30) are met at v1.0.0. A production-path audit
+confirmed no user-facing install or runtime path requires Python; Python remains
+only as maintainer tooling (`harness/`, `reference/`). Criterion 6 (`SKILL.md`)
+is not met, and the formal retirement decision (`docs/RETIREMENT-DECISION.md`)
+remains post-v1 work.
 
 ### Dependency graph
 

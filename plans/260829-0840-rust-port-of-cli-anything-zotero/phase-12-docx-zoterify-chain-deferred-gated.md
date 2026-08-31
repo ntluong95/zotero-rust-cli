@@ -1,13 +1,35 @@
 ---
 phase: 12
 title: "DOCX Zoterify Chain (Deferred, Gated)"
-status: todo
+status: deferred-post-v1
 priority: P3
 effort: "8-12d (if approved)"
 dependencies: [10]
+tracking_issue: https://github.com/ntluong95/zotero-rust-cli/issues/30
 ---
 
 # Phase 12: DOCX Zoterify Chain (Deferred, Gated)
+
+> **DEFERRED TO POST-v1 (2026-08-31).** The go/no-go gate below was **not run**
+> for v1.0.0. The maintainer's decision was to ship v1.0.0 on the static OOXML
+> DOCX surface rather than block the release on LibreOffice/Java/GUI automation
+> work. Tracked in
+> [issue #30](https://github.com/ntluong95/zotero-rust-cli/issues/30).
+>
+> **Supported in v1.0.0** (pure OOXML — no Word, no LibreOffice):
+> `docx inspect-citations`, `docx inspect-placeholders`,
+> `docx validate-placeholders`, `docx render-citations`.
+>
+> **Deferred:** `docx cite`, `docx doctor`, `docx insert-citations`,
+> `docx prepare-zotero-import`, `docx zoterify`, `docx zoterify-preflight`,
+> `docx zoterify-probe`.
+>
+> The seven commands are absent from the CLI, not stubbed. This deferral changes
+> no canonical accounting: they have been classified `Deferred` since the
+> original compatibility matrix, and the v1.0.0 totals remain
+> Integrated 86 · Missing 0 · Changed 1 · Excluded 1 · Dropped 1 · Deferred 7 ·
+> Total 96. Everything below is the still-valid plan for *if* this phase is
+> picked up.
 
 ## Overview
 

@@ -1,13 +1,34 @@
 ---
 phase: 11
 title: "Agent Skill, Docs and License Compliance"
-status: todo
+status: partial
 priority: P1
 effort: "3-4d"
 dependencies: [10]
 ---
 
 # Phase 11: Agent Skill, Docs and License Compliance
+
+> **Status at v1.0.0 (2026-08-31): documentation and license compliance are
+> complete; the Agent Skill is not.**
+>
+> **Delivered:** `README.md`, `docs/INSTALL.md` (five-target install, macOS
+> quarantine, Bridge/XPI onboarding, Local API consent, autolaunch, discovery),
+> `docs/AGENTS.md` (agent-first usage contract, write safety), `docs/MIGRATION.md`
+> (Python → Rust), `docs/ARCHITECTURE.md` (four surfaces + the `immutable=1`
+> trade-off), `docs/SECURITY.md` (eval endpoint threat model, credential storage,
+> outbound data flows), `LICENSE`, `NOTICE-CHANGES.md`, `THIRD-PARTY-LICENSES.md`.
+>
+> **Not delivered, explicitly descoped from v1.0.0 by the maintainer:** the
+> hidden `--dump-command-tree --json` flag, the skill generator, the generated
+> `SKILL.md`, the CI staleness check, and the real-agent skill validation session
+> (implementation steps 1-3 and 8; the corresponding success criteria below are
+> **not** met and are not claimed as met).
+>
+> `docs/COMPATIBILITY.md` was not created as a separate file: the per-command
+> matrix already lives in `plans/reports/compatibility-matrix.md` and the Zotero
+> version matrix in `docs/ZOTERO-COMPATIBILITY.md`. Both are linked from the docs
+> set rather than duplicated.
 
 ## Overview
 
