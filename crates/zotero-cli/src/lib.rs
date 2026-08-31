@@ -18,6 +18,7 @@ pub mod hygiene;
 pub mod import_attachments;
 pub mod import_core;
 pub mod import_normalization;
+pub mod lifecycle;
 pub mod metrics;
 pub mod notes;
 pub mod output;
@@ -29,6 +30,7 @@ pub mod rendering;
 pub mod runtime;
 pub mod semantic;
 pub mod session;
+pub mod target;
 pub mod write;
 pub mod write_router;
 
@@ -92,6 +94,28 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             profile_dir: cli.profile_dir.as_deref(),
             executable: cli.executable.as_deref(),
         })
+    };
+    // Every command that needs a live Zotero goes through this instead of `build_runtime()`:
+    // it probes the named capability, launches Zotero exactly once if (and only if) Zotero
+    // appears closed, waits for that specific backend, and hands back a re-probed runtime.
+    // Diagnostics (`app doctor`/`status`/`ping`), offline SQLite reads, `session`, `docx`,
+    // `audit` and `export` deliberately keep using `build_runtime()` and never launch anything.
+    let live_runtime = |need: lifecycle::Backend| -> anyhow::Result<runtime::RuntimeContext> {
+        let mut spawner = lifecycle::real_spawner();
+        lifecycle::ensure_backend(build_runtime(), need, &mut spawner)
+    };
+    // Bridge-only commands take this cheaper path: the port is resolved from the filesystem and
+    // the only probe is the Bridge's own ownership handshake. It never issues the connector /
+    // Local-API probes unless the Bridge is missing and it has to decide whether to launch.
+    let live_bridge = || -> anyhow::Result<bridge::JSBridgeClient> {
+        let environment = paths::build_environment(
+            cli.data_dir.as_deref(),
+            cli.profile_dir.as_deref(),
+            cli.executable.as_deref(),
+            &paths::current_env_map(),
+        );
+        let mut spawner = lifecycle::real_spawner();
+        lifecycle::ensure_bridge(&environment, &build_runtime, &mut spawner)
     };
     let session = session::load_session_state();
 
@@ -329,7 +353,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             Ok(0)
         }
         Commands::Search(SearchCommands::Items { search_ref }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::LocalApi)?;
             let items = catalog::search_items(&runtime, Some(&search_ref), &session)?;
             output::emit(json_mode, &items);
             Ok(0)
@@ -435,7 +459,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         // `session status` sees it); only this command's own echoed count is stale, exactly
         // matching Python.
         Commands::Session(SessionCommands::UseSelected) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Connector)?;
             let selected = catalog::use_selected_collection(&runtime)?;
             let state = persist_selected_collection(&selected, session)?;
             session::append_command_history("session use-selected")?;
@@ -490,7 +514,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             Ok(0)
         }
         Commands::Item(ItemCommands::Update { item_key, fields }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
             item_update_command(&runtime, &session, json_mode, &item_key, &fields)
         }
         Commands::Item(ItemCommands::Tag {
@@ -498,22 +522,22 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             add,
             remove,
         }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
             item_tag_command(&runtime, &session, json_mode, &item_key, &add, &remove)
         }
         Commands::Item(ItemCommands::Delete { item_key, confirm }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
             item_delete_command(&runtime, &session, json_mode, &item_key, confirm)
         }
         Commands::Item(ItemCommands::Attach { item_key, pdf_path }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Bridge)?;
             item_attach_command(&runtime, &session, json_mode, &item_key, &pdf_path)
         }
         Commands::Item(ItemCommands::AddToCollection {
             item_ref,
             collection_ref,
         }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
             item_add_to_collection_command(
                 &runtime,
                 &session,
@@ -528,7 +552,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             from,
             all_other_collections,
         }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
             item_move_to_collection_command(
                 &runtime,
                 &session,
@@ -545,11 +569,18 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             dry_run,
             confirm,
         }) => {
-            let runtime = build_runtime();
             // `--dry-run/--confirm` (`zotero_cli.py:1504`): a Click boolean flag pair,
             // `default=True` (dry-run). `resolve_bool_flag` + clap's `overrides_with` together
             // give the same "last flag wins, default dry-run" semantics as Click.
             let dry_run = resolve_bool_flag(dry_run, confirm, true);
+            // Safe-by-default is preserved here: the preview path keeps its Bridge-first,
+            // SQLite-fallback behavior and never launches Zotero. Only `--confirm`, which
+            // actually mutates, requires the owned Bridge.
+            let runtime = if dry_run {
+                build_runtime()
+            } else {
+                live_runtime(lifecycle::Backend::Bridge)?
+            };
             item_merge_command(
                 &runtime,
                 &session,
@@ -560,7 +591,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             )
         }
         Commands::Collection(CollectionCommands::Create { name, parent }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
             collection_create_command(&runtime, &session, json_mode, &name, parent.as_deref())
         }
         Commands::Collection(CollectionCommands::Rename {
@@ -568,7 +599,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             name,
             parent,
         }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
             collection_rename_command(
                 &runtime,
                 &session,
@@ -583,7 +614,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             delete_items,
             confirm,
         }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
             collection_delete_command(
                 &runtime,
                 &session,
@@ -597,7 +628,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             collection_key,
             item_key,
         }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
             collection_remove_item_command(
                 &runtime,
                 &session,
@@ -617,11 +648,11 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             app_uninstall_plugin_command(json_mode, output_dir.as_deref())
         }
         Commands::App(AppCommands::AuthorizeLocalApi { app_name }) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::LocalApi)?;
             app_authorize_local_api_command(&runtime, json_mode, &app_name)
         }
         Commands::Item(ItemCommands::FindPdf { item_key, timeout }) => {
-            let bridge = bridge::JSBridgeClient::with_default_port();
+            let bridge = live_bridge()?;
             let payload = pdf_fetch::find_pdf_for_item(&bridge, &item_key, 1, timeout as u64);
             let code = exit_code_for(&payload);
             output::emit(json_mode, &payload);
@@ -635,7 +666,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             download_timeout,
         }) => {
             let runtime = build_runtime();
-            let bridge = bridge::JSBridgeClient::with_default_port();
+            let bridge = runtime.bridge_client();
             let source_list = pdf_fetch::parse_sources(Some(&sources))?;
             let library_id = session::session_library_id(&session, 1)?;
             let client = pdf_fetch::UreqPdfClient;
@@ -656,7 +687,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             Ok(code)
         }
         Commands::Item(ItemCommands::SearchFulltext { query, limit }) => {
-            let bridge = bridge::JSBridgeClient::with_default_port();
+            let bridge = live_bridge()?;
             let (payload, is_success) = fulltext::search_fulltext(&bridge, &query, limit);
             output::emit(json_mode, &payload);
             Ok(if is_success { 0 } else { 1 })
@@ -666,7 +697,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             colors,
             limit,
         }) => {
-            let bridge = bridge::JSBridgeClient::with_default_port();
+            let bridge = live_bridge()?;
             let colors_opt = (!colors.is_empty()).then_some(colors.as_slice());
             let (payload, is_success) =
                 annotations::search_annotations(&bridge, &query, colors_opt, limit);
@@ -674,7 +705,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             Ok(if is_success { 0 } else { 1 })
         }
         Commands::Item(ItemCommands::Annotations { item_key }) => {
-            let bridge = bridge::JSBridgeClient::with_default_port();
+            let bridge = live_bridge()?;
             let (payload, is_success) = annotations::get_annotations(&bridge, &item_key);
             output::emit(json_mode, &payload);
             Ok(if is_success { 0 } else { 1 })
@@ -769,7 +800,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         }
         Commands::Item(ItemCommands::Duplicates { by, limit }) => match by {
             cli::DuplicatesBy::Zotero => {
-                let bridge = bridge::JSBridgeClient::with_default_port();
+                let bridge = live_bridge()?;
                 let (payload, exit_code) = hygiene::find_duplicates_zotero(&bridge, limit);
                 output::emit(json_mode, &payload);
                 Ok(exit_code)
@@ -843,7 +874,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             timeout_per_item,
             limit,
         }) => {
-            let bridge = bridge::JSBridgeClient::with_default_port();
+            let bridge = live_bridge()?;
             let result = pdf_cascade::find_pdfs_in_collection(
                 &bridge,
                 &collection_key,
@@ -865,8 +896,8 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             resume,
             reset_resume,
         }) => {
-            let runtime = build_runtime();
-            let bridge = bridge::JSBridgeClient::with_default_port();
+            let runtime = live_runtime(lifecycle::Backend::Bridge)?;
+            let bridge = runtime.bridge_client();
             let source_list = pdf_fetch::parse_sources(Some(&sources))?;
             let library_id = session::session_library_id(&session, 1)?;
             let client = pdf_fetch::UreqPdfClient;
@@ -896,7 +927,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         }
         // `collection_use_selected()` (`zotero_cli.py:789-796`).
         Commands::Collection(CollectionCommands::UseSelected) => {
-            let runtime = build_runtime();
+            let runtime = live_runtime(lifecycle::Backend::Connector)?;
             let selected = catalog::use_selected_collection(&runtime)?;
             persist_selected_collection(&selected, session)?;
             session::append_command_history("collection use-selected")?;
@@ -907,7 +938,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         // `1`, matching Python's CLI layer (no `--library` option exists for this command --
         // a group-library collection can never be targeted through it).
         Commands::Collection(CollectionCommands::Stats { collection_key }) => {
-            let bridge = bridge::JSBridgeClient::with_default_port();
+            let bridge = live_bridge()?;
             let transport = bridge.collection_stats(1, &collection_key);
             let (payload, is_success) = bridge::client::classify_bridge_payload(&transport);
             output::emit(json_mode, &payload);
@@ -929,9 +960,11 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             file_path,
             fmt,
         }) => {
-            let runtime = build_runtime();
-            let bridge = bridge::JSBridgeClient::with_default_port();
+            // Argument validation first: `--text`/`--file` mutual exclusion is a usage error and
+            // must never require -- let alone start -- a live Zotero.
             let input = notes::resolve_note_input(text.as_deref(), file_path.as_deref())?;
+            let runtime = live_runtime(lifecycle::Backend::Bridge)?;
+            let bridge = runtime.bridge_client();
             let fmt_str = fmt.to_string();
             let result = notes::add_note(
                 &runtime,
@@ -956,7 +989,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             pdf_sources,
         }) => {
             let runtime = build_runtime();
-            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let mut bridge = runtime.bridge_client();
             let prefer_translator = resolve_bool_flag(translator, no_translator, true);
             let fetch_pdf = resolve_bool_flag(fetch_pdf, no_fetch_pdf, false);
             let library_id = session::session_library_id(&session, 1)?;
@@ -987,7 +1020,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             pdf_sources,
         }) => {
             let runtime = build_runtime();
-            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let mut bridge = runtime.bridge_client();
             let fetch_pdf = resolve_bool_flag(fetch_pdf, no_fetch_pdf, true);
             let library_id = session::session_library_id(&session, 1)?;
             let options = add_import::AddImportOptions {
@@ -1014,7 +1047,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             if_exists,
         }) => {
             let runtime = build_runtime();
-            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let mut bridge = runtime.bridge_client();
             let library_id = session::session_library_id(&session, 1)?;
             let options = add_import::AddImportOptions {
                 collection_key,
@@ -1061,7 +1094,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             pdf_sources,
         }) => {
             let runtime = build_runtime();
-            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let mut bridge = runtime.bridge_client();
             let fetch_pdf = resolve_bool_flag(fetch_pdf, no_fetch_pdf, false);
             let library_id = session::session_library_id(&session, 1)?;
             let options = add_import::AddImportOptions {
@@ -1144,7 +1177,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             connector_timeout,
         }) => {
             let runtime = build_runtime();
-            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let mut bridge = runtime.bridge_client();
             let dedupe = resolve_bool_flag(dedupe, no_dedupe, true);
             let prefer_translator = resolve_bool_flag(translator, no_translator, true);
             let library_id = session::session_library_id(&session, 1)?;
@@ -1170,7 +1203,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             collection_key,
             tags,
         }) => {
-            let mut bridge = bridge::JSBridgeClient::with_default_port();
+            let mut bridge = live_bridge()?;
             let payload =
                 add_import::import_pmid(&mut bridge, &pmid, collection_key.as_deref(), &tags, 1);
             let code = exit_code_for(&payload);
@@ -1217,8 +1250,8 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             }
             Ok(0)
         }
-        Commands::Js { code, wait } => js_command(json_mode, &code, wait),
-        Commands::Sync => sync_command(json_mode),
+        Commands::Js { code, wait } => js_command(&live_bridge()?, json_mode, &code, wait),
+        Commands::Sync => sync_command(&live_bridge()?, json_mode),
     }
 }
 
@@ -1606,14 +1639,16 @@ fn item_update_command(
     if fields.is_empty() {
         return Err(error::DomainError::new("At least one --field key=value is required").into());
     }
-    let item = catalog::get_item(runtime, Some(item_key), session)?;
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let item = target::resolve_item(runtime, &client, Some(item_key), session, prefer)?;
     let mut body = serde_json::Map::new();
     for (key, value) in fields {
         body.insert(key.clone(), Value::String(value.clone()));
     }
 
     if runtime.local_api_writes_available {
-        let scope = catalog::local_api_scope(runtime, item.library_id)?;
+        let scope = item.local_api_scope()?;
         let path = format!("{scope}/items/{}", item.key);
         let current = match write_router::verify_present(runtime, &path) {
             write_router::PresenceCheck::Present(summary) => summary,
@@ -1639,7 +1674,6 @@ fn item_update_command(
     for (key, value) in fields {
         fields_map.insert(key.clone(), value.clone());
     }
-    let client = bridge::JSBridgeClient::with_default_port();
     let outcome = client.item_update(library_id, &item.key, &fields_map)?;
     if let Some((code, payload)) = write_outcome_failure(&outcome) {
         output::emit(json_mode, &payload);
@@ -1788,10 +1822,12 @@ fn item_tag_command(
             error::DomainError::new("At least one --add or --remove tag is required").into(),
         );
     }
-    let item = catalog::get_item(runtime, Some(item_key), session)?;
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let item = target::resolve_item(runtime, &client, Some(item_key), session, prefer)?;
 
     if runtime.local_api_writes_available {
-        let scope = catalog::local_api_scope(runtime, item.library_id)?;
+        let scope = item.local_api_scope()?;
         let path = format!("{scope}/items/{}", item.key);
         let current = match write_router::verify_present(runtime, &path) {
             write_router::PresenceCheck::Present(summary) => summary,
@@ -1817,7 +1853,6 @@ fn item_tag_command(
     }
 
     let library_id = library_id_u32(item.library_id)?;
-    let client = bridge::JSBridgeClient::with_default_port();
     let pre_raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &item.key)?;
     let pre_view = parse_live_object(&pre_raw, "item")?;
     let empty = Value::Array(Vec::new());
@@ -1844,10 +1879,12 @@ fn item_delete_command(
     if !confirm {
         return Err(error::DomainError::new("Refusing to delete without --confirm").into());
     }
-    let item = catalog::get_item(runtime, Some(item_key), session)?;
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let item = target::resolve_item(runtime, &client, Some(item_key), session, prefer)?;
 
     if runtime.local_api_writes_available {
-        let scope = catalog::local_api_scope(runtime, item.library_id)?;
+        let scope = item.local_api_scope()?;
         let path = format!("{scope}/items/{}", item.key);
         let current = match write_router::verify_present(runtime, &path) {
             write_router::PresenceCheck::Present(summary) => summary,
@@ -1866,7 +1903,6 @@ fn item_delete_command(
     }
 
     let library_id = library_id_u32(item.library_id)?;
-    let client = bridge::JSBridgeClient::with_default_port();
     let outcome = client.item_delete(library_id, &item.key)?;
     if let Some((code, payload)) = write_outcome_failure(&outcome) {
         output::emit(json_mode, &payload);
@@ -1906,9 +1942,15 @@ fn item_attach_command(
     // Always JS Bridge: the Local API's file-upload protocol (§3.6 row 50, "VERIFY IN SLICE 3")
     // was never implemented -- no `write_router` primitive exists for it -- so this command has
     // exactly one committed backend regardless of `local_api_writes_available`.
-    let item = catalog::get_item(runtime, Some(item_key), session)?;
+    let client = runtime.bridge_client();
+    let item = target::resolve_item(
+        runtime,
+        &client,
+        Some(item_key),
+        session,
+        target::Prefer::Bridge,
+    )?;
     let library_id = library_id_u32(item.library_id)?;
-    let client = bridge::JSBridgeClient::with_default_port();
     let outcome = client.item_attach(library_id, &item.key, std::path::Path::new(pdf_path))?;
     if let Some((code, payload)) = write_outcome_failure(&outcome) {
         output::emit(json_mode, &payload);
@@ -1930,8 +1972,11 @@ fn item_add_to_collection_command(
     item_ref: &str,
     collection_ref: &str,
 ) -> anyhow::Result<i32> {
-    let item = catalog::get_item(runtime, Some(item_ref), session)?;
-    let collection = catalog::get_collection(runtime, Some(collection_ref), session)?;
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let item = target::resolve_item(runtime, &client, Some(item_ref), session, prefer)?;
+    let collection =
+        target::resolve_collection(runtime, &client, Some(collection_ref), session, prefer)?;
     if collection.library_id != item.library_id {
         return Err(
             error::DomainError::new("Item and collection must belong to the same library").into(),
@@ -1939,7 +1984,7 @@ fn item_add_to_collection_command(
     }
 
     if runtime.local_api_writes_available {
-        let scope = catalog::local_api_scope(runtime, item.library_id)?;
+        let scope = item.local_api_scope()?;
         let path = format!("{scope}/items/{}", item.key);
         let current = match write_router::verify_present(runtime, &path) {
             write_router::PresenceCheck::Present(summary) => summary,
@@ -1970,7 +2015,6 @@ fn item_add_to_collection_command(
     }
 
     let library_id = library_id_u32(item.library_id)?;
-    let client = bridge::JSBridgeClient::with_default_port();
     let pre_raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &item.key)?;
     let pre_view = parse_live_object(&pre_raw, "item")?;
     let current_collections = extract_string_array(&pre_view.data, "collections");
@@ -1999,8 +2043,11 @@ fn item_move_to_collection_command(
     from: &[String],
     all_other_collections: bool,
 ) -> anyhow::Result<i32> {
-    let item = catalog::get_item(runtime, Some(item_ref), session)?;
-    let collection = catalog::get_collection(runtime, Some(collection_ref), session)?;
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let item = target::resolve_item(runtime, &client, Some(item_ref), session, prefer)?;
+    let collection =
+        target::resolve_collection(runtime, &client, Some(collection_ref), session, prefer)?;
     if collection.library_id != item.library_id {
         return Err(
             error::DomainError::new("Item and collection must belong to the same library").into(),
@@ -2008,14 +2055,14 @@ fn item_move_to_collection_command(
     }
 
     if runtime.local_api_writes_available {
-        let scope = catalog::local_api_scope(runtime, item.library_id)?;
+        let scope = item.local_api_scope()?;
         let path = format!("{scope}/items/{}", item.key);
         let current = match write_router::verify_present(runtime, &path) {
             write_router::PresenceCheck::Present(summary) => summary,
             other => return presence_check_error(&path, other),
         };
         let current_collections = extract_string_array(&current.data, "collections");
-        let from_keys = resolve_from_keys(runtime, session, from)?;
+        let from_keys = resolve_from_keys(runtime, &client, session, from, prefer)?;
         let new_collections = compute_move_to_collection_set(
             &current_collections,
             &collection.key,
@@ -2054,11 +2101,12 @@ fn item_move_to_collection_command(
         .into());
     }
     let from_key = match from.first() {
-        Some(source_ref) => Some(catalog::get_collection(runtime, Some(source_ref), session)?.key),
+        Some(source_ref) => Some(
+            target::resolve_collection(runtime, &client, Some(source_ref), session, prefer)?.key,
+        ),
         None => None,
     };
     let library_id = library_id_u32(item.library_id)?;
-    let client = bridge::JSBridgeClient::with_default_port();
     let pre_raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &item.key)?;
     let pre_view = parse_live_object(&pre_raw, "item")?;
     let current_collections = extract_string_array(&pre_view.data, "collections");
@@ -2088,11 +2136,15 @@ fn item_move_to_collection_command(
 /// necessarily a key.
 fn resolve_from_keys(
     runtime: &runtime::RuntimeContext,
+    client: &bridge::JSBridgeClient,
     session: &session::SessionState,
     from: &[String],
+    prefer: target::Prefer,
 ) -> anyhow::Result<Vec<String>> {
     from.iter()
-        .map(|source_ref| Ok(catalog::get_collection(runtime, Some(source_ref), session)?.key))
+        .map(|source_ref| {
+            Ok(target::resolve_collection(runtime, client, Some(source_ref), session, prefer)?.key)
+        })
         .collect()
 }
 
@@ -2171,10 +2223,14 @@ fn item_merge_command(
         return Ok(exit_code);
     }
 
-    let keep_item = catalog::get_item(runtime, Some(keep_key), session)?;
+    let client = runtime.bridge_client();
+    // `item merge --confirm` is Bridge-committed: `Zotero.Items.merge()` has no Local API
+    // equivalent, so the targets are resolved through the very Bridge that performs the merge.
+    let prefer = target::Prefer::Bridge;
+    let keep_item = target::resolve_item(runtime, &client, Some(keep_key), session, prefer)?;
     let mut resolved_merge_keys = Vec::with_capacity(merge_keys.len());
     for key in &merge_keys {
-        let merged_item = catalog::get_item(runtime, Some(key), session)?;
+        let merged_item = target::resolve_item(runtime, &client, Some(key), session, prefer)?;
         if merged_item.library_id != keep_item.library_id {
             return Err(error::DomainError::new(
                 "All merged items must belong to the same library as the target item",
@@ -2185,7 +2241,6 @@ fn item_merge_command(
     }
 
     let library_id = library_id_u32(keep_item.library_id)?;
-    let client = bridge::JSBridgeClient::with_default_port();
     let outcome = client.item_merge(library_id, &keep_item.key, &resolved_merge_keys)?;
     if let Some((code, payload)) = write_outcome_failure(&outcome) {
         output::emit(json_mode, &payload);
@@ -2234,6 +2289,43 @@ fn item_merge_command(
     Ok(0)
 }
 
+/// `collection create`'s duplicate-name lookup, read live through the Local API instead of
+/// SQLite. Matches on the same two facts the SQLite version did -- exact name and same parent --
+/// expressed in the Local API's own terms (`data.name` / `data.parentCollection`, where a
+/// top-level collection reports `false` rather than a key).
+fn find_existing_collection(
+    runtime: &runtime::RuntimeContext,
+    scope: &str,
+    name: &str,
+    parent_key: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    let payload = http::local_api_get_json(
+        runtime.environment.port,
+        &format!("{scope}/collections"),
+        &[("format", "json".to_string())],
+        std::time::Duration::from_secs(10),
+    )?;
+    let Some(entries) = payload.as_array() else {
+        return Ok(None);
+    };
+    for entry in entries {
+        let data = entry.get("data");
+        let entry_name = data.and_then(|d| d.get("name")).and_then(Value::as_str);
+        if entry_name != Some(name) {
+            continue;
+        }
+        let entry_parent = data
+            .and_then(|d| d.get("parentCollection"))
+            .and_then(Value::as_str);
+        if entry_parent == parent_key {
+            if let Some(key) = entry.get("key").and_then(Value::as_str) {
+                return Ok(Some(key.to_string()));
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn collection_create_command(
     runtime: &runtime::RuntimeContext,
     session: &session::SessionState,
@@ -2241,9 +2333,18 @@ fn collection_create_command(
     name: &str,
     parent: Option<&str>,
 ) -> anyhow::Result<i32> {
-    let library_id = catalog::default_library(runtime, session)?;
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let library = target::resolve_default_library(runtime, &client, session, prefer)?;
+    let library_id = library.library_id;
     let parent_collection = match parent {
-        Some(p) => Some(catalog::get_collection(runtime, Some(p), session)?),
+        Some(p) => Some(target::resolve_collection(
+            runtime,
+            &client,
+            Some(p),
+            session,
+            prefer,
+        )?),
         None => None,
     };
     if let Some(parent) = &parent_collection {
@@ -2256,27 +2357,29 @@ fn collection_create_command(
     }
 
     if runtime.local_api_writes_available {
+        let scope = library.local_api_scope()?;
         // §3.3's duplicate-write protection for this non-idempotent POST: if a collection with
         // the same name already exists under the same parent, treat the create as already done
-        // rather than risk a second POST on a caller retry after an ambiguous outcome.
-        let existing = catalog::list_collections(runtime, session)?;
-        let parent_id = parent_collection.as_ref().map(|p| p.collection_id);
-        if let Some(found) = existing
-            .iter()
-            .find(|c| c.collection_name == name && c.parent_collection_id == parent_id)
-        {
+        // rather than risk a second POST on a caller retry after an ambiguous outcome. Read
+        // through the Local API rather than SQLite -- a running Zotero holds the WAL lock, and
+        // a stale snapshot is exactly the wrong input to a duplicate check.
+        if let Some(found) = find_existing_collection(
+            runtime,
+            &scope,
+            name,
+            parent_collection.as_ref().map(|p| p.key.as_str()),
+        )? {
             output::emit(
                 json_mode,
                 &serde_json::json!({
                     "outcome": "applied",
-                    "key": found.key,
+                    "key": found,
                     "already_existed": true,
                 }),
             );
             return Ok(0);
         }
 
-        let scope = catalog::local_api_scope(runtime, library_id)?;
         let path = format!("{scope}/collections");
         let mut body = serde_json::Map::new();
         body.insert("name".to_string(), Value::String(name.to_string()));
@@ -2300,7 +2403,6 @@ fn collection_create_command(
     }
 
     let bridge_library_id = library_id_u32(library_id)?;
-    let client = bridge::JSBridgeClient::with_default_port();
     let outcome = client.collection_create(
         bridge_library_id,
         name,
@@ -2335,9 +2437,18 @@ fn collection_rename_command(
             error::DomainError::new("No changes specified (use --name or --parent)").into(),
         );
     }
-    let collection = catalog::get_collection(runtime, Some(collection_key), session)?;
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let collection =
+        target::resolve_collection(runtime, &client, Some(collection_key), session, prefer)?;
     let parent_collection = match parent {
-        Some(p) => Some(catalog::get_collection(runtime, Some(p), session)?),
+        Some(p) => Some(target::resolve_collection(
+            runtime,
+            &client,
+            Some(p),
+            session,
+            prefer,
+        )?),
         None => None,
     };
     let mut body = serde_json::Map::new();
@@ -2352,7 +2463,7 @@ fn collection_rename_command(
     }
 
     if runtime.local_api_writes_available {
-        let scope = catalog::local_api_scope(runtime, collection.library_id)?;
+        let scope = collection.local_api_scope()?;
         let path = format!("{scope}/collections/{}", collection.key);
         let current = match write_router::verify_present(runtime, &path) {
             write_router::PresenceCheck::Present(summary) => summary,
@@ -2373,7 +2484,6 @@ fn collection_rename_command(
     }
 
     let library_id = library_id_u32(collection.library_id)?;
-    let client = bridge::JSBridgeClient::with_default_port();
     let outcome = client.collection_rename(
         library_id,
         &collection.key,
@@ -2398,12 +2508,15 @@ fn collection_delete_command(
     if !confirm {
         return Err(error::DomainError::new("Refusing to delete without --confirm").into());
     }
-    let collection = catalog::get_collection(runtime, Some(collection_key), session)?;
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let collection =
+        target::resolve_collection(runtime, &client, Some(collection_key), session, prefer)?;
 
     // No Local API primitive exists for cascading item deletion -- always use the JS Bridge
     // when --delete-items is requested, regardless of local_api_writes_available.
     if runtime.local_api_writes_available && !delete_items {
-        let scope = catalog::local_api_scope(runtime, collection.library_id)?;
+        let scope = collection.local_api_scope()?;
         let path = format!("{scope}/collections/{}", collection.key);
         let current = match write_router::verify_present(runtime, &path) {
             write_router::PresenceCheck::Present(summary) => summary,
@@ -2422,7 +2535,6 @@ fn collection_delete_command(
     }
 
     let library_id = library_id_u32(collection.library_id)?;
-    let client = bridge::JSBridgeClient::with_default_port();
     let outcome = client.collection_delete(library_id, &collection.key, delete_items)?;
     if let Some((code, payload)) = write_outcome_failure(&outcome) {
         output::emit(json_mode, &payload);
@@ -2464,8 +2576,11 @@ fn collection_remove_item_command(
     collection_key: &str,
     item_key: &str,
 ) -> anyhow::Result<i32> {
-    let collection = catalog::get_collection(runtime, Some(collection_key), session)?;
-    let item = catalog::get_item(runtime, Some(item_key), session)?;
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let collection =
+        target::resolve_collection(runtime, &client, Some(collection_key), session, prefer)?;
+    let item = target::resolve_item(runtime, &client, Some(item_key), session, prefer)?;
     if collection.library_id != item.library_id {
         return Err(
             error::DomainError::new("Item and collection must belong to the same library").into(),
@@ -2473,7 +2588,7 @@ fn collection_remove_item_command(
     }
 
     if runtime.local_api_writes_available {
-        let scope = catalog::local_api_scope(runtime, item.library_id)?;
+        let scope = item.local_api_scope()?;
         let path = format!("{scope}/items/{}", item.key);
         let current = match write_router::verify_present(runtime, &path) {
             write_router::PresenceCheck::Present(summary) => summary,
@@ -2504,7 +2619,6 @@ fn collection_remove_item_command(
     }
 
     let library_id = library_id_u32(item.library_id)?;
-    let client = bridge::JSBridgeClient::with_default_port();
     let pre_raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &item.key)?;
     let pre_view = parse_live_object(&pre_raw, "item")?;
     let current_collections = extract_string_array(&pre_view.data, "collections");
@@ -2526,15 +2640,18 @@ fn collection_remove_item_command(
     render_bridge_item_after_write(&client, json_mode, library_id, &item.key, &body)
 }
 
-fn js_command(json_mode: bool, code: &str, wait: u64) -> anyhow::Result<i32> {
-    let client = bridge::JSBridgeClient::with_default_port();
+fn js_command(
+    client: &bridge::JSBridgeClient,
+    json_mode: bool,
+    code: &str,
+    wait: u64,
+) -> anyhow::Result<i32> {
     let result = client.execute_raw_js(code, wait)?;
     output::emit(json_mode, &result);
     Ok(0)
 }
 
-fn sync_command(json_mode: bool) -> anyhow::Result<i32> {
-    let client = bridge::JSBridgeClient::with_default_port();
+fn sync_command(client: &bridge::JSBridgeClient, json_mode: bool) -> anyhow::Result<i32> {
     let message = client.trigger_sync()?;
     output::emit(json_mode, &Value::String(message));
     Ok(0)

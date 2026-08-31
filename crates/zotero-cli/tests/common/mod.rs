@@ -123,12 +123,38 @@ impl ScriptedServer {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let requests_clone = Arc::clone(&requests);
         let expected = responses.len();
+        // A bounded accept, not a blocking one. The loop used to block forever when the process
+        // under test issued *fewer* requests than were scripted, so `finish()` hung the whole
+        // test binary instead of failing the request-count assertion -- which turns any change
+        // to a command's call sequence into an un-debuggable hang rather than a readable diff.
+        listener
+            .set_nonblocking(true)
+            .expect("scripted server listener must support non-blocking accept");
         let handle = thread::spawn(move || {
             let mut queue: std::collections::VecDeque<ScriptedResponse> = responses.into();
+            // Short on purpose: this deadline is only ever reached when the process under test sent
+            // fewer requests than were scripted, which is a failing assertion either way. Every
+            // request here is loopback, so seconds are generous.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             for _ in 0..expected {
-                let Ok((mut stream, _)) = listener.accept() else {
+                let accepted = loop {
+                    match listener.accept() {
+                        Ok(accepted) => break Some(accepted),
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            if std::time::Instant::now() >= deadline {
+                                break None;
+                            }
+                            thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(_) => break None,
+                    }
+                };
+                let Some((mut stream, _)) = accepted else {
                     break;
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("accepted connection must return to blocking mode");
                 let (head, body) = read_request(&mut stream);
                 let first_line = head.lines().next().unwrap_or("").to_string();
                 let mut parts = first_line.split_whitespace();
@@ -304,12 +330,27 @@ pub fn bin_path() -> PathBuf {
 /// standing in for Local API / Connector / JS Bridge), with `--json` always set. `extra_env`
 /// lets a test inject `ZOTERO_LOCAL_API_KEY` / `CLI_ANYTHING_ZOTERO_STATE_DIR` without ever
 /// mutating this test process's own environment (so parallel tests in this binary never race).
+///
+/// Two isolation guarantees every caller depends on:
+///
+/// - **Session state is per-test.** `CLI_ANYTHING_ZOTERO_STATE_DIR` points at a fresh directory
+///   under `data_dir`, never the developer's real `~/.config/cli-anything-zotero`. Previously
+///   this variable was merely *removed*, which meant every test subprocess read the real
+///   session file: on a machine that had actually used the CLI, a leftover `current_library`
+///   silently scoped fixture queries to a library the fixture does not contain, and 15 tests
+///   failed locally while CI (which has no session file) stayed green. A suite that only passes
+///   on a machine that has never run the tool cannot catch a regression on one that has.
+/// - **No test can launch Zotero.** `ZOTERO_CLI_NO_AUTOLAUNCH` is always set, so the lifecycle
+///   helper's spawn path is unreachable from any automated run. Launch behavior is covered
+///   through the injectable `ProcessSpawner` fake instead, never a real process.
 pub fn run_cli(
     data_dir: &Path,
     port: u16,
     extra_env: &[(&str, &str)],
     args: &[&str],
 ) -> (i32, serde_json::Value) {
+    let state_dir = data_dir.join("cli-state");
+    std::fs::create_dir_all(&state_dir).unwrap();
     let mut command = Command::new(bin_path());
     command
         .arg("--json")
@@ -317,8 +358,9 @@ pub fn run_cli(
         .arg(data_dir)
         .args(args)
         .env("ZOTERO_HTTP_PORT", port.to_string())
-        .env_remove("ZOTERO_LOCAL_API_KEY")
-        .env_remove("CLI_ANYTHING_ZOTERO_STATE_DIR");
+        .env("CLI_ANYTHING_ZOTERO_STATE_DIR", &state_dir)
+        .env("ZOTERO_CLI_NO_AUTOLAUNCH", "1")
+        .env_remove("ZOTERO_LOCAL_API_KEY");
     for (key, value) in extra_env {
         command.env(key, value);
     }

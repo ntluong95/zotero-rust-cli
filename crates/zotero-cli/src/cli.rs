@@ -108,6 +108,12 @@ pub enum Commands {
     #[command(subcommand)]
     Audit(AuditCommands),
     /// Execute raw JavaScript inside Zotero via the CLI Bridge (privileged; JS Bridge only).
+    ///
+    /// Expert/debugging escape hatch, not a write path. Raw JS bypasses every typed command's
+    /// safety and write routing -- target validation, backend selection, post-write
+    /// verification, and the audit trail. If a supported high-level command fails while
+    /// `app doctor` reports the environment ready, that contradiction is a bug worth reporting;
+    /// do not work around it by performing the mutation here.
     Js {
         code: String,
         /// Seconds to wait for the script to complete.

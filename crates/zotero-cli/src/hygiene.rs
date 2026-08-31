@@ -284,12 +284,13 @@ pub fn merge_preview(
     let library_id = session::session_library_id(session, 1)?;
     let plan = serde_json::json!({"keep": keep_key, "merge": merge_keys, "dry_run": true});
 
-    let bridge_error = match render_and_execute_bridge_preview(keep_key, merge_keys, library_id) {
-        BridgePreviewOutcome::Success(data) => {
-            return Ok(build_bridge_preview_payload(keep_key, data, &plan));
-        }
-        BridgePreviewOutcome::Failed(err) => err,
-    };
+    let bridge_error =
+        match render_and_execute_bridge_preview(runtime, keep_key, merge_keys, library_id) {
+            BridgePreviewOutcome::Success(data) => {
+                return Ok(build_bridge_preview_payload(keep_key, data, &plan));
+            }
+            BridgePreviewOutcome::Failed(err) => err,
+        };
 
     merge_preview_sqlite(
         runtime,
@@ -314,6 +315,7 @@ enum BridgePreviewOutcome {
 /// never throws (`BridgeResponse` mirrors Python's `transport` dict), so there is no `except`
 /// to port -- transport-level failure is just `resp.ok == false`, same as Python's `else` arm.
 fn render_and_execute_bridge_preview(
+    runtime: &RuntimeContext,
     keep_key: &str,
     merge_keys: &[String],
     library_id: i64,
@@ -322,7 +324,7 @@ fn render_and_execute_bridge_preview(
     else {
         return BridgePreviewOutcome::Failed(Some("preview failed".to_string()));
     };
-    let client = bridge::JSBridgeClient::with_default_port();
+    let client = runtime.bridge_client();
     let resp = client.execute_js(&code, 20);
     if !resp.ok {
         return BridgePreviewOutcome::Failed(Some(

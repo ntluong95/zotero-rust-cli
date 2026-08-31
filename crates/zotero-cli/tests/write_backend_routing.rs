@@ -68,6 +68,64 @@ fn bridge_ownership_foreign() -> ScriptedResponse {
     )
 }
 
+/// The live target resolution every write command performs before it writes.
+///
+/// Write commands no longer resolve their target from SQLite: a running Zotero holds an
+/// exclusive lock on its WAL-mode database, so a SQLite lookup made the command fail during
+/// *target lookup* in exactly the situation it exists for. Resolution now goes through the same
+/// live backend the write itself will use, which is why each of these tests carries one
+/// resolution response per resolved object.
+///
+/// Local-API-routed commands resolve with `GET {scope}/items/{key}` -- the same response shape
+/// as `item_get_response`.
+fn local_api_resolve_item() -> ScriptedResponse {
+    item_get_response(5, vec![])
+}
+
+fn local_api_resolve_collection(key: &str, name: &str) -> ScriptedResponse {
+    ScriptedResponse::json(
+        200,
+        json!({
+            "key": key,
+            "version": 1,
+            "library": {"id": 0},
+            "data": {"key": key, "name": name},
+        }),
+    )
+}
+
+/// Bridge-routed commands resolve through an eval whose template returns a JSON *string*, so the
+/// transport body is a quoted string the resolver parses once more.
+fn bridge_resolve_item(key: &str, item_id: i64) -> ScriptedResponse {
+    ScriptedResponse::json(
+        200,
+        json!(json!({
+            "found": true,
+            "key": key,
+            "libraryID": 1,
+            "libraryType": "user",
+            "itemType": "document",
+            "itemID": item_id,
+        })
+        .to_string()),
+    )
+}
+
+fn bridge_resolve_collection(key: &str, name: &str, collection_id: i64) -> ScriptedResponse {
+    ScriptedResponse::json(
+        200,
+        json!(json!({
+            "found": true,
+            "key": key,
+            "libraryID": 1,
+            "libraryType": "user",
+            "name": name,
+            "collectionID": collection_id,
+        })
+        .to_string()),
+    )
+}
+
 // ── A. local_api_writes_available == true + valid authorization -> Local API selected ──
 
 #[test]
@@ -77,6 +135,7 @@ fn local_api_write_with_env_credential_is_applied_and_matches_the_stable_output_
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_item(),
         item_get_response(5, vec![]),
         ScriptedResponse::Http {
             status: 204,
@@ -107,9 +166,13 @@ fn local_api_write_with_env_credential_is_applied_and_matches_the_stable_output_
     );
 
     let requests = server.finish();
-    assert_eq!(requests.len(), 5, "ping, probe, GET, PATCH, GET(verify)");
-    assert_eq!(requests[3].method, "PATCH");
-    assert_eq!(requests[3].path, "/api/users/0/items/ITEM0001");
+    assert_eq!(
+        requests.len(),
+        6,
+        "ping, probe, live-resolve GET, GET, PATCH, GET(verify)"
+    );
+    assert_eq!(requests[4].method, "PATCH");
+    assert_eq!(requests[4].path, "/api/users/0/items/ITEM0001");
 
     assert_eq!(code, 0, "payload: {payload}");
     // N: representative Phase 6 command JSON output remains stable -- exact top-level key set,
@@ -138,6 +201,7 @@ fn missing_credential_returns_authorization_required_without_ever_attempting_the
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_item(),
         item_get_response(5, vec![]),
     ]);
 
@@ -151,8 +215,8 @@ fn missing_credential_returns_authorization_required_without_ever_attempting_the
     let requests = server.finish();
     assert_eq!(
         requests.len(),
-        3,
-        "ping, probe, and the pre-write GET only -- no PATCH attempt"
+        4,
+        "ping, probe, live-resolve GET, and the pre-write GET only -- no PATCH attempt"
     );
 
     assert_eq!(code, 3, "payload: {payload}");
@@ -173,6 +237,7 @@ fn revoked_stored_credential_is_removed_and_never_triggers_an_authorize_call() {
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_item(),
         item_get_response(5, vec![]),
         ScriptedResponse::json(401, json!("Invalid or expired API key")),
     ]);
@@ -187,8 +252,8 @@ fn revoked_stored_credential_is_removed_and_never_triggers_an_authorize_call() {
     let requests = server.finish();
     assert_eq!(
         requests.len(),
-        4,
-        "ping, probe, GET, and exactly one PATCH -- no /api/local/authorize call"
+        5,
+        "ping, probe, live-resolve GET, GET, and exactly one PATCH -- never /api/local/authorize"
     );
     assert!(
         requests.iter().all(|r| r.path != "/api/local/authorize"),
@@ -215,6 +280,7 @@ fn ambiguous_transport_failure_on_patch_maps_to_transport_error_with_exactly_one
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_item(),
         item_get_response(5, vec![]),
         ScriptedResponse::Drop,
     ]);
@@ -229,8 +295,8 @@ fn ambiguous_transport_failure_on_patch_maps_to_transport_error_with_exactly_one
     let requests = server.finish();
     assert_eq!(
         requests.len(),
-        4,
-        "ping, probe, GET, and exactly one (dropped) PATCH attempt -- no retry"
+        5,
+        "ping, probe, live-resolve GET, GET, and exactly one (dropped) PATCH attempt -- no retry"
     );
 
     assert_eq!(code, 1, "payload: {payload}");
@@ -248,6 +314,7 @@ fn local_api_unavailable_falls_back_to_our_owned_bridge() {
         connector_ping_ok(),
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
+        bridge_resolve_item("ITEM0001", 1),
         ScriptedResponse::bridge_string(200, "OK: updated Test Item One"),
         // Post-write live Zotero-runtime readback (never SQLite) -- the positive ownership
         // probe is cached for the rest of this process, so this costs exactly one more
@@ -273,11 +340,12 @@ fn local_api_unavailable_falls_back_to_our_owned_bridge() {
     let requests = server.finish();
     assert_eq!(
         requests.len(),
-        5,
-        "ping, probe, bridge-ownership-ping, write-eval, live-readback-eval"
+        6,
+        "ping, probe, bridge-ownership-ping, live-resolve-eval, write-eval, live-readback-eval"
     );
-    assert_eq!(requests[3].path, "/cli-bridge/eval");
-    assert_eq!(requests[4].path, "/cli-bridge/eval");
+    for request in &requests[3..] {
+        assert_eq!(request.path, "/cli-bridge/eval");
+    }
 
     assert_eq!(code, 0, "payload: {payload}");
     assert_eq!(
@@ -379,6 +447,8 @@ fn add_to_collection_preserves_unrelated_existing_memberships() {
         connector_ping_ok(),
         local_api_probe_available(),
         item_get_response(5, vec!["EXISTC1"]),
+        local_api_resolve_collection("COLLE001", "Test Collection"),
+        item_get_response(5, vec!["EXISTC1"]),
         ScriptedResponse::Http {
             status: 204,
             headers: vec![("Last-Modified-Version".to_string(), "6".to_string())],
@@ -395,8 +465,12 @@ fn add_to_collection_preserves_unrelated_existing_memberships() {
     );
 
     let requests = server.finish();
-    assert_eq!(requests.len(), 5);
-    let patch_body = requests[3].body_json();
+    assert_eq!(
+        requests.len(),
+        7,
+        "ping, probe, live-resolve item, live-resolve collection, GET, PATCH, GET(verify)"
+    );
+    let patch_body = requests[5].body_json();
     assert_eq!(
         patch_body["collections"],
         json!(["EXISTC1", "COLLE001"]),
@@ -419,6 +493,9 @@ fn malformed_create_response_never_becomes_applied() {
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        // The duplicate-name guard reads the collection list live through the Local API
+        // rather than from SQLite, which a running Zotero holds locked.
+        ScriptedResponse::json(200, json!([])),
         ScriptedResponse::Http {
             status: 201,
             headers: Vec::new(),
@@ -449,6 +526,7 @@ fn collection_create_preserves_the_servers_affected_key() {
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        ScriptedResponse::json(200, json!([])),
         ScriptedResponse::json(
             201,
             json!({"successful": {"0": {"key": "NEWCOL01", "version": 1}}}),
@@ -505,6 +583,7 @@ fn item_update_output_schema_is_identical_across_local_api_and_bridge_backends()
     let local_server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_item(),
         item_get_response(5, vec![]),
         ScriptedResponse::Http {
             status: 204,
@@ -534,6 +613,7 @@ fn item_update_output_schema_is_identical_across_local_api_and_bridge_backends()
         connector_ping_ok(),
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
+        bridge_resolve_item("ITEM0001", 1),
         ScriptedResponse::bridge_string(200, "OK: updated Test Item One"),
         ScriptedResponse::json(
             200,
@@ -575,6 +655,7 @@ fn collection_rename_output_schema_is_identical_across_local_api_and_bridge_back
     let local_server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_collection("COLLE001", "Test Collection"),
         ScriptedResponse::json(
             200,
             json!({
@@ -616,6 +697,7 @@ fn collection_rename_output_schema_is_identical_across_local_api_and_bridge_back
         connector_ping_ok(),
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
+        bridge_resolve_collection("COLLE001", "Test Collection", 1),
         ScriptedResponse::bridge_string(200, "OK: updated collection Renamed Collection"),
         ScriptedResponse::json(
             200,
@@ -662,6 +744,7 @@ fn item_tag_add_preserves_unrelated_existing_tags() {
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_item(),
         ScriptedResponse::json(
             200,
             json!({
@@ -693,7 +776,7 @@ fn item_tag_add_preserves_unrelated_existing_tags() {
     );
 
     let requests = server.finish();
-    let patch_body = requests[3].body_json();
+    let patch_body = requests[4].body_json();
     assert_eq!(
         patch_body["tags"],
         json!([{"tag": "keep-me"}, {"tag": "new-tag"}]),
@@ -711,6 +794,7 @@ fn item_tag_remove_removes_only_the_named_tag() {
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_item(),
         ScriptedResponse::json(
             200,
             json!({
@@ -742,7 +826,7 @@ fn item_tag_remove_removes_only_the_named_tag() {
     );
 
     let requests = server.finish();
-    let patch_body = requests[3].body_json();
+    let patch_body = requests[4].body_json();
     assert_eq!(
         patch_body["tags"],
         json!([{"tag": "keep-me"}]),
@@ -759,7 +843,10 @@ fn item_move_to_collection_from_removes_only_the_named_source() {
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_item(),
+        local_api_resolve_collection("COLLE001", "Test Collection"),
         item_get_response(5, vec!["EXISTC1", "EXISTC2"]),
+        local_api_resolve_collection("EXISTC1", "Existing Collection One"),
         ScriptedResponse::Http {
             status: 204,
             headers: vec![("Last-Modified-Version".to_string(), "6".to_string())],
@@ -783,7 +870,7 @@ fn item_move_to_collection_from_removes_only_the_named_source() {
     );
 
     let requests = server.finish();
-    let patch_body = requests[3].body_json();
+    let patch_body = requests[6].body_json();
     assert_eq!(
         patch_body["collections"],
         json!(["EXISTC2", "COLLE001"]),
@@ -801,6 +888,8 @@ fn item_move_to_collection_all_other_collections_leaves_only_the_target() {
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_item(),
+        local_api_resolve_collection("COLLE001", "Test Collection"),
         item_get_response(5, vec!["EXISTC1", "EXISTC2"]),
         ScriptedResponse::Http {
             status: 204,
@@ -824,7 +913,7 @@ fn item_move_to_collection_all_other_collections_leaves_only_the_target() {
     );
 
     let requests = server.finish();
-    let patch_body = requests[3].body_json();
+    let patch_body = requests[5].body_json();
     assert_eq!(
         patch_body["collections"],
         json!(["COLLE001"]),
@@ -841,6 +930,8 @@ fn collection_remove_item_preserves_unrelated_collection_memberships() {
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
+        local_api_resolve_collection("COLLE001", "Test Collection"),
+        local_api_resolve_item(),
         item_get_response(5, vec!["EXISTC1", "COLLE001"]),
         ScriptedResponse::Http {
             status: 204,
@@ -858,7 +949,7 @@ fn collection_remove_item_preserves_unrelated_collection_memberships() {
     );
 
     let requests = server.finish();
-    let patch_body = requests[3].body_json();
+    let patch_body = requests[5].body_json();
     assert_eq!(
         patch_body["collections"],
         json!(["EXISTC1"]),
@@ -878,6 +969,8 @@ fn item_merge_succeeds_when_survivor_resolves_live_and_merged_away_key_does_not(
         connector_ping_ok(),
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
+        bridge_resolve_item("ITEM0001", 1),
+        bridge_resolve_item("ITEM0002", 2),
         ScriptedResponse::bridge_string(200, "OK: merged 1 items into Test Item One"),
         ScriptedResponse::json(
             200,
@@ -896,8 +989,9 @@ fn item_merge_succeeds_when_survivor_resolves_live_and_merged_away_key_does_not(
     let requests = server.finish();
     assert_eq!(
         requests.len(),
-        6,
-        "ping, probe, ownership-ping, merge-eval, survivor-live-read, merged-away-live-read"
+        8,
+        "ping, probe, ownership-ping, two live target resolutions, merge-eval, \
+         survivor-live-read, merged-away-live-read"
     );
 
     assert_eq!(code, 0, "payload: {payload}");
@@ -913,6 +1007,8 @@ fn item_merge_reports_conflict_when_a_merged_away_key_still_resolves_live() {
         connector_ping_ok(),
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
+        bridge_resolve_item("ITEM0001", 1),
+        bridge_resolve_item("ITEM0002", 2),
         ScriptedResponse::bridge_string(200, "OK: merged 1 items into Test Item One"),
         ScriptedResponse::json(
             200,

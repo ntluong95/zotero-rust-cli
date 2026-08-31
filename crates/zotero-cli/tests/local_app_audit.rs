@@ -45,8 +45,12 @@ fn run_cli_human(
         .arg(data_dir)
         .args(args)
         .env("ZOTERO_HTTP_PORT", port.to_string())
-        .env_remove("ZOTERO_LOCAL_API_KEY")
-        .env_remove("CLI_ANYTHING_ZOTERO_STATE_DIR");
+        // Same per-test isolation `common::run_cli` documents: never fall back to the
+        // developer's real `~/.config/cli-anything-zotero` session, and never let an automated
+        // run reach the lifecycle helper's Zotero-launch path.
+        .env("CLI_ANYTHING_ZOTERO_STATE_DIR", data_dir.join("cli-state"))
+        .env("ZOTERO_CLI_NO_AUTOLAUNCH", "1")
+        .env_remove("ZOTERO_LOCAL_API_KEY");
     for (key, value) in extra_env {
         command.env(key, value);
     }

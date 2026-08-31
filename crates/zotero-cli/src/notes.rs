@@ -20,6 +20,7 @@ use crate::db::{self, Item};
 use crate::error::DomainError;
 use crate::runtime::RuntimeContext;
 use crate::session::SessionState;
+use crate::target;
 
 /// Mirrors `catalog.rs`'s private `session_library_ref` helper. Duplicated rather than widening
 /// `catalog.rs`'s public surface for a single call site: this module isn't registered in
@@ -266,10 +267,15 @@ pub struct NoteAddResult {
 
 /// `add_note()` (`core/notes.py:119-172`).
 ///
-/// Targeting: `item_ref` is resolved through `catalog::get_item` (the same read path every other
-/// write command uses), so `session.current_library` scoping applies; rejects a `note`/
-/// `attachment`/`annotation` parent with Python's exact message, and no further ("must be
+/// Targeting: `item_ref` is resolved through `target::resolve_item` (the same live-first path
+/// every other write command uses), so `session.current_library` scoping applies; rejects a
+/// `note`/`attachment`/`annotation` parent with Python's exact message, and no further ("must be
 /// top-level") restriction beyond that.
+///
+/// The parent is resolved through the *same live Zotero runtime* this note is about to be
+/// written into, not through SQLite. A running Zotero holds an exclusive lock on its WAL-mode
+/// database, so the previous `catalog::get_item` call made this command fail during target
+/// lookup in exactly the situation it is designed for -- Zotero up, Bridge healthy.
 ///
 /// Transport: Bridge-only, exactly one `saveTx()` mutation attempt (see
 /// `JSBridgeClient::note_add`'s own doc comment) -- no Connector fallback, no Local API
@@ -286,9 +292,15 @@ pub fn add_note(
 ) -> anyhow::Result<NoteAddResult> {
     let fmt = fmt.unwrap_or("text");
 
-    let parent_item = catalog::get_item(runtime, Some(item_ref), session)?;
+    let parent_item = target::resolve_item(
+        runtime,
+        bridge,
+        Some(item_ref),
+        session,
+        target::Prefer::Bridge,
+    )?;
     if matches!(
-        parent_item.type_name.as_str(),
+        parent_item.item_type.as_str(),
         "note" | "attachment" | "annotation"
     ) {
         return Err(DomainError::new(

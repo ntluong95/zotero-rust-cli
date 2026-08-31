@@ -47,8 +47,12 @@ fn run_cli_human(
         .arg(data_dir)
         .args(args)
         .env("ZOTERO_HTTP_PORT", port.to_string())
-        .env_remove("ZOTERO_LOCAL_API_KEY")
-        .env_remove("CLI_ANYTHING_ZOTERO_STATE_DIR");
+        // Same per-test isolation `common::run_cli` documents: never fall back to the
+        // developer's real `~/.config/cli-anything-zotero` session, and never let an automated
+        // run reach the lifecycle helper's Zotero-launch path.
+        .env("CLI_ANYTHING_ZOTERO_STATE_DIR", data_dir.join("cli-state"))
+        .env("ZOTERO_CLI_NO_AUTOLAUNCH", "1")
+        .env_remove("ZOTERO_LOCAL_API_KEY");
     for (key, value) in extra_env {
         command.env(key, value);
     }
@@ -516,6 +520,21 @@ fn note_add_wires_text_and_format_through() {
         connector_ping_ok(),
         local_api_probe_unavailable(),
         bridge_ownership_ok(),
+        // The parent is resolved through the live Zotero runtime, not SQLite -- the whole point
+        // of the fix: a running Zotero holds an exclusive lock on its WAL-mode database, so a
+        // SQLite lookup here made the command fail in exactly the situation it exists for.
+        ScriptedResponse::json(
+            200,
+            json!(json!({
+                "found": true,
+                "key": "ITEM0001",
+                "libraryID": 1,
+                "libraryType": "user",
+                "itemType": "document",
+                "itemID": 1,
+            })
+            .to_string()),
+        ),
         ScriptedResponse::json(
             200,
             json!({"key": "MOCKNOTE", "itemID": 99999, "title": "Test Item One"}),
@@ -536,7 +555,7 @@ fn note_add_wires_text_and_format_through() {
     assert_eq!(value["parentItemKey"], "ITEM0001");
     assert_eq!(value["format"], "text");
     assert_eq!(value["notePreview"], "Fixture note");
-    let eval_body = String::from_utf8_lossy(&requests[3].body);
+    let eval_body = String::from_utf8_lossy(&requests[4].body);
     assert!(eval_body.contains("Fixture note"));
 }
 
