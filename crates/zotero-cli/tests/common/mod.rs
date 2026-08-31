@@ -240,6 +240,45 @@ impl Drop for TestDir {
     }
 }
 
+fn write_fake_profile(profile_dir: PathBuf, plugin_version: Option<&str>) -> PathBuf {
+    let extensions_dir = profile_dir.join("extensions");
+    std::fs::create_dir_all(&extensions_dir).unwrap();
+    std::fs::write(profile_dir.join("prefs.js"), "").unwrap();
+
+    if let Some(ver) = plugin_version {
+        let xpi_path = extensions_dir.join(zotero_cli::plugin::XPI_FILENAME);
+        let file = std::fs::File::create(&xpi_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("manifest.json", options).unwrap();
+        let manifest = serde_json::json!({
+            "manifest_version": 2,
+            "name": "CLI Bridge for Zotero (Rust)",
+            "version": ver,
+            "applications": {
+                "zotero": {
+                    "id": "cli-bridge@cli-anything-rust.dev"
+                }
+            }
+        });
+        zip.write_all(manifest.to_string().as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+
+    profile_dir
+}
+
+/// Creates an isolated Zotero profile with no installed Bridge plugin.
+pub fn create_empty_fake_profile(dir: &Path) -> PathBuf {
+    write_fake_profile(dir.join("empty_fake_profile"), None)
+}
+
+/// Creates an isolated Zotero profile, optionally with an owned Bridge XPI fixture installed.
+pub fn create_fake_profile(dir: &Path, plugin_version: Option<&str>) -> PathBuf {
+    write_fake_profile(dir.join("fake_profile"), plugin_version)
+}
+
 /// Builds a minimal but schema-complete `zotero.sqlite` fixture (same table set already proven
 /// sufficient for item/collection resolution by `tests/docx_inspect.rs`'s
 /// `test_validate_placeholders_with_mock_db`): one user library, two items, one top-level
@@ -340,6 +379,10 @@ pub fn bin_path() -> PathBuf {
 ///   silently scoped fixture queries to a library the fixture does not contain, and 15 tests
 ///   failed locally while CI (which has no session file) stayed green. A suite that only passes
 ///   on a machine that has never run the tool cannot catch a regression on one that has.
+/// - **Zotero profile state is per-test.** `ZOTERO_PROFILE_DIR` points at a fresh empty profile
+///   under `data_dir` by default, never the developer's real Zotero profile. Tests that need an
+///   installed plugin pass an explicit fake profile through `extra_env`, which is applied after
+///   the defaults below.
 /// - **No test can launch Zotero.** `ZOTERO_CLI_NO_AUTOLAUNCH` is always set, so the lifecycle
 ///   helper's spawn path is unreachable from any automated run. Launch behavior is covered
 ///   through the injectable `ProcessSpawner` fake instead, never a real process.
@@ -350,6 +393,7 @@ pub fn run_cli(
     args: &[&str],
 ) -> (i32, serde_json::Value) {
     let state_dir = data_dir.join("cli-state");
+    let profile_dir = create_empty_fake_profile(data_dir);
     std::fs::create_dir_all(&state_dir).unwrap();
     let mut command = Command::new(bin_path());
     command
@@ -359,6 +403,7 @@ pub fn run_cli(
         .args(args)
         .env("ZOTERO_HTTP_PORT", port.to_string())
         .env("CLI_ANYTHING_ZOTERO_STATE_DIR", &state_dir)
+        .env("ZOTERO_PROFILE_DIR", &profile_dir)
         .env("ZOTERO_CLI_NO_AUTOLAUNCH", "1")
         .env_remove("ZOTERO_LOCAL_API_KEY");
     for (key, value) in extra_env {

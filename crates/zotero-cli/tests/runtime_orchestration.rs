@@ -18,7 +18,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{build_fixture_sqlite, run_cli, ScriptedResponse, ScriptedServer, TestDir};
+use common::{
+    build_fixture_sqlite, create_fake_profile, run_cli, ScriptedResponse, ScriptedServer, TestDir,
+};
 use serde_json::json;
 
 use zotero_cli::app_launch::{LaunchCommand, ProcessSpawner};
@@ -486,6 +488,8 @@ fn case_c_doctor_bridge_probe_success_is_followed_by_a_working_js_command() {
     reset_probe_cache();
     let dir = TestDir::new("case-c");
     build_fixture_sqlite(dir.path());
+    let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let profile_env = [("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap())];
 
     let doctor_server = ScriptedServer::start(vec![
         connector_ping_ok(),
@@ -497,7 +501,7 @@ fn case_c_doctor_bridge_probe_success_is_followed_by_a_working_js_command() {
         ),
     ]);
     let doctor_port = doctor_server.port;
-    let (_doctor_code, doctor) = run_cli(dir.path(), doctor_port, &[], &["app", "doctor"]);
+    let (_doctor_code, doctor) = run_cli(dir.path(), doctor_port, &profile_env, &["app", "doctor"]);
     doctor_server.finish();
 
     assert_eq!(doctor["checks"]["bridge"]["ok"], true);
@@ -517,7 +521,7 @@ fn case_c_doctor_bridge_probe_success_is_followed_by_a_working_js_command() {
     let (js_code, js_payload) = run_cli(
         dir.path(),
         js_server.port,
-        &[],
+        &profile_env,
         &["js", "return {two: 1 + 1};"],
     );
     js_server.finish();

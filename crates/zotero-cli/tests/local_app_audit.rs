@@ -5,7 +5,10 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use common::{build_fixture_sqlite, run_cli, ScriptedResponse, ScriptedServer, TestDir};
+use common::{
+    build_fixture_sqlite, create_empty_fake_profile, create_fake_profile, run_cli,
+    ScriptedResponse, ScriptedServer, TestDir,
+};
 use serde_json::json;
 use std::path::Path;
 use std::process::Command;
@@ -39,6 +42,7 @@ fn run_cli_human(
     extra_env: &[(&str, &str)],
     args: &[&str],
 ) -> (i32, String, String) {
+    let profile_dir = create_empty_fake_profile(data_dir);
     let mut command = Command::new(common::bin_path());
     command
         .arg("--data-dir")
@@ -49,6 +53,7 @@ fn run_cli_human(
         // developer's real `~/.config/cli-anything-zotero` session, and never let an automated
         // run reach the lifecycle helper's Zotero-launch path.
         .env("CLI_ANYTHING_ZOTERO_STATE_DIR", data_dir.join("cli-state"))
+        .env("ZOTERO_PROFILE_DIR", &profile_dir)
         .env("ZOTERO_CLI_NO_AUTOLAUNCH", "1")
         .env_remove("ZOTERO_LOCAL_API_KEY");
     for (key, value) in extra_env {
@@ -61,36 +66,6 @@ fn run_cli_human(
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
     )
-}
-
-fn create_fake_profile(dir: &Path, plugin_version: Option<&str>) -> std::path::PathBuf {
-    let profile_dir = dir.join("fake_profile");
-    let extensions_dir = profile_dir.join("extensions");
-    std::fs::create_dir_all(&extensions_dir).unwrap();
-    std::fs::write(profile_dir.join("prefs.js"), "").unwrap();
-
-    if let Some(ver) = plugin_version {
-        let xpi_path = extensions_dir.join("cli-bridge@cli-anything-rust.dev.xpi");
-        let file = std::fs::File::create(&xpi_path).unwrap();
-        let mut zip = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-        zip.start_file("manifest.json", options).unwrap();
-        let manifest = json!({
-            "manifest_version": 2,
-            "name": "CLI Bridge for Zotero (Rust)",
-            "version": ver,
-            "applications": {
-                "zotero": {
-                    "id": "cli-bridge@cli-anything-rust.dev"
-                }
-            }
-        });
-        use std::io::Write;
-        zip.write_all(manifest.to_string().as_bytes()).unwrap();
-        zip.finish().unwrap();
-    }
-    profile_dir
 }
 
 fn create_fake_zotero_install(dir: &Path) -> std::path::PathBuf {
