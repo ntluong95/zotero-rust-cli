@@ -751,12 +751,16 @@ fn test_note_add_no_retry_after_ambiguous_transport_failure() {
         "unexpected error: {err}"
     );
 
+    // Generous on the *positive* waits (a loaded CI runner has been observed to take longer
+    // than 2s to schedule the second accept, producing a spurious failure) and deliberately
+    // unchanged on the negative wait below -- the short window is what actually proves "no
+    // automatic retry", so lengthening these does not weaken that claim.
     assert!(
-        rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+        rx.recv_timeout(Duration::from_secs(15)).is_ok(),
         "the ownership probe connection must have arrived"
     );
     assert!(
-        rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+        rx.recv_timeout(Duration::from_secs(15)).is_ok(),
         "exactly one write-attempt connection must have arrived"
     );
     assert!(
