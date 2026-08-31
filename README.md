@@ -21,7 +21,19 @@ zotero-cli --json item context A5XSZH5H --include-notes
 
 ## Quick start
 
-1. Install the binary (see [`docs/INSTALL.md`](docs/INSTALL.md)) and confirm it runs:
+1. Install the binary via bootstrap script:
+
+   **macOS / Linux:**
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/ntluong95/zotero-rust-cli/main/scripts/install.sh | sh
+   ```
+
+   **Windows PowerShell:**
+   ```powershell
+   Invoke-WebRequest https://raw.githubusercontent.com/ntluong95/zotero-rust-cli/main/scripts/install.ps1 -OutFile "$env:TEMP\install-zotero-cli.ps1"; & "$env:TEMP\install-zotero-cli.ps1"
+   ```
+
+   *(Or see [`docs/INSTALL.md`](docs/INSTALL.md) for Homebrew, Scoop, and direct downloads).* Confirm it runs:
 
    ```bash
    zotero-cli --version

@@ -16,6 +16,48 @@ Prebuilt binaries are published for five targets:
 Every archive contains the `zotero-cli` binary, the `cli-anything-zotero` alias
 binary, `LICENSE`, `NOTICE-CHANGES.md`, and `THIRD-PARTY-LICENSES.md`.
 
+## Agent & Command-Line Bootstrap (Recommended)
+
+One-command installation from GitHub Releases without requiring Homebrew, Scoop, WinGet, Rust, or Python.
+
+### macOS & Linux
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/ntluong95/zotero-rust-cli/main/scripts/install.sh \
+  -o /tmp/install-zotero-cli.sh
+sh /tmp/install-zotero-cli.sh
+```
+
+Installs `zotero-cli` (and `cli-anything-zotero` alias) to `~/.local/bin/zotero-cli` by default.
+
+### Windows PowerShell
+
+```powershell
+Invoke-WebRequest `
+  https://raw.githubusercontent.com/ntluong95/zotero-rust-cli/main/scripts/install.ps1 `
+  -OutFile "$env:TEMP\install-zotero-cli.ps1"
+& "$env:TEMP\install-zotero-cli.ps1"
+```
+
+Installs `zotero-cli.exe` to `%LOCALAPPDATA%\Programs\zotero-cli\zotero-cli.exe` by default. Pass `-AddToPath` to automatically add the directory to your user `PATH`.
+
+### Agent Science Kit (ASK) Contract
+
+For AI agents and automated pipelines, follow this standard pattern:
+
+1. **Probe**: If `command -v zotero-cli` (or `where.exe zotero-cli`) succeeds, use the existing binary.
+2. **Bootstrap**: If missing, execute the bootstrap script above.
+3. **Verify**: Run `zotero-cli --version` and `zotero-cli --json app doctor`.
+4. **Bridge (Optional)**: If doctor reports `bridge.state: not_installed` and live Bridge capabilities are needed:
+   - Run `zotero-cli app install-plugin` to stage the bundled `.xpi`.
+   - Ask the researcher/user to approve the plugin installation inside Zotero (*Tools → Plugins → Install Add-on From File...*).
+   - Re-run `zotero-cli --json app doctor`.
+
+The bootstrap installer **never** automatically writes to Zotero profile directories or bypasses user consent.
+
+---
+
 ## After installing, run this first
 
 ```bash
@@ -27,6 +69,10 @@ zotero-cli app doctor
 detected Zotero installation, data and profile directories, Connector and Local
 API reachability, CLI Bridge state, and whether reads and writes are ready right
 now — plus concrete next steps when something is missing.
+
+---
+
+## Manual & Package Manager Installation
 
 ---
 
