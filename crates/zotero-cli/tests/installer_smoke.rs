@@ -1,9 +1,10 @@
-//! Integration and smoke tests for bootstrap installers (scripts/install.sh and scripts/install.ps1).
-
+#[cfg(unix)]
 #[path = "common/mod.rs"]
 mod common;
 
+#[cfg(unix)]
 use common::{ScriptedResponse, ScriptedServer, TestDir};
+#[cfg(unix)]
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
