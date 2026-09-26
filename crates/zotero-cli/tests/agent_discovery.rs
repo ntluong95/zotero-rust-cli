@@ -286,7 +286,7 @@ fn feeds_are_excluded_by_default_and_included_only_on_request() {
 fn include_feeds_requires_all_libraries() {
     let dir = TestDir::new("scope-feeds-requires");
     build_multi_library_fixture(dir.path());
-    let output = std::process::Command::new(common::bin_path())
+    let output = common::cli_command()
         .arg("--json")
         .arg("--data-dir")
         .arg(dir.path())

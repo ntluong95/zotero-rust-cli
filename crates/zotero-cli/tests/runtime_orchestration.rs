@@ -616,7 +616,7 @@ fn diagnostic_commands_never_auto_launch_even_without_the_opt_out() {
         // construction, not merely because a test disabled launching. A real spawn would be
         // observable as a hang or a stray process; the assertion is that each returns promptly
         // with an honest report instead.
-        let mut command = std::process::Command::new(common::bin_path());
+        let mut command = common::cli_command();
         command
             .arg("--json")
             .arg("--data-dir")

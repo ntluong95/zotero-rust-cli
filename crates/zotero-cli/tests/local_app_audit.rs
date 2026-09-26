@@ -11,7 +11,6 @@ use common::{
 };
 use serde_json::json;
 use std::path::Path;
-use std::process::Command;
 
 fn connector_ping_ok() -> ScriptedResponse {
     ScriptedResponse::json(200, json!({}))
@@ -43,7 +42,7 @@ fn run_cli_human(
     args: &[&str],
 ) -> (i32, String, String) {
     let profile_dir = create_empty_fake_profile(data_dir);
-    let mut command = Command::new(common::bin_path());
+    let mut command = common::cli_command();
     command
         .arg("--data-dir")
         .arg(data_dir)
@@ -649,4 +648,109 @@ fn centralized_auditing_writes_entry_on_writeish_command() {
     assert_eq!(entries[0]["ok"], true);
     assert_eq!(entries[0]["status"], "success");
     assert!(entries[0].get("ts").is_some());
+}
+
+/// Zotero's own reply for a path no plugin has registered yet (`server.js`).
+fn endpoint_not_registered() -> ScriptedResponse {
+    ScriptedResponse::Http {
+        status: 404,
+        headers: Vec::new(),
+        body: b"No endpoint found\n".to_vec(),
+    }
+}
+
+/// Right after a launch, Zotero's HTTP server answers before the Bridge has registered its
+/// endpoint. The doctor waits for it instead of calling the plugin foreign.
+#[test]
+fn app_doctor_waits_for_a_bridge_that_is_still_registering() {
+    let dir = TestDir::new("app-doctor-bridge-starting");
+    build_fixture_sqlite(dir.path());
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
+    let executable = create_fake_zotero_install(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        endpoint_not_registered(),
+        bridge_ownership_ok(),
+        ScriptedResponse::json(
+            200,
+            json!({"ok": true, "value": "cli-bridge-ok", "version": "10.0.4"}),
+        ),
+    ]);
+    let (code, value) = run_cli(
+        dir.path(),
+        server.port,
+        &[
+            ("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap()),
+            ("ZOTERO_EXECUTABLE", executable.to_str().unwrap()),
+        ],
+        &["app", "doctor"],
+    );
+    server.finish();
+
+    assert_eq!(code, 0, "stdout={value}");
+    assert_eq!(value["status"], "ready");
+    assert_eq!(value["checks"]["bridge"]["state"], "healthy");
+}
+
+/// A Bridge that never registers is "installed but not loaded" -- never "something else owns
+/// this endpoint, reinstall", which was the wrong advice for a plugin that is merely starting.
+#[test]
+fn app_doctor_never_calls_an_unregistered_endpoint_foreign() {
+    let dir = TestDir::new("app-doctor-bridge-unregistered");
+    build_fixture_sqlite(dir.path());
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
+    let executable = create_fake_zotero_install(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        endpoint_not_registered(),
+        ScriptedResponse::Drop,
+    ]);
+    let (code, value) = run_cli(
+        dir.path(),
+        server.port,
+        &[
+            ("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap()),
+            ("ZOTERO_EXECUTABLE", executable.to_str().unwrap()),
+        ],
+        &["app", "doctor"],
+    );
+    server.finish();
+
+    assert_eq!(code, 1, "stdout={value}");
+    assert_eq!(value["checks"]["bridge"]["state"], "installed_not_loaded");
+    assert!(
+        next_steps(&value)
+            .iter()
+            .all(|step| !step.contains("not this CLI's Bridge")),
+        "{value}"
+    );
+}
+
+/// A genuinely foreign responder (200 without this fork's handshake) is still reported as such.
+#[test]
+fn app_doctor_still_reports_a_genuinely_foreign_endpoint() {
+    let dir = TestDir::new("app-doctor-bridge-foreign");
+    build_fixture_sqlite(dir.path());
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
+    let executable = create_fake_zotero_install(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        ScriptedResponse::json(200, json!({"pong": true})),
+    ]);
+    let (code, value) = run_cli(
+        dir.path(),
+        server.port,
+        &[
+            ("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap()),
+            ("ZOTERO_EXECUTABLE", executable.to_str().unwrap()),
+        ],
+        &["app", "doctor"],
+    );
+    server.finish();
+
+    assert_eq!(code, 1, "stdout={value}");
+    assert_eq!(value["checks"]["bridge"]["state"], "ownership_invalid");
 }

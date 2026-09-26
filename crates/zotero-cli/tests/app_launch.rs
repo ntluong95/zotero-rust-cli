@@ -284,7 +284,7 @@ fn app_launch_cli_nonexistent_explicit_executable_is_a_clean_exit_one() {
 
 #[test]
 fn app_launch_cli_help_documents_wait_timeout() {
-    let output = std::process::Command::new(common::bin_path())
+    let output = common::cli_command()
         .args(["app", "launch", "--help"])
         .output()
         .expect("failed to run zotero-cli binary");

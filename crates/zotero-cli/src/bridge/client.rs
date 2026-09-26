@@ -30,6 +30,10 @@ pub enum BridgeProbe {
     Owned,
     /// Something answered that path, but it is not our fork. Never authorized for a call.
     Foreign,
+    /// Zotero's HTTP server is up but nothing is registered at that path: its own
+    /// `404 "No endpoint found"`. This is what a plugin that is still starting (or not loaded)
+    /// looks like, and it must never be reported as a foreign plugin.
+    NotRegistered,
     /// Nothing answered at all.
     Unreachable,
 }
@@ -245,7 +249,10 @@ impl JSBridgeClient {
     /// as a gate -- only [`BridgeProbe::Owned`] authorizes a Bridge call, so an unowned endpoint
     /// can never receive a script.
     pub fn bridge_endpoint_responds(&self) -> bool {
-        self.probe_bridge() != BridgeProbe::Unreachable
+        matches!(
+            self.probe_bridge(),
+            BridgeProbe::Owned | BridgeProbe::Foreign
+        )
     }
 
     /// One ownership probe, served from the positive cache when this port already verified.
@@ -278,8 +285,15 @@ impl JSBridgeClient {
 
         match resp {
             Ok(mut response) => {
-                if response.status().as_u16() != 200 {
-                    // A non-200 still means something is listening on that path.
+                let status = response.status().as_u16();
+                if status != 200 {
+                    // Zotero's server answers every unregistered path with this exact 404
+                    // (`server.js`), so it means "not loaded yet", not "someone else's plugin".
+                    let body = response.body_mut().read_to_string().unwrap_or_default();
+                    if status == 404 && body.trim_start().starts_with("No endpoint found") {
+                        return BridgeProbe::NotRegistered;
+                    }
+                    // Any other non-200 still means something else is listening on that path.
                     return BridgeProbe::Foreign;
                 }
                 if let Ok(bytes) = response.body_mut().read_to_vec() {

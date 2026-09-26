@@ -611,3 +611,50 @@ fn test_collection_create_unrelated_object_is_transport_error() {
         "a response with neither key nor error must never be treated as Applied, got {outcome:?}"
     );
 }
+
+/// Serves exactly one raw HTTP response on an ephemeral port and returns that port.
+fn serve_once(status_line: &'static str, body: &'static str) -> (u16, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().unwrap().port();
+    let handle = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            drain_request(&mut stream);
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    (port, handle)
+}
+
+/// Zotero answers an unregistered path with its own `404 "No endpoint found"` -- a plugin that
+/// is still starting. That is `NotRegistered`, never `Foreign`; any other non-owned answer
+/// still is `Foreign`, and neither ever authorizes a script.
+#[test]
+fn probe_distinguishes_an_unregistered_endpoint_from_a_foreign_one() {
+    let _guard = PROBE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    clear_probe_cache();
+    for (status_line, body, expected) in [
+        (
+            "404 Not Found",
+            "No endpoint found\n",
+            BridgeProbe::NotRegistered,
+        ),
+        ("404 Not Found", "Not Found", BridgeProbe::Foreign),
+        ("500 Internal Server Error", "boom", BridgeProbe::Foreign),
+        ("200 OK", r#"{"pong":true}"#, BridgeProbe::Foreign),
+    ] {
+        let (port, handle) = serve_once(status_line, body);
+        let client = JSBridgeClient::new(port);
+        assert_eq!(
+            client.probe_bridge_uncached(),
+            expected,
+            "{status_line} {body:?}"
+        );
+        assert!(!client.bridge_endpoint_active());
+        let _ = handle.join();
+    }
+}
