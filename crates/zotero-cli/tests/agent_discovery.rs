@@ -886,3 +886,49 @@ fn all_libraries_honors_fields_scope_through_the_local_api_per_library() {
     );
 }
 
+#[test]
+fn include_feeds_keeps_fields_scope_for_libraries_and_title_searches_feeds() {
+    let dir = TestDir::new("all-libs-fields-feeds");
+    build_multi_library_fixture(dir.path());
+    let empty = || ScriptedResponse::json(200, json!([]));
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        ScriptedResponse::json(200, json!({})),
+        empty(),
+        // A field-only hit: DUPTITLE2's title does not contain the query, so it can only be
+        // found if the fields scope survives `--include-feeds`.
+        ScriptedResponse::json(200, json!([{"key": "DUPTITLE2"}])),
+        empty(),
+    ]);
+    let (code, value) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &[
+            "item",
+            "find",
+            "Thousands",
+            "--all-libraries",
+            "--include-feeds",
+            "--scope",
+            "fields",
+        ],
+    );
+    let requests = server.finish();
+
+    assert_eq!(code, 0, "stdout={value}");
+    let found = keys(&value);
+    assert!(
+        found.contains(&(2, "DUPTITLE2".to_string())),
+        "the fields scope must still apply to non-feed libraries: {found:?}"
+    );
+    assert!(
+        found.contains(&(9, "FEEDITEM1".to_string())),
+        "feeds are searched by title: {found:?}"
+    );
+    assert!(
+        requests.iter().all(|r| !r.path.contains("/9/")),
+        "a feed has no Local API endpoint: {:?}",
+        requests.iter().map(|r| &r.path).collect::<Vec<_>>()
+    );
+}

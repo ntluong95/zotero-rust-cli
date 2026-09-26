@@ -470,10 +470,22 @@ fn sqlite_all_libraries(
     // fallback only matches titles -- so a DOI searched with `--all-libraries --scope fields`
     // used to find nothing unless Zotero happened to hold its lock. Search each library the
     // same way the single-library path does; any failure keeps the title search below.
+    //
+    // Feeds have no Local API endpoint, so `--include-feeds` searches them by title (the best
+    // either path has for a feed) instead of failing the whole cross-library search back to
+    // titles for every library.
     if !request.exact_title && request.scope != "titleCreatorYear" && runtime.local_api_available {
         let mut items = Vec::new();
+        let mut feed_ids = Vec::new();
         let mut complete = true;
         for library_id in &library_ids {
+            let is_feed = libraries
+                .iter()
+                .any(|l| l.library_id == *library_id && l.kind == FEED_LIBRARY_TYPE);
+            if is_feed {
+                feed_ids.push(*library_id);
+                continue;
+            }
             let scoped = SessionState {
                 current_library: Some(Value::from(*library_id)),
                 ..Default::default()
@@ -493,6 +505,16 @@ fn sqlite_all_libraries(
                     break;
                 }
             }
+        }
+        if complete && !feed_ids.is_empty() {
+            items.extend(db::find_items_by_title(
+                &runtime.environment.sqlite_path,
+                request.query,
+                &SearchLibraries::Some(feed_ids),
+                None,
+                request.limit,
+                request.exact_title,
+            )?);
         }
         if complete {
             order_like_sqlite(&mut items, request.query);
