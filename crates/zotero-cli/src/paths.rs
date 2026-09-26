@@ -453,6 +453,34 @@ pub fn plugin_xpi_path(profile_dir: Option<&Path>) -> Option<PathBuf> {
     profile_dir.map(|p| p.join("extensions").join(crate::plugin::XPI_FILENAME))
 }
 
+/// What Zotero's add-on manager recorded about one add-on in `<profile>/extensions.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AddonState {
+    pub active: bool,
+    /// Zotero disabled it itself, typically because `strict_max_version` excludes the running
+    /// Zotero. Restarting Zotero never clears this; only a compatible build does.
+    pub app_disabled: bool,
+    pub user_disabled: bool,
+}
+
+/// Reads `extensions.json` read-only. `None` when the profile, the file, or the add-on entry is
+/// missing or malformed -- this is a diagnostic hint, never an error.
+pub fn addon_state(profile_dir: Option<&Path>, addon_id: &str) -> Option<AddonState> {
+    let text = std::fs::read_to_string(profile_dir?.join("extensions.json")).ok()?;
+    let payload: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let addon = payload
+        .get("addons")?
+        .as_array()?
+        .iter()
+        .find(|a| a.get("id").and_then(|v| v.as_str()) == Some(addon_id))?;
+    let flag = |name: &str| addon.get(name).and_then(|v| v.as_bool()).unwrap_or(false);
+    Some(AddonState {
+        active: flag("active"),
+        app_disabled: flag("appDisabled"),
+        user_disabled: flag("userDisabled"),
+    })
+}
+
 /// `plugin_installed()` (`zotero_paths.py:307-312`).
 pub fn plugin_installed(profile_dir: Option<&Path>) -> bool {
     let Some(profile_dir) = profile_dir else {
@@ -515,4 +543,60 @@ pub fn plugin_update_available(profile_dir: Option<&Path>) -> bool {
     let installed = installed_plugin_version(profile_dir);
     let bundled = bundled_plugin_version();
     installed.is_some() && bundled.is_some() && installed != bundled
+}
+
+#[cfg(test)]
+mod addon_state_tests {
+    use super::*;
+
+    fn profile_with(name: &str, extensions_json: Option<&str>) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "zotero-cli-addon-state-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(text) = extensions_json {
+            std::fs::write(dir.join("extensions.json"), text).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn reads_app_disabled_and_active_flags_per_addon() {
+        let dir = profile_with(
+            "flags",
+            Some(
+                r#"{"addons":[
+                  {"id":"cli-bridge@cli-anything-rust.dev","active":false,"appDisabled":true,"userDisabled":false},
+                  {"id":"cli-bridge@cli-anything.dev","active":true,"appDisabled":false}
+                ]}"#,
+            ),
+        );
+        assert_eq!(
+            addon_state(Some(&dir), crate::plugin::ADDON_ID),
+            Some(AddonState {
+                active: false,
+                app_disabled: true,
+                user_disabled: false
+            })
+        );
+        assert_eq!(
+            addon_state(Some(&dir), crate::plugin::UPSTREAM_ADDON_ID).map(|s| s.active),
+            Some(true)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_or_malformed_extensions_json_is_none_not_error() {
+        let missing = profile_with("missing", None);
+        assert_eq!(addon_state(Some(&missing), crate::plugin::ADDON_ID), None);
+        let malformed = profile_with("malformed", Some("{not json"));
+        assert_eq!(addon_state(Some(&malformed), crate::plugin::ADDON_ID), None);
+        assert_eq!(addon_state(None, crate::plugin::ADDON_ID), None);
+        for d in [missing, malformed] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
 }

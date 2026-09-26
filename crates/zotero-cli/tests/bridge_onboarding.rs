@@ -162,7 +162,7 @@ fn the_staged_artifact_is_a_real_installable_xpi() {
 fn install_plugin_reports_an_already_installed_bridge_rather_than_implying_it_is_missing() {
     let dir = TestDir::new("install-plugin-already");
     build_fixture_sqlite(dir.path());
-    let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
     let staging = dir.path().join("staging");
     let server = ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_unavailable()]);
 
@@ -181,7 +181,7 @@ fn install_plugin_reports_an_already_installed_bridge_rather_than_implying_it_is
 
     assert_eq!(code, 0, "stdout={value}");
     assert_eq!(value["already_installed"], true);
-    assert_eq!(value["installed_version"], "1.2.1");
+    assert_eq!(value["installed_version"], common::BUNDLED_PLUGIN_VERSION);
 }
 
 // ── doctor: Bridge states ──────────────────────────────────────────────────
@@ -274,7 +274,7 @@ fn a_staged_but_uninstalled_bridge_is_a_distinct_state_with_its_own_instruction(
 fn bridge_installed_but_zotero_closed_says_so_instead_of_suggesting_a_reinstall() {
     let dir = TestDir::new("doctor-bridge-closed");
     build_fixture_sqlite(dir.path());
-    let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
     // Port 1 answers nothing: Zotero is closed.
     let (_code, value) = run_cli(
         dir.path(),
@@ -302,7 +302,7 @@ fn bridge_installed_but_zotero_closed_says_so_instead_of_suggesting_a_reinstall(
 fn a_healthy_bridge_produces_no_install_recommendation_at_all() {
     let dir = TestDir::new("doctor-bridge-healthy");
     build_fixture_sqlite(dir.path());
-    let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
     let server = ScriptedServer::start(vec![
         connector_ping_ok(),
         local_api_probe_available(),
@@ -457,7 +457,7 @@ fn no_doctor_guidance_ever_recommends_the_excluded_enable_local_api_command() {
 fn a_running_zotero_with_a_dead_connector_is_not_reported_as_a_closed_zotero() {
     let dir = TestDir::new("doctor-connector-only-down");
     build_fixture_sqlite(dir.path());
-    let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
     // The Local API answers, so Zotero is demonstrably up; only the connector is not.
     let server = ScriptedServer::start(vec![
         connector_ping_unavailable(),
@@ -481,4 +481,82 @@ fn a_running_zotero_with_a_dead_connector_is_not_reported_as_a_closed_zotero() {
         steps.contains("connector is not answering"),
         "must describe the actual condition: {steps}"
     );
+}
+
+fn write_extensions_json(profile_dir: &std::path::Path, addons: Value) {
+    std::fs::write(
+        profile_dir.join("extensions.json"),
+        json!({ "addons": addons }).to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn app_disabled_bridge_is_diagnosed_instead_of_restart_advice() {
+    let dir = TestDir::new("doctor-app-disabled");
+    build_fixture_sqlite(dir.path());
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
+    write_extensions_json(
+        &profile_dir,
+        json!([{
+            "id": "cli-bridge@cli-anything-rust.dev",
+            "active": false,
+            "appDisabled": true,
+            "userDisabled": false
+        }]),
+    );
+    let (_code, value) = run_cli(
+        dir.path(),
+        1,
+        &[("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap())],
+        &["app", "doctor"],
+    );
+
+    assert_eq!(value["checks"]["bridge"]["state"], "app_disabled");
+    assert_eq!(value["checks"]["plugin"]["app_disabled"], true);
+    assert_eq!(value["checks"]["plugin"]["ok"], false);
+    let steps = all_steps(&value);
+    assert!(steps.contains("incompatible"), "{steps}");
+    assert!(
+        !steps.contains("Restart Zotero so /cli-bridge/eval"),
+        "restarting never clears appDisabled: {steps}"
+    );
+}
+
+#[test]
+fn active_upstream_plugin_is_reported_as_a_conflict() {
+    let dir = TestDir::new("doctor-upstream-conflict");
+    build_fixture_sqlite(dir.path());
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
+    write_extensions_json(
+        &profile_dir,
+        json!([
+            {"id": "cli-bridge@cli-anything-rust.dev", "active": true, "appDisabled": false},
+            {"id": "cli-bridge@cli-anything.dev", "active": true, "appDisabled": false}
+        ]),
+    );
+    // Zotero is up, and the endpoint is answered by the upstream plugin (no fork marker).
+    let foreign = || ScriptedResponse::json(200, json!({"pong": true}));
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        foreign(),
+        foreign(),
+        foreign(),
+    ]);
+    let (_code, value) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap())],
+        &["app", "doctor"],
+    );
+    drop(server);
+
+    assert_eq!(
+        value["checks"]["bridge"]["state"],
+        "upstream_plugin_conflict"
+    );
+    assert_eq!(value["checks"]["plugin"]["upstream_plugin_active"], true);
+    let steps = all_steps(&value);
+    assert!(steps.contains("cli-bridge@cli-anything.dev"), "{steps}");
 }

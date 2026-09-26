@@ -137,7 +137,7 @@ pub fn verify_ownership(port: u16, timeout: Duration) -> OwnershipStatus {
                         let version = val
                             .get("version")
                             .and_then(|v| v.as_str())
-                            .unwrap_or("1.2.1")
+                            .unwrap_or("1.2.2")
                             .to_string();
                         return OwnershipStatus::ActiveOurFork { version, id };
                     }
@@ -169,7 +169,7 @@ pub fn verify_ownership(port: u16, timeout: Duration) -> OwnershipStatus {
                             let version = val
                                 .get("version")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("1.2.1")
+                                .unwrap_or("1.2.2")
                                 .to_string();
                             return OwnershipStatus::ActiveOurFork { version, id };
                         }

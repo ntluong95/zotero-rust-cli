@@ -11,7 +11,7 @@ var cliBridgeEndpoint;
 var cliOwnershipEndpoint;
 
 const ADDON_ID = "cli-bridge@cli-anything-rust.dev";
-const ADDON_VERSION = "1.2.1";
+const ADDON_VERSION = "1.2.2";
 
 function _serializeError(e) {
   var message = null;

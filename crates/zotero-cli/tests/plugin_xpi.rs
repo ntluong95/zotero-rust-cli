@@ -1,6 +1,8 @@
 #[path = "../src/plugin/mod.rs"]
 mod plugin;
 
+mod common;
+
 use plugin::*;
 use std::io::Read;
 use zip::ZipArchive;
@@ -31,7 +33,7 @@ fn test_build_xpi_contains_valid_files() {
     let app = &manifest_val["applications"]["zotero"];
     assert_eq!(app["id"].as_str().unwrap(), ADDON_ID);
     assert_eq!(app["strict_min_version"].as_str().unwrap(), "6.999");
-    assert_eq!(app["strict_max_version"].as_str().unwrap(), "10.0.*");
+    assert_eq!(app["strict_max_version"].as_str().unwrap(), "10.*");
 
     // Enforce: update_url must point at this fork's own merged, live update.json --
     // never absent, never HTTP, never an upstream/fake URL.
@@ -131,4 +133,12 @@ fn test_xpi_staging_and_removal_in_neutral_output_dir() {
     assert!(!status_after.is_active);
 
     let _ = std::fs::remove_dir_all(&temp_output_dir);
+}
+
+#[test]
+fn bundled_plugin_version_constant_matches_manifest() {
+    assert_eq!(
+        zotero_cli::paths::bundled_plugin_version().as_deref(),
+        Some(common::BUNDLED_PLUGIN_VERSION)
+    );
 }

@@ -275,6 +275,11 @@ pub fn create_empty_fake_profile(dir: &Path) -> PathBuf {
 }
 
 /// Creates an isolated Zotero profile, optionally with an owned Bridge XPI fixture installed.
+/// The CLI Bridge version bundled in this build, i.e. what a fully up-to-date install reports.
+/// `bundled_plugin_version_constant_matches_manifest` (plugin_xpi.rs) keeps it in sync.
+#[allow(dead_code)]
+pub const BUNDLED_PLUGIN_VERSION: &str = "1.2.2";
+
 pub fn create_fake_profile(dir: &Path, plugin_version: Option<&str>) -> PathBuf {
     write_fake_profile(dir.join("fake_profile"), plugin_version)
 }
