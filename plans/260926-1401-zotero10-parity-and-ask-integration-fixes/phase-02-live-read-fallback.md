@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Live read fallback for catalog reads"
-status: pending
+status: complete
 priority: P1
 effort: "1.5d"
 dependencies: []
@@ -93,6 +93,20 @@ wired.
 - Harness: every read row stays Exact or Semantic. The offline path must not change.
 - Live check on Zotero 10.0.4 **running**: every command in the ASK review §3.1 table exits 0.
   Run the same commands with Zotero **closed** and diff the outputs; key sets must match.
+
+## Implementation note (supersedes the design above)
+
+The per-command `live_catalog.rs` templates were not built. `live_snapshot.rs` instead gives
+`db::connect_readonly` a read-only copy of the whole database, so every existing SQLite query
+runs unchanged against live data. The first version copied 21 catalog tables through paged JSON
+in every CLI process (~3 s per command on a 25 MB library, plus a 1 s busy timeout per database
+open). After review it was replaced by a `VACUUM INTO` copy written by Zotero itself, cached on
+disk and reused while Zotero's change key (connection token, `_commitCount`, `total_changes()`)
+is unchanged, with the lock probe shortened to 100 ms on WAL databases and skipped for the rest
+of a process once a copy has been checked. Live on 10.0.4: 0.13-0.15 s per warm read, ~0.8 s
+for the first read after a change. Tests: `live_snapshot.rs` unit tests (real `VACUUM INTO`,
+reuse, invalidation, vanished copy, errors) and `tests/agent_discovery.rs` (one Bridge request
+per warm read, output identical to the offline path).
 
 ## Risk
 

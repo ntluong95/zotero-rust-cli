@@ -1,7 +1,7 @@
 ---
 phase: 7
 title: "Docs, harness, and release"
-status: pending
+status: complete
 priority: P2
 effort: "4h"
 dependencies: [1, 2, 3, 4, 5, 6]

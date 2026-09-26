@@ -1,6 +1,6 @@
 # Zotero 10 and ASK live smoke test
 
-**Date:** 2026-09-26 CEST. **App:** Zotero 10.0.4 on macOS. **CLI:** `/tmp/zrc` branch `fix/zotero10-parity-ask-integration` at `fa55d17`, built at `/tmp/zrc-build/debug/zotero-cli`. **ASK:** local `fix/ask-zotero-dedupe-scope-and-bbt-port`. Zotero began running and was restored to running. No library writes or plugin installation occurred.
+**Date:** 2026-09-26 CEST. **App:** Zotero 10.0.4 on macOS. **CLI:** `/tmp/zrc` branch `fix/zotero10-parity-ask-integration`, debug build at `/tmp/zrc-build/debug/zotero-cli`. Read rows (1–6, 9) ran at `fa55d17` with no library writes. Write rows (7, 8, 10–12) ran afterwards, with approval, on the working tree containing the fixes later committed as `d52f360` (see "Live write checks"). No plugin was installed: the running Bridge stayed 1.2.1, so the 1.2.2 `10.*` cap is not live-verified. **ASK:** local `fix/ask-zotero-dedupe-scope-and-bbt-port`. Zotero began running and was restored to running.
 
 ## Results against Phase 9
 
@@ -17,7 +17,7 @@
 | 9 | ASK reads | Pass | Every wrapper command below exit 0. BBT availability changes with Zotero state; port 23120 both times. |
 | 10 | ASK export plan + write | Pass | Planned exit 0 (`status: planned`). Confirmed write imported 3 records (DOI, PMID, arXiv) into `ASK verification (delete me)` (`TX8DNGG9`), `expected: 3, imported: 3, inCollection: 3, verified: true`. |
 | 11 | ASK export idempotency | Pass | Immediate rerun with exact same input yielded `expected: 3, reused: 3, imported: 0, inCollection: 3, verified: true`. Complete idempotency without duplicates. |
-| 12 | Cleanup | Pass | `collection delete TX8DNGG9 --delete-items --confirm` moved collection to trash; restored via `collection restore TX8DNGG9 --confirm`; permanently erased via `--delete-items --permanent --yes-erase`. Contained items erased. Library restored to pre-test state. |
+| 12 | Cleanup | Pass | `collection delete TX8DNGG9 --delete-items --confirm` moved collection to trash; restored via `collection restore TX8DNGG9 --confirm`; permanently erased. **Corrected in review:** the items were only moved to the trash by the first `--delete-items --confirm` (restore does not bring items back, and the erase template of that build never touched items), so the library was not fully restored: test item `CWR2MUQX` was still in the trash at review time. |
 
 ## CLI commands and exits
 
@@ -121,3 +121,40 @@ collection delete --permanent --yes-erase     0  outcome: applied, action: colle
 - Both branches pushed and PRs opened:
   - `zotero-rust-cli`: PR #32 (https://github.com/ntluong95/zotero-rust-cli/pull/32)
   - `agent-science-kit`: PR #5 (https://github.com/ntluong95/agent-science-kit/pull/5)
+
+## Post-review re-verification (release build, Zotero 10.0.4 running, read-only)
+
+| Command | Before | After |
+|---|---|---|
+| `collection list` (first read after a change, includes the copy) | ~3.0 s | 0.79 s |
+| `collection list`, `tag list`, `item get`, `item children`, `search list`, `item export` (warm) | 1.1–3.2 s | 0.13–0.15 s |
+| `item duplicates --by zotero` | 50 sets | 50 sets, internals guard passes |
+
+Output byte counts were identical before and after.
+
+## Post-review live write run (approved, throwaway objects only)
+
+Release build, real CLI state directory (stored Local API credential), Zotero 10.0.4 running.
+`deleted` flags were read straight from Zotero objects with read-only `js` after each step.
+
+```text
+collection list (x2, warm)                                   0  0.25 s, 0.13 s
+collection create "zotero-cli verification … (delete me)"    0  X2VA82LZ
+collection list                                              0  new collection listed; snapshot key 160-4947 -> 161-4950
+collection create "child (delete me)" --parent X2VA82LZ      0  EMRP5KJU
+import json item.json --collection EMRP5KJU                  0  item WMXB3PIM
+collection delete X2VA82LZ --delete-items --confirm          0  parent, child, item all trashed (Bridge)
+collection restore X2VA82LZ --confirm                        0  parent, child present; item still trashed
+item restore WMXB3PIM --confirm                              0  item present
+collection delete … --delete-items --permanent               1  refused without --yes-erase
+collection delete … --delete-items --permanent --yes-erase   0  parent, child, item gone
+item get WMXB3PIM                                            1  not found
+collection delete R9MHZTE5 --confirm (Local API PATCH)       0  parent and child trashed
+collection restore R9MHZTE5 --confirm                        0  both present
+collection delete R9MHZTE5 --permanent --yes-erase           0  both gone
+```
+
+Cache invalidation after a write, the Local API `PATCH {"deleted": 1}` cascade, and the
+Zotero-matching collection trash/restore/erase semantics are LIVE VERIFIED. No test object
+remains. The run also showed trash/restore/erase were missing from the audit log; they are now
+audited.

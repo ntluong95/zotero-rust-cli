@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Saved searches on Zotero 10"
-status: pending
+status: complete
 priority: P1
 effort: "2h"
 dependencies: []

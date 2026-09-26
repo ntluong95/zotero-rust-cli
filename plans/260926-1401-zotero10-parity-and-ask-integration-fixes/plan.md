@@ -1,7 +1,7 @@
 ---
 title: "Zotero 10 parity and ASK integration fixes"
 description: "Fix every finding from the 2026-09-26 upstream-parity and ASK-integration reviews so zotero-cli works end to end on Zotero 10 and under agent-science-kit."
-status: complete
+status: in-progress
 priority: P1
 effort: 5d
 branch: main
@@ -68,7 +68,7 @@ for the rendered output itself; only their item and library resolution gains the
 | 6 | [Trash-by-default delete + restore](./phase-06-trash-by-default-delete.md) | P2 | 1d | — | Complete |
 | 7 | [Docs, harness, and release](./phase-07-docs-harness-release.md) | P2 | 4h | 1–6 | Complete (v2.0.0, PR #32) |
 | 8 | [ASK wrapper fixes](./phase-08-ask-wrapper-fixes.md) | P1 | 2h | 7 (released CLI) | Complete (PR #5) |
-| 9 | [Live end-to-end verification](./phase-09-live-verification.md) | P1 | 3h | 7, 8 | Complete (all 12 rows verified) |
+| 9 | [Live end-to-end verification](./phase-09-live-verification.md) | P1 | 3h | 7, 8 | In progress: row 6 needs Bridge 1.2.2 installed; post-review write checks LIVE VERIFIED |
 
 Phases 1, 2, 4, 5 and 6 are independent and can be done in any order. To unblock ASK fastest, do
 1 → 2 → 3 first.

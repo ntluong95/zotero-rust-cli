@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Bridge version cap, appDisabled, coexistence"
-status: pending
+status: complete
 priority: P1
 effort: "4h"
 dependencies: []

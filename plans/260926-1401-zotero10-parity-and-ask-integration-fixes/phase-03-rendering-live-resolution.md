@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Rendering and export on Zotero 10"
-status: pending
+status: complete
 priority: P1
 effort: "4h"
 dependencies: [2]

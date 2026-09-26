@@ -1,7 +1,7 @@
 ---
 phase: 6
 title: "Trash-by-default delete + restore"
-status: pending
+status: complete
 priority: P2
 effort: "1d"
 dependencies: []
@@ -63,6 +63,21 @@ erasure stays available behind a flag nobody types by reflex.
    `item_trash`, `item_restore`, and `item_erase`.
 4. Update the post-write verification for trash semantics.
 5. Update the docs and the write-safety section of `README.md`.
+
+## Spike result (from Zotero 10.0.4 source)
+
+- The Local API accepts `PATCH` on single items and collections (`server_localAPI.js`,
+  `writeSingleObject`): the body is merged into the object's JSON and saved, and
+  `Collection#fromJSON` / `Item#fromJSON` apply `deleted`, so `PATCH {"deleted": 1}` trashes.
+- Collection trash (`CollectionTree#deleteSelection`) is `deleted = true` +
+  `save({deleteItems})`; `Collection#trash()` trashes every descendant collection and, with
+  `deleteItems`, every item in the subtree.
+- Collection restore (`ZoteroPane#restoreSelectedItems`) restores the collection and every
+  trashed descendant collection; it never restores items. `collection restore --with-items`
+  was removed to match.
+- Collection erase with `deleteItems` only trashes the items (`_eraseData` -> `trash()`), so
+  `collection delete --delete-items --permanent --yes-erase` erases them explicitly afterwards.
+  The previous template never passed `deleteItems` and left the items untouched.
 
 ## Verification
 

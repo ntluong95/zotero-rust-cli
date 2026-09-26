@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "item duplicates --by zotero fix"
-status: pending
+status: complete
 priority: P2
 effort: "4h"
 dependencies: []
@@ -62,6 +62,15 @@ by `--by doi`.
 5. Make the DOI normalizer extract the DOI by shape, using the regex `10\.\d{4,9}/\S+`. Apply it
    after URL-decoding, and strip trailing punctuation. Unit-test `doi:` prefixes, `dx.doi.org`,
    `doi.acm.org`, doubled prefixes, and mixed case.
+
+## Implementation note
+
+Step 3's `scanned == 0` rule cannot work: Zotero's `DisjointSetForest.findAll()` only returns
+items that were paired with another, so an empty result is a legitimately clean library. The
+template instead refuses when the internals it depends on (`_findDuplicates`,
+`getSetItemsByItemID`, `Zotero.DisjointSetForest`) are missing or `_sets` was not populated by
+the scan; `scanned` reports the library's regular-item count. LIVE VERIFIED on 10.0.4: 751
+items scanned, 50 sets, guards pass.
 
 ## Verification
 
