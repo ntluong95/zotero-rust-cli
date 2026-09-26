@@ -1519,7 +1519,13 @@ fn bridge_live_read(
 ) -> anyhow::Result<Value> {
     let params = serde_json::json!({ "libraryID": library_id, "key": key });
     let code = bridge::templates::render(template, &params)?;
-    client.execute_raw_js(&code, 10)
+    let val = client.execute_raw_js(&code, 10)?;
+    if let Value::String(s) = &val {
+        if let Ok(parsed) = serde_json::from_str(s) {
+            return Ok(parsed);
+        }
+    }
+    Ok(val)
 }
 
 /// Whether a `bridge_live_read` response reports the object absent (`{"found": false}`) -- the
