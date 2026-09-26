@@ -594,10 +594,21 @@ fn collection_create_preserves_the_servers_affected_key() {
         &["collection", "create", "Brand New Collection"],
     );
 
-    server.finish();
+    let requests = server.finish();
 
     assert_eq!(code, 0, "payload: {payload}");
     assert_eq!(payload["key"], "NEWCOL01");
+    // Zotero's Local API rejects a bare object with HTTP 400 "Uploaded data must be a JSON
+    // array": creation always posts the Web API's array-of-objects shape.
+    let create = requests
+        .iter()
+        .find(|request| request.method == "POST")
+        .expect("a create request");
+    assert_eq!(
+        create.body_json(),
+        json!([{"name": "Brand New Collection"}]),
+        "the create body must be a one-element JSON array"
+    );
     assert_no_forbidden_keys(&payload, &["backend", "server_id", "version"], "$");
 }
 
@@ -1173,11 +1184,10 @@ fn item_merge_succeeds_when_survivor_resolves_live_and_merged_away_key_does_not(
         bridge_resolve_item("ITEM0001", 1),
         bridge_resolve_item("ITEM0002", 2),
         ScriptedResponse::bridge_string(200, "OK: merged 1 items into Test Item One"),
-        ScriptedResponse::json(
-            200,
+        ScriptedResponse::bridge_json(
             json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": {"itemType": "document", "title": "Test Item One"}}),
         ),
-        ScriptedResponse::json(200, json!({"found": false})),
+        ScriptedResponse::bridge_json(json!({"found": false})),
     ]);
 
     let (code, payload) = run_cli(
@@ -1211,14 +1221,12 @@ fn item_merge_reports_conflict_when_a_merged_away_key_still_resolves_live() {
         bridge_resolve_item("ITEM0001", 1),
         bridge_resolve_item("ITEM0002", 2),
         ScriptedResponse::bridge_string(200, "OK: merged 1 items into Test Item One"),
-        ScriptedResponse::json(
-            200,
+        ScriptedResponse::bridge_json(
             json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": {"itemType": "document", "title": "Test Item One"}}),
         ),
         // The Bridge reported success, but a live re-read still finds the merged-away item --
         // this must never be silently reported as `applied`.
-        ScriptedResponse::json(
-            200,
+        ScriptedResponse::bridge_json(
             json!({"found": true, "key": "ITEM0002", "libraryID": 1, "data": {"itemType": "document", "title": "Test Item Two"}}),
         ),
     ]);
@@ -1360,8 +1368,7 @@ fn item_delete_and_restore_through_the_bridge_flip_the_deleted_flag() {
             bridge_ownership_ok(),
             bridge_resolve_item("ITEM0001", 1),
             ScriptedResponse::bridge_string(200, "OK: done ITEM0001"),
-            ScriptedResponse::json(
-                200,
+            ScriptedResponse::bridge_json(
                 json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": data}),
             ),
         ]);
@@ -1386,8 +1393,7 @@ fn trash_that_does_not_stick_is_reported_as_a_conflict() {
         bridge_ownership_ok(),
         bridge_resolve_item("ITEM0001", 1),
         ScriptedResponse::bridge_string(200, "OK: trashed ITEM0001"),
-        ScriptedResponse::json(
-            200,
+        ScriptedResponse::bridge_json(
             json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": {"itemType": "document"}}),
         ),
     ]);
@@ -1412,7 +1418,7 @@ fn permanent_yes_erase_is_the_only_path_to_an_erase() {
         bridge_ownership_ok(),
         bridge_resolve_item("ITEM0001", 1),
         ScriptedResponse::bridge_string(200, "DELETED: Test Item One"),
-        ScriptedResponse::json(200, json!({"found": false})),
+        ScriptedResponse::bridge_json(json!({"found": false})),
     ]);
     let (code, payload) = run_cli(
         dir.path(),
@@ -1425,4 +1431,137 @@ fn permanent_yes_erase_is_the_only_path_to_an_erase() {
     assert_eq!(payload["action"], "item_erase");
     assert_eq!(payload["recoverable"], false);
     assert!(body_text(&requests[4]).contains("eraseTx"));
+}
+
+fn collection_readback(deleted: Option<bool>) -> ScriptedResponse {
+    let mut data = json!({"key": "COLL0001", "name": "Test Collection"});
+    if let Some(deleted) = deleted {
+        data["deleted"] = json!(deleted);
+    }
+    ScriptedResponse::bridge_json(
+        json!({"found": true, "key": "COLL0001", "libraryID": 1, "data": data}),
+    )
+}
+
+#[test]
+fn collection_trash_and_restore_through_the_bridge_match_zotero_semantics() {
+    for (args, readback, action) in [
+        (
+            vec!["collection", "delete", "COLL0001", "--confirm"],
+            Some(true),
+            "collection_trash",
+        ),
+        (
+            vec![
+                "collection",
+                "delete",
+                "COLL0001",
+                "--delete-items",
+                "--confirm",
+            ],
+            Some(true),
+            "collection_trash",
+        ),
+        (
+            vec!["collection", "restore", "COLL0001", "--confirm"],
+            None,
+            "collection_restore",
+        ),
+    ] {
+        let dir = TestDir::new("collection-trash-bridge");
+        build_fixture_sqlite(dir.path());
+        let server = ScriptedServer::start(vec![
+            connector_ping_ok(),
+            local_api_probe_unavailable(),
+            bridge_ownership_ok(),
+            bridge_resolve_collection("COLL0001", "Test Collection", 1),
+            ScriptedResponse::bridge_string(200, "OK: done COLL0001"),
+            // The real Bridge returns the readback template's JSON.stringify() as a string.
+            collection_readback(readback),
+        ]);
+        let (code, payload) = run_cli(dir.path(), server.port, &[], &args);
+        let requests = server.finish();
+
+        assert_eq!(code, 0, "{args:?}: {payload}");
+        assert_eq!(payload["action"], action, "{args:?}");
+        let write = requests
+            .iter()
+            .map(body_text)
+            .find(|body| {
+                body.contains("Zotero.Collections.getByLibraryAndKey(P.libraryID, P.collectionKey)")
+            })
+            .expect("the trash/restore template was sent");
+        assert!(!write.contains("eraseTx"), "trash/restore must never erase");
+        // Zotero's own trash path cascades to subcollections and, with deleteItems, to every
+        // item in the subtree; restore brings back subcollections but never items.
+        assert!(write.contains("await col.save({ deleteItems: !!P.includeItems })"));
+        assert!(write.contains("getDescendents(false, 'collection', true)"));
+        let params = write.contains(r#"\"includeItems\":true"#);
+        assert_eq!(
+            params,
+            args.contains(&"--delete-items"),
+            "{args:?}: {write}"
+        );
+    }
+}
+
+#[test]
+fn collection_restore_no_longer_accepts_with_items() {
+    let dir = TestDir::new("collection-restore-with-items");
+    build_fixture_sqlite(dir.path());
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_zotero-cli"))
+        .args([
+            "collection",
+            "restore",
+            "COLL0001",
+            "--with-items",
+            "--confirm",
+        ])
+        .env("ZOTERO_CLI_NO_AUTOLAUNCH", "1")
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "clap must reject the removed flag"
+    );
+}
+
+#[test]
+fn permanent_collection_erase_with_delete_items_erases_the_items_too() {
+    let dir = TestDir::new("collection-erase-items");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        bridge_resolve_collection("COLL0001", "Test Collection", 1),
+        ScriptedResponse::bridge_string(200, "DELETED: collection Test Collection"),
+        ScriptedResponse::bridge_json(json!({"found": false})),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &[
+            "collection",
+            "delete",
+            "COLL0001",
+            "--delete-items",
+            "--permanent",
+            "--yes-erase",
+        ],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "{payload}");
+    assert_eq!(payload["action"], "collection_erase");
+    let erase = requests
+        .iter()
+        .map(body_text)
+        .find(|body| body.contains("eraseTx"))
+        .expect("the erase template was sent");
+    // Zotero's erase only trashes the items; the CLI promises to erase them.
+    assert!(erase.contains("await col.eraseTx({ deleteItems: !!P.deleteItems })"));
+    assert!(erase.contains("await Zotero.Items.erase(itemIDs)"));
+    assert!(erase.contains(r#"\"deleteItems\":true"#), "{erase}");
 }

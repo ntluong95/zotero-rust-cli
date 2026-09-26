@@ -54,6 +54,13 @@ impl ScriptedResponse {
     pub fn bridge_string(status: u16, text: &str) -> Self {
         ScriptedResponse::json(status, serde_json::Value::String(text.to_string()))
     }
+
+    /// A Bridge eval answer for a template that ends in `return JSON.stringify(...)`: the real
+    /// Bridge delivers that as a JSON *string*, not an object, so fakes must too -- an object
+    /// here once hid a live readback bug.
+    pub fn bridge_json(value: serde_json::Value) -> Self {
+        ScriptedResponse::json(200, serde_json::Value::String(value.to_string()))
+    }
 }
 
 #[derive(Debug)]
