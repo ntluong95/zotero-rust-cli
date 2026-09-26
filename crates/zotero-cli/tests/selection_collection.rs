@@ -14,7 +14,6 @@ mod common;
 use common::{build_fixture_sqlite, run_cli, ScriptedResponse, ScriptedServer, TestDir};
 use serde_json::json;
 use std::path::Path;
-use std::process::Command;
 
 fn connector_ping_ok() -> ScriptedResponse {
     ScriptedResponse::json(200, json!({}))
@@ -60,7 +59,7 @@ fn run_cli_human(
     extra_env: &[(&str, &str)],
     args: &[&str],
 ) -> (i32, String) {
-    let mut command = Command::new(common::bin_path());
+    let mut command = common::cli_command();
     command
         .arg("--data-dir")
         .arg(data_dir)

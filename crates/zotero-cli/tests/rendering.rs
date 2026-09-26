@@ -13,7 +13,6 @@ mod common;
 use common::{build_fixture_sqlite, run_cli, ScriptedResponse, ScriptedServer, TestDir};
 use serde_json::json;
 use std::path::Path;
-use std::process::Command;
 
 fn connector_ping_ok() -> ScriptedResponse {
     ScriptedResponse::json(200, json!({}))
@@ -43,7 +42,7 @@ fn run_cli_human(
     extra_env: &[(&str, &str)],
     args: &[&str],
 ) -> (i32, String) {
-    let mut command = Command::new(common::bin_path());
+    let mut command = common::cli_command();
     command
         .arg("--data-dir")
         .arg(data_dir)
@@ -68,7 +67,7 @@ fn run_cli_human(
 /// accepted divergence) prints plain text to stderr rather than the `{"error": ...}` shape,
 /// regardless of `--json`.
 fn run_cli_raw(data_dir: &Path, port: u16, args: &[&str]) -> (i32, String, String) {
-    let mut command = Command::new(common::bin_path());
+    let mut command = common::cli_command();
     command
         .arg("--json")
         .arg("--data-dir")

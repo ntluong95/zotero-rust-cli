@@ -27,7 +27,6 @@ mod common;
 
 use common::{run_cli, ScriptedResponse, ScriptedServer, TestDir};
 use serde_json::json;
-use std::process::Command;
 
 fn connector_ping_ok() -> ScriptedResponse {
     ScriptedResponse::json(200, json!({}))
@@ -735,7 +734,7 @@ fn human_mode_preview_output_matches_json_mode_shape() {
     build_merge_preview_fixture(dir.path());
     let server = ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_unavailable()]);
 
-    let output = Command::new(common::bin_path())
+    let output = common::cli_command()
         .arg("--data-dir")
         .arg(dir.path())
         .args(["item", "merge", "KEEP0001", "OTHR0001"])
@@ -758,4 +757,39 @@ fn human_mode_preview_output_matches_json_mode_shape() {
     });
     assert_eq!(payload["status"], "dry_run");
     assert_eq!(payload["action"], "item_merge");
+}
+
+/// Test runs must never append to the developer's real audit log: an audited command run
+/// through the shared test helpers lands in the scratch audit directory, and nothing is created
+/// under `HOME` (where the default `~/.local/share/cli-anything-zotero` log lives).
+#[test]
+fn test_runs_write_audit_entries_to_the_scratch_dir_never_under_home() {
+    let dir = TestDir::new("merge-preview-audit-isolation");
+    build_merge_preview_fixture(dir.path());
+    let home = dir.path().join("fake-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let server = ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_unavailable()]);
+
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("HOME", home.to_str().unwrap())],
+        &["item", "merge", "KEEP0001", "OTHR0001"],
+    );
+    server.finish();
+
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(
+        payload["action"], "item_merge",
+        "the command must be an audited one"
+    );
+    assert!(
+        !home.join(".local/share/cli-anything-zotero").exists(),
+        "a test run wrote to the default audit location under HOME"
+    );
+    let scratch = std::fs::read_to_string(common::scratch_audit_dir().join("audit.jsonl"))
+        .expect("the audited command must log to the scratch audit dir");
+    assert!(scratch
+        .lines()
+        .any(|line| line.contains("\"item_merge\"") && line.contains("KEEP0001")));
 }

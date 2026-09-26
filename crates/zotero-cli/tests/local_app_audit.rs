@@ -11,7 +11,6 @@ use common::{
 };
 use serde_json::json;
 use std::path::Path;
-use std::process::Command;
 
 fn connector_ping_ok() -> ScriptedResponse {
     ScriptedResponse::json(200, json!({}))
@@ -43,7 +42,7 @@ fn run_cli_human(
     args: &[&str],
 ) -> (i32, String, String) {
     let profile_dir = create_empty_fake_profile(data_dir);
-    let mut command = Command::new(common::bin_path());
+    let mut command = common::cli_command();
     command
         .arg("--data-dir")
         .arg(data_dir)

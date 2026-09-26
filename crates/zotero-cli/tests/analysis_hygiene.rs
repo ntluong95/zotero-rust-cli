@@ -9,7 +9,6 @@ mod common;
 
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use common::{build_fixture_sqlite, run_cli, ScriptedResponse, ScriptedServer, TestDir};
 
@@ -31,7 +30,7 @@ fn run_cli_human(
     extra_env: &[(&str, &str)],
     args: &[&str],
 ) -> (i32, String) {
-    let mut command = Command::new(common::bin_path());
+    let mut command = common::cli_command();
     command
         .arg("--data-dir")
         .arg(data_dir)

@@ -772,9 +772,7 @@ fn selected_personal_library_create_keeps_user_scope() {
 
 #[test]
 fn bare_invocation_prints_help_and_exits_zero() {
-    let output = std::process::Command::new(common::bin_path())
-        .output()
-        .unwrap();
+    let output = common::cli_command().output().unwrap();
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Agent-native Zotero CLI"));
@@ -1249,7 +1247,7 @@ fn item_merge_reports_conflict_when_a_merged_away_key_still_resolves_live() {
 
 #[test]
 fn item_duplicates_is_now_a_recognized_subcommand() {
-    let output = std::process::Command::new(common::bin_path())
+    let output = common::cli_command()
         .args(["item", "duplicates", "--help"])
         .output()
         .unwrap();
@@ -1509,7 +1507,7 @@ fn collection_trash_and_restore_through_the_bridge_match_zotero_semantics() {
 fn collection_restore_no_longer_accepts_with_items() {
     let dir = TestDir::new("collection-restore-with-items");
     build_fixture_sqlite(dir.path());
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_zotero-cli"))
+    let output = common::cli_command()
         .args([
             "collection",
             "restore",

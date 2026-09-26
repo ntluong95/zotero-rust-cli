@@ -376,6 +376,20 @@ pub fn bin_path() -> PathBuf {
     path.join("zotero-cli")
 }
 
+/// The `zotero-cli` binary with its audit log redirected away from the developer's real
+/// `~/.local/share/cli-anything-zotero/audit.jsonl`. Every test spawn goes through this; a test
+/// that asserts audit contents sets its own `ZOTERO_CLI_AUDIT_DIR` afterwards, which wins.
+pub fn cli_command() -> Command {
+    let mut command = Command::new(bin_path());
+    command.env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir());
+    command
+}
+
+/// One scratch audit directory per test process, outside any real user location.
+pub fn scratch_audit_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("zotero-cli-test-audit-{}", std::process::id()))
+}
+
 /// Runs the `zotero-cli` binary pointed at `data_dir` (an explicit `--data-dir` containing a
 /// fixture `zotero.sqlite`) and `port` (via `ZOTERO_HTTP_PORT`, the single mock-server port
 /// standing in for Local API / Connector / JS Bridge), with `--json` always set. `extra_env`
@@ -407,7 +421,7 @@ pub fn run_cli(
     let state_dir = data_dir.join("cli-state");
     let profile_dir = create_empty_fake_profile(data_dir);
     std::fs::create_dir_all(&state_dir).unwrap();
-    let mut command = Command::new(bin_path());
+    let mut command = cli_command();
     command
         .arg("--json")
         .arg("--data-dir")

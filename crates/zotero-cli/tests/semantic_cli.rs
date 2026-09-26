@@ -135,6 +135,11 @@ impl Drop for MockEmbeddingServer {
     }
 }
 
+/// Keeps spawned CLIs from appending to the developer's real audit log.
+fn scratch_audit_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("zotero-cli-test-audit-{}", std::process::id()))
+}
+
 fn bin_path() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop(); // remove test binary name
@@ -200,6 +205,7 @@ fn test_cli_help_for_phase8_commands() {
 
     // item build-index --help
     let output = Command::new(&bin)
+        .env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir())
         .args(["item", "build-index", "--help"])
         .output()
         .unwrap();
@@ -209,6 +215,7 @@ fn test_cli_help_for_phase8_commands() {
 
     // item semantic-search --help
     let output = Command::new(&bin)
+        .env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir())
         .args(["item", "semantic-search", "--help"])
         .output()
         .unwrap();
@@ -220,6 +227,7 @@ fn test_cli_help_for_phase8_commands() {
 
     // item similar --help
     let output = Command::new(&bin)
+        .env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir())
         .args(["item", "similar", "--help"])
         .output()
         .unwrap();
@@ -238,6 +246,7 @@ fn test_cli_missing_database_error_payloads() {
 
     // item build-index with non-existent zotero data dir
     let output = Command::new(&bin)
+        .env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir())
         .args([
             "--json",
             "--data-dir",
@@ -261,6 +270,7 @@ fn test_cli_missing_database_error_payloads() {
 
     // item semantic-search with missing vector db
     let output_search = Command::new(&bin)
+        .env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir())
         .args(["--json", "item", "semantic-search", "biology"])
         .env("ZOTERO_VECTOR_DB", vector_db.to_str().unwrap())
         .output()
@@ -277,6 +287,7 @@ fn test_cli_missing_database_error_payloads() {
 
     // item similar with missing vector db
     let output_sim = Command::new(&bin)
+        .env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir())
         .args(["--json", "item", "similar", "ITEM_BIO"])
         .env("ZOTERO_VECTOR_DB", vector_db.to_str().unwrap())
         .output()
@@ -306,6 +317,7 @@ fn test_cli_end_to_end_workflow() {
 
     // 1. Run build-index --json
     let out_build = Command::new(&bin)
+        .env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir())
         .args([
             "--json",
             "--data-dir",
@@ -327,6 +339,7 @@ fn test_cli_end_to_end_workflow() {
 
     // 2. Run semantic-search --json
     let out_search = Command::new(&bin)
+        .env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir())
         .args([
             "--json",
             "item",
@@ -352,6 +365,7 @@ fn test_cli_end_to_end_workflow() {
 
     // 3. Run semantic-search in human mode (non-JSON)
     let out_search_human = Command::new(&bin)
+        .env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir())
         .args(["item", "semantic-search", "cells and biology"])
         .env("ZOTERO_EMBED_API", server.url())
         .env("ZOTERO_VECTOR_DB", vector_db.to_str().unwrap())
@@ -363,6 +377,7 @@ fn test_cli_end_to_end_workflow() {
 
     // 4. Run item similar --json
     let out_sim = Command::new(&bin)
+        .env("ZOTERO_CLI_AUDIT_DIR", scratch_audit_dir())
         .args([
             "--json",
             "item",
