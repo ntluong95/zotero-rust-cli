@@ -435,6 +435,18 @@ impl JSBridgeClient {
         Ok(map_text_outcome(&resp, "DELETED:", key))
     }
 
+    /// Trash (`deleted = true`) or restore an item. Never erases.
+    pub fn item_set_deleted(
+        &self,
+        library_id: u32,
+        key: &str,
+        deleted: bool,
+    ) -> Result<WriteOutcome> {
+        let code = templates::render_item_set_deleted(library_id, key, deleted)?;
+        let resp = self.execute_js(&code, 10);
+        Ok(map_text_outcome(&resp, "OK:", key))
+    }
+
     pub fn item_attach(
         &self,
         library_id: u32,
@@ -525,6 +537,24 @@ impl JSBridgeClient {
         let code = templates::render_collection_delete(library_id, collection_key, delete_items)?;
         let resp = self.execute_js(&code, 10);
         Ok(map_text_outcome(&resp, "DELETED:", collection_key))
+    }
+
+    /// Trash or restore a collection (and, with `include_items`, its direct items). Never erases.
+    pub fn collection_set_deleted(
+        &self,
+        library_id: u32,
+        collection_key: &str,
+        deleted: bool,
+        include_items: bool,
+    ) -> Result<WriteOutcome> {
+        let code = templates::render_collection_set_deleted(
+            library_id,
+            collection_key,
+            deleted,
+            include_items,
+        )?;
+        let resp = self.execute_js(&code, 30);
+        Ok(map_text_outcome(&resp, "OK:", collection_key))
     }
 
     pub fn collection_remove_item(

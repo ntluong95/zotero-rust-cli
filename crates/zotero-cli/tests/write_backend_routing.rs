@@ -1050,3 +1050,178 @@ fn item_duplicates_is_now_a_recognized_subcommand() {
         "item duplicates is now a supported command in the analysis-hygiene slice"
     );
 }
+
+// ── Trash-by-default delete ─────────────────────────────────────────────────
+
+fn body_text(request: &common::CapturedRequest) -> String {
+    String::from_utf8_lossy(&request.body).into_owned()
+}
+
+#[test]
+fn delete_refusals_never_reach_zotero() {
+    let dir = TestDir::new("delete-refusals");
+    build_fixture_sqlite(dir.path());
+    for args in [
+        vec!["item", "delete", "ITEM0001"],
+        vec!["item", "delete", "ITEM0001", "--permanent"],
+        // `--confirm` never authorizes an erase, not even alongside --permanent.
+        vec!["item", "delete", "ITEM0001", "--permanent", "--confirm"],
+        vec!["item", "restore", "ITEM0001"],
+        vec![
+            "collection",
+            "delete",
+            "COLL0001",
+            "--permanent",
+            "--confirm",
+        ],
+    ] {
+        let server = ScriptedServer::start(vec![]);
+        let (code, payload) = run_cli(dir.path(), server.port, &[], &args);
+        let requests = server.finish();
+        assert_eq!(code, 1, "{args:?} must be refused: {payload}");
+        assert!(
+            requests.is_empty(),
+            "{args:?}: a refused delete must issue no request at all"
+        );
+    }
+}
+
+#[test]
+fn item_delete_confirm_trashes_through_the_local_api_and_never_deletes() {
+    let dir = TestDir::new("delete-trash-local");
+    build_fixture_sqlite(dir.path());
+    let trashed = ScriptedResponse::json(
+        200,
+        json!({
+            "key": "ITEM0001",
+            "version": 6,
+            "library": {"id": 0},
+            "data": {"itemType": "document", "title": "Test Item One", "deleted": 1},
+        }),
+    );
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        local_api_resolve_item(),
+        item_get_response(5, vec![]),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".to_string(), "6".to_string())],
+            body: Vec::new(),
+        },
+        trashed,
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["item", "delete", "ITEM0001", "--confirm"],
+    );
+    let requests = server.finish();
+
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(payload["action"], "item_trash");
+    assert_eq!(payload["recoverable"], true);
+    assert_eq!(requests[4].method, "PATCH");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body_text(&requests[4])).unwrap(),
+        json!({"deleted": 1})
+    );
+    assert!(
+        requests.iter().all(|r| r.method != "DELETE"),
+        "--confirm must never send a DELETE (Zotero's DELETE erases permanently)"
+    );
+}
+
+#[test]
+fn item_delete_and_restore_through_the_bridge_flip_the_deleted_flag() {
+    for (args, readback_deleted, action) in [
+        (
+            vec!["item", "delete", "ITEM0001", "--confirm"],
+            json!(true),
+            "item_trash",
+        ),
+        (
+            vec!["item", "restore", "ITEM0001", "--confirm"],
+            json!(null),
+            "item_restore",
+        ),
+    ] {
+        let dir = TestDir::new("delete-trash-bridge");
+        build_fixture_sqlite(dir.path());
+        let mut data = json!({"itemType": "document", "title": "Test Item One"});
+        if !readback_deleted.is_null() {
+            data["deleted"] = readback_deleted;
+        }
+        let server = ScriptedServer::start(vec![
+            connector_ping_ok(),
+            local_api_probe_unavailable(),
+            bridge_ownership_ok(),
+            bridge_resolve_item("ITEM0001", 1),
+            ScriptedResponse::bridge_string(200, "OK: done ITEM0001"),
+            ScriptedResponse::json(
+                200,
+                json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": data}),
+            ),
+        ]);
+        let (code, payload) = run_cli(dir.path(), server.port, &[], &args);
+        let requests = server.finish();
+
+        assert_eq!(code, 0, "{args:?}: {payload}");
+        assert_eq!(payload["action"], action);
+        let write = body_text(&requests[4]);
+        assert!(write.contains("item.deleted = "), "{write}");
+        assert!(!write.contains("eraseTx"), "trash/restore must never erase");
+    }
+}
+
+#[test]
+fn trash_that_does_not_stick_is_reported_as_a_conflict() {
+    let dir = TestDir::new("delete-trash-conflict");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        bridge_resolve_item("ITEM0001", 1),
+        ScriptedResponse::bridge_string(200, "OK: trashed ITEM0001"),
+        ScriptedResponse::json(
+            200,
+            json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": {"itemType": "document"}}),
+        ),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "delete", "ITEM0001", "--confirm"],
+    );
+    server.finish();
+    assert_eq!(code, 1, "{payload}");
+    assert_eq!(payload["outcome"], "conflict");
+}
+
+#[test]
+fn permanent_yes_erase_is_the_only_path_to_an_erase() {
+    let dir = TestDir::new("delete-erase-bridge");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        bridge_resolve_item("ITEM0001", 1),
+        ScriptedResponse::bridge_string(200, "DELETED: Test Item One"),
+        ScriptedResponse::json(200, json!({"found": false})),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "delete", "ITEM0001", "--permanent", "--yes-erase"],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "{payload}");
+    assert_eq!(payload["action"], "item_erase");
+    assert_eq!(payload["recoverable"], false);
+    assert!(body_text(&requests[4]).contains("eraseTx"));
+}
