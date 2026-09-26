@@ -129,7 +129,10 @@ zotero-cli --json item merge KEEPKEY MERGEKEY --confirm # performs the merge
 
 `item delete` and `collection delete` take `--confirm`, which moves the object to
 Zotero's **trash** — recoverable with `item restore --confirm` /
-`collection restore --confirm`. A permanent erase needs `--permanent --yes-erase`;
+`collection restore --confirm`. Both follow Zotero exactly: trashing a collection
+trashes its subcollections (and, with `--delete-items`, every item in the subtree);
+restoring it restores its subcollections but never its items — restore those with
+`item restore`. A permanent erase needs `--permanent --yes-erase`;
 never pass those unless the user explicitly asked for an unrecoverable erase.
 
 ```bash

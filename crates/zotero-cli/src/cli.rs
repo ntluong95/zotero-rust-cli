@@ -662,8 +662,8 @@ pub enum CollectionCommands {
     /// when available, JS Bridge fallback. Permanent erasure needs `--permanent --yes-erase`.
     Delete {
         collection_key: String,
-        /// Also trash (or, with --permanent --yes-erase, erase) the items directly in this
-        /// collection (JS Bridge only).
+        /// Also trash (or, with --permanent --yes-erase, erase) every item in this collection and
+        /// its subcollections, as Zotero's "Delete Collection and Items" does (JS Bridge only).
         #[arg(long = "delete-items")]
         delete_items: bool,
         /// Required to move the collection to the trash. Never authorizes a permanent erase.
@@ -676,12 +676,11 @@ pub enum CollectionCommands {
         #[arg(long = "yes-erase")]
         yes_erase: bool,
     },
-    /// Restore a collection and its subcollections from Zotero's trash (CLI Bridge required).
+    /// Restore a collection and its trashed subcollections from Zotero's trash, as Zotero's
+    /// "Restore to Library" does (CLI Bridge required). Items trashed with it stay in the trash;
+    /// restore them with `item restore`.
     Restore {
         collection_key: String,
-        /// Also restore the items directly in this collection (JS Bridge only).
-        #[arg(long = "with-items")]
-        with_items: bool,
         /// Required to actually restore the collection.
         #[arg(long)]
         confirm: bool,

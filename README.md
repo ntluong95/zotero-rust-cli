@@ -129,7 +129,8 @@ select the staged `.xpi` → restart Zotero. Full walkthrough in
   `--confirm` is a zero-mutation dry run; `--confirm` performs the merge.
 - Deletes are recoverable. `item delete --confirm` and `collection delete --confirm`
   move to Zotero's trash (undo with `item restore` / `collection restore`).
-  `collection restore` needs the CLI Bridge so nested collections are restored too.
+  `collection restore` needs the CLI Bridge so nested collections are restored too;
+  as in Zotero, it does not restore items trashed with the collection.
   Permanent erasure needs `--permanent --yes-erase`; `--confirm` never erases.
   This differs from the Python CLI, whose `--confirm` erased permanently.
 - `zotero-cli js` is an expert/debugging escape hatch, **not** a write fallback.

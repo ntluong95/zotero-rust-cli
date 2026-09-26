@@ -695,7 +695,6 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         }
         Commands::Collection(CollectionCommands::Restore {
             collection_key,
-            with_items,
             confirm,
         }) => {
             if !confirm {
@@ -710,7 +709,7 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
                 json_mode,
                 &collection_key,
                 false,
-                with_items,
+                false,
             )
         }
         Commands::Collection(CollectionCommands::RemoveItem {

@@ -107,20 +107,23 @@ fn test_render_collection_delete() {
 }
 
 #[test]
-fn collection_trash_and_restore_template_keeps_the_cascade_in_one_transaction() {
+fn collection_trash_and_restore_template_follows_zotero() {
     for deleted in [true, false] {
         let js = render_collection_set_deleted(1, "COL456", deleted, true).unwrap();
         assert!(js.contains("Zotero.DB.executeTransaction(async function ()"));
-        assert!(js.contains("col.getChildItems(false, true)"));
-        assert!(js.contains("await items[i].save();"));
-        assert!(js.contains("await col.save();"));
         assert!(!js.contains("saveTx()"));
+        assert!(!js.contains("eraseTx"));
     }
+    let trash = render_collection_set_deleted(1, "COL456", true, true).unwrap();
+    // Zotero's own Collection#trash() cascades to descendant collections and, with
+    // deleteItems, to every item in the subtree -- not only the direct children.
+    assert!(trash.contains("await col.save({ deleteItems: !!P.includeItems });"));
+    assert!(!trash.contains("getChildItems"));
 
     let restore = render_collection_set_deleted(1, "COL456", false, false).unwrap();
+    // ZoteroPane#restoreSelectedItems: trashed descendant collections come back, items never.
     assert!(restore.contains("col.getDescendents(false, 'collection', true)"));
-    assert!(restore.contains("child.deleted = false;"));
-    assert!(restore.contains("await child.save();"));
+    assert!(restore.contains("children[i].deleted = false;"));
 }
 
 #[test]
