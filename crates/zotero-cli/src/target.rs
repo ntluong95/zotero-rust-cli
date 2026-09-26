@@ -71,6 +71,9 @@ pub struct TargetItem {
     pub library_id: i64,
     /// `"user"` or `"group"` -- what `local_api_scope` needs, without a SQLite round trip.
     pub library_type: String,
+    /// Zotero's `groupID` for a group library (the Local API's `/api/groups/<groupID>` segment,
+    /// which is *not* the local `libraryID`); `None` for the personal library.
+    pub group_id: Option<i64>,
     pub item_type: String,
     /// Zotero's internal numeric item id. `note add` reports it as `parentItemID`.
     pub item_id: i64,
@@ -82,6 +85,7 @@ pub struct TargetCollection {
     pub key: String,
     pub library_id: i64,
     pub library_type: String,
+    pub group_id: Option<i64>,
     pub name: String,
     pub collection_id: i64,
 }
@@ -90,22 +94,33 @@ impl TargetItem {
     /// `catalog::local_api_scope`'s answer, derived from an already-resolved target instead of a
     /// second SQLite `resolve_library` call.
     pub fn local_api_scope(&self) -> anyhow::Result<String> {
-        library_scope(&self.library_type, self.library_id)
+        library_scope(&self.library_type, self.group_id)
     }
 }
 
 impl TargetCollection {
     pub fn local_api_scope(&self) -> anyhow::Result<String> {
-        library_scope(&self.library_type, self.library_id)
+        library_scope(&self.library_type, self.group_id)
     }
 }
 
-/// `catalog::local_api_scope`'s mapping (`catalog.py:41-49`), split out so both the live and the
-/// SQLite paths produce byte-identical scopes.
-pub fn library_scope(library_type: &str, library_id: i64) -> anyhow::Result<String> {
+/// `catalog::local_api_scope`'s mapping, split out so both the live and the SQLite paths produce
+/// byte-identical scopes.
+///
+/// A group library is addressed by its Zotero **`groupID`** (`/api/groups/:groupID`, which Zotero
+/// maps back with `Zotero.Groups.getLibraryIDFromGroupID`), never by the local `libraryID` -- the
+/// two are unrelated numbers (e.g. libraryID 2 is group 4597652), and sending the libraryID
+/// addresses a different group or none at all.
+pub fn library_scope(library_type: &str, group_id: Option<i64>) -> anyhow::Result<String> {
     match library_type {
         "user" => Ok("/api/users/0".to_string()),
-        "group" => Ok(format!("/api/groups/{library_id}")),
+        "group" => match group_id {
+            Some(group_id) => Ok(format!("/api/groups/{group_id}")),
+            None => Err(DomainError::new(
+                "Cannot address this group library through the Zotero Local API: its groupID is unknown",
+            )
+            .into()),
+        },
         other => Err(DomainError::new(format!(
             "Unsupported library type for Zotero Local API: {other}"
         ))
@@ -125,6 +140,7 @@ function describe(item) {
     key: item.key,
     libraryID: item.libraryID,
     libraryType: lib ? lib.libraryType : 'user',
+    groupID: lib && lib.libraryType === 'group' ? Zotero.Groups.getGroupIDFromLibraryID(item.libraryID) : null,
     itemType: Zotero.ItemTypes.getName(item.itemTypeID),
     itemID: item.id
   });
@@ -153,6 +169,7 @@ function describe(col) {
     key: col.key,
     libraryID: col.libraryID,
     libraryType: lib ? lib.libraryType : 'user',
+    groupID: lib && lib.libraryType === 'group' ? Zotero.Groups.getGroupIDFromLibraryID(col.libraryID) : null,
     name: col.name,
     collectionID: col.id
   });
@@ -272,6 +289,7 @@ pub fn resolve_item(
             key: field_str(&found, "key").ok()?,
             library_id: field_i64(&found, "libraryID").ok()?,
             library_type: field_str(&found, "libraryType").ok()?,
+            group_id: found.get("groupID").and_then(Value::as_i64),
             item_type: field_str(&found, "itemType").ok()?,
             item_id: field_i64(&found, "itemID").ok()?,
         })),
@@ -313,10 +331,13 @@ pub fn resolve_item(
         &item.library_id.to_string(),
     )?
     .ok_or_else(|| DomainError::new(format!("Library not found: {}", item.library_id)))?;
+    let group_id =
+        crate::db::group_id_for_library(&runtime.environment.sqlite_path, item.library_id)?;
     Ok(TargetItem {
         key: item.key,
         library_id: item.library_id,
         library_type: library.kind,
+        group_id,
         item_type: item.type_name,
         item_id: item.item_id,
     })
@@ -346,6 +367,7 @@ pub fn resolve_collection(
             key: field_str(&found, "key").ok()?,
             library_id: field_i64(&found, "libraryID").ok()?,
             library_type: field_str(&found, "libraryType").ok()?,
+            group_id: found.get("groupID").and_then(Value::as_i64),
             name: field_str(&found, "name").ok()?,
             collection_id: field_i64(&found, "collectionID").ok()?,
         })),
@@ -381,10 +403,13 @@ pub fn resolve_collection(
         &collection.library_id.to_string(),
     )?
     .ok_or_else(|| DomainError::new(format!("Library not found: {}", collection.library_id)))?;
+    let group_id =
+        crate::db::group_id_for_library(&runtime.environment.sqlite_path, collection.library_id)?;
     Ok(TargetCollection {
         key: collection.key,
         library_id: collection.library_id,
         library_type: library.kind,
+        group_id,
         name: collection.collection_name,
         collection_id: collection.collection_id,
     })
@@ -396,11 +421,12 @@ pub fn resolve_collection(
 pub struct TargetLibrary {
     pub library_id: i64,
     pub library_type: String,
+    pub group_id: Option<i64>,
 }
 
 impl TargetLibrary {
     pub fn local_api_scope(&self) -> anyhow::Result<String> {
-        library_scope(&self.library_type, self.library_id)
+        library_scope(&self.library_type, self.group_id)
     }
 }
 
@@ -411,7 +437,8 @@ if (!lib) { return JSON.stringify({found: false}); }
 return JSON.stringify({
   found: true,
   libraryID: lib.libraryID,
-  libraryType: lib.libraryType
+  libraryType: lib.libraryType,
+  groupID: lib.libraryType === 'group' ? Zotero.Groups.getGroupIDFromLibraryID(lib.libraryID) : null
 });
 "#;
 
@@ -435,6 +462,7 @@ pub fn resolve_default_library(
         return Ok(TargetLibrary {
             library_id: scope_library.unwrap_or(0),
             library_type: "user".to_string(),
+            group_id: None,
         });
     }
 
@@ -451,6 +479,7 @@ pub fn resolve_default_library(
                     return Ok(TargetLibrary {
                         library_id: field_i64(&parsed, "libraryID")?,
                         library_type: field_str(&parsed, "libraryType")?,
+                        group_id: parsed.get("groupID").and_then(Value::as_i64),
                     });
                 }
             }
@@ -465,6 +494,7 @@ pub fn resolve_default_library(
             return Ok(TargetLibrary {
                 library_id,
                 library_type: "user".to_string(),
+                group_id: None,
             });
         }
     }
@@ -473,9 +503,11 @@ pub fn resolve_default_library(
     let library =
         crate::db::resolve_library(&runtime.environment.sqlite_path, &library_id.to_string())?
             .ok_or_else(|| DomainError::new(format!("Library not found: {library_id}")))?;
+    let group_id = crate::db::group_id_for_library(&runtime.environment.sqlite_path, library_id)?;
     Ok(TargetLibrary {
         library_id,
         library_type: library.kind,
+        group_id,
     })
 }
 
@@ -507,7 +539,9 @@ fn local_api_resolve_item(
     };
     match response.status {
         200 => {}
-        404 => return Err(DomainError::new(format!("Item not found: {item_ref}")).into()),
+        // Only the personal library is queried here, so a 404 does not mean the item is absent
+        // everywhere -- it may live in a group library. Let the Bridge or SQLite decide.
+        404 => return Ok(None),
         _ => return Ok(None),
     }
     let json: Value = serde_json::from_str(&response.body)?;
@@ -537,6 +571,7 @@ fn local_api_resolve_item(
         key,
         library_id,
         library_type,
+        group_id: None,
         item_type,
         item_id: 0,
     }))
@@ -562,9 +597,8 @@ fn local_api_resolve_collection(
     };
     match response.status {
         200 => {}
-        404 => {
-            return Err(DomainError::new(format!("Collection not found: {collection_ref}")).into())
-        }
+        // Personal-library-only lookup: a group collection 404s here; defer to the next source.
+        404 => return Ok(None),
         _ => return Ok(None),
     }
     let json: Value = serde_json::from_str(&response.body)?;
@@ -594,6 +628,7 @@ fn local_api_resolve_collection(
         key,
         library_id,
         library_type,
+        group_id: None,
         name,
         collection_id: 0,
     }))
@@ -605,9 +640,14 @@ mod tests {
 
     #[test]
     fn library_scope_matches_catalog_local_api_scope() {
-        assert_eq!(library_scope("user", 1).unwrap(), "/api/users/0");
-        assert_eq!(library_scope("group", 4242).unwrap(), "/api/groups/4242");
-        assert!(library_scope("feed", 7).is_err());
+        assert_eq!(library_scope("user", None).unwrap(), "/api/users/0");
+        // A group is addressed by its groupID, never its local libraryID.
+        assert_eq!(
+            library_scope("group", Some(4597652)).unwrap(),
+            "/api/groups/4597652"
+        );
+        assert!(library_scope("group", None).is_err());
+        assert!(library_scope("feed", None).is_err());
     }
 
     #[test]
@@ -623,7 +663,7 @@ mod tests {
     // into a write path.
     #[test]
     fn resolution_templates_contain_no_mutation_verbs() {
-        for template in [T_RESOLVE_ITEM, T_RESOLVE_COLLECTION] {
+        for template in [T_RESOLVE_ITEM, T_RESOLVE_COLLECTION, T_RESOLVE_LIBRARY] {
             for verb in [
                 "saveTx",
                 "eraseTx",

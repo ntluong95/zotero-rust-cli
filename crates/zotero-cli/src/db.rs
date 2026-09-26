@@ -481,6 +481,18 @@ pub fn resolve_library(sqlite_path: &Path, library_ref: &str) -> anyhow::Result<
     Ok(rows.next().transpose()?)
 }
 
+/// Zotero's `groupID` for a group library, from the `groups` table (`None` for non-group
+/// libraries or schemas without that table). The Local API addresses groups by this id.
+pub fn group_id_for_library(sqlite_path: &Path, library_id: i64) -> anyhow::Result<Option<i64>> {
+    let conn = connect_readonly(sqlite_path)?;
+    if !table_exists(&conn, "groups") {
+        return Ok(None);
+    }
+    let mut stmt = conn.prepare("SELECT groupID FROM groups WHERE libraryID = ?1")?;
+    let mut rows = stmt.query_map([library_id], |row| row.get::<_, i64>(0))?;
+    Ok(rows.next().transpose()?)
+}
+
 /// `default_library_id()` (`zotero_sqlite.py:131-138`).
 pub fn default_library_id(sqlite_path: &Path) -> anyhow::Result<Option<i64>> {
     let libraries = fetch_libraries(sqlite_path)?;
@@ -2099,6 +2111,22 @@ mod tests {
         let path = seed_saved_search_db("saved-search-z9", true);
         let searches = fetch_saved_searches(&path, None).expect("legacy schema must be readable");
         assert_eq!(searches[0].conditions[0].required, Some(1));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn group_id_for_library_maps_local_library_id_to_zotero_group_id() {
+        let path = temp_sqlite_path("group-id-map");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE groups (groupID INTEGER PRIMARY KEY, libraryID INT NOT NULL UNIQUE, name TEXT);
+                 INSERT INTO groups VALUES (4597652, 2, 'ASReview public');",
+            )
+            .unwrap();
+        }
+        assert_eq!(group_id_for_library(&path, 2).unwrap(), Some(4597652));
+        assert_eq!(group_id_for_library(&path, 1).unwrap(), None);
         let _ = std::fs::remove_file(&path);
     }
 }

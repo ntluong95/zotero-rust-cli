@@ -749,7 +749,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         }
         // `item_export()` (`zotero_cli.py:1249-1256`).
         Commands::Item(ItemCommands::Export { item_ref, fmt }) => {
-            let runtime = build_runtime();
+            // Rendering needs the Local API: launch Zotero if it is closed (honoring
+            // ZOTERO_CLI_NO_AUTOLAUNCH), as every other live-backend command does.
+            let runtime = live_runtime(lifecycle::Backend::LocalApi)?;
             let payload =
                 rendering::export_item(&runtime, item_ref.as_deref(), &fmt.to_string(), &session)?;
             if json_mode {
@@ -766,7 +768,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             locale,
             linkwrap,
         }) => {
-            let runtime = build_runtime();
+            // Rendering needs the Local API: launch Zotero if it is closed (honoring
+            // ZOTERO_CLI_NO_AUTOLAUNCH), as every other live-backend command does.
+            let runtime = live_runtime(lifecycle::Backend::LocalApi)?;
             let payload = rendering::citation_item(
                 &runtime,
                 item_ref.as_deref(),
@@ -792,7 +796,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             locale,
             linkwrap,
         }) => {
-            let runtime = build_runtime();
+            // Rendering needs the Local API: launch Zotero if it is closed (honoring
+            // ZOTERO_CLI_NO_AUTOLAUNCH), as every other live-backend command does.
+            let runtime = live_runtime(lifecycle::Backend::LocalApi)?;
             let payload = rendering::bibliography_item(
                 &runtime,
                 item_ref.as_deref(),
@@ -895,7 +901,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             fmt,
             output,
         }) => {
-            let runtime = build_runtime();
+            // Rendering needs the Local API: launch Zotero if it is closed (honoring
+            // ZOTERO_CLI_NO_AUTOLAUNCH), as every other live-backend command does.
+            let runtime = live_runtime(lifecycle::Backend::LocalApi)?;
             export_bib_command(
                 &runtime,
                 &session,
