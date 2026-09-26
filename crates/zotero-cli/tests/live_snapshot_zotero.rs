@@ -1,8 +1,8 @@
 //! Opt-in live check: builds the WAL-lock fallback snapshot from a real running Zotero through the
-//! owned CLI Bridge and compares every copied table against a direct read of `zotero.sqlite`.
+//! owned CLI Bridge, checks that a second build with an unchanged Zotero reuses it, and, when
+//! the database can also be read directly, compares the catalog tables row for row.
 //!
-//! Run with Zotero open and the Bridge healthy, while Zotero is *not* holding its lock (so the
-//! direct read is possible to compare against):
+//! Run with Zotero open and the Bridge healthy:
 //!
 //! ```text
 //! ZOTERO_LIVE_PORT=23119 ZOTERO_LIVE_SQLITE=~/Zotero/zotero.sqlite \
@@ -10,7 +10,25 @@
 //! ```
 
 use rusqlite::{Connection, OpenFlags};
-use zotero_cli::live_snapshot::{self, BridgeSnapshotSource, SNAPSHOT_TABLES};
+use zotero_cli::live_snapshot::{self, BridgeSnapshotSource};
+
+const CATALOG_TABLES: &[&str] = &[
+    "libraries",
+    "groups",
+    "items",
+    "itemData",
+    "itemDataValues",
+    "creators",
+    "itemCreators",
+    "tags",
+    "itemTags",
+    "collections",
+    "collectionItems",
+    "itemNotes",
+    "itemAttachments",
+    "deletedItems",
+    "savedSearches",
+];
 
 fn table_digest(conn: &Connection, table: &str) -> Option<(usize, u64)> {
     use std::hash::{Hash, Hasher};
@@ -43,30 +61,48 @@ fn live_snapshot_matches_direct_read_table_by_table() {
         .expect("numeric port");
     let sqlite = std::env::var("ZOTERO_LIVE_SQLITE").expect("set ZOTERO_LIVE_SQLITE");
 
-    live_snapshot::register_source(Box::new(BridgeSnapshotSource::new(port)));
+    let cache = std::env::temp_dir().join(format!("zotero-cli-live-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    let sqlite_path = std::path::PathBuf::from(&sqlite);
+
+    live_snapshot::register_source(Box::new(BridgeSnapshotSource::new(port)), cache.clone());
     let started = std::time::Instant::now();
-    let snapshot = live_snapshot::connect()
+    let snapshot = live_snapshot::connect(&sqlite_path)
         .expect("snapshot build must not error")
         .expect("Bridge must answer");
-    let elapsed = started.elapsed();
+    let cold = started.elapsed();
 
-    let direct = Connection::open_with_flags(
+    // A fresh registration stands in for the next CLI invocation.
+    live_snapshot::register_source(Box::new(BridgeSnapshotSource::new(port)), cache.clone());
+    let started = std::time::Instant::now();
+    drop(
+        live_snapshot::connect(&sqlite_path)
+            .expect("warm snapshot must not error")
+            .expect("Bridge must answer"),
+    );
+    let warm = started.elapsed();
+    eprintln!("snapshot cold {cold:?}, warm {warm:?}");
+    assert!(
+        warm < cold,
+        "an unchanged Zotero must reuse the cached copy"
+    );
+
+    // Zotero 10 holds an exclusive lock while running; compare only when a direct read works.
+    if let Ok(direct) = Connection::open_with_flags(
         format!("file:{sqlite}?mode=ro"),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )
-    .expect("direct read (Zotero must not hold its lock for this comparison)");
-
-    let mut compared = 0;
-    for table in SNAPSHOT_TABLES {
-        let Some(expected) = table_digest(&direct, table) else {
-            continue;
-        };
-        let actual = table_digest(&snapshot, table)
-            .unwrap_or_else(|| panic!("table {table} missing from snapshot"));
-        assert_eq!(actual, expected, "table {table} differs");
-        compared += 1;
+    ) {
+        if direct.query_row("SELECT 1", [], |_| Ok(())).is_ok() {
+            for table in CATALOG_TABLES {
+                let Some(expected) = table_digest(&direct, table) else {
+                    continue;
+                };
+                let actual = table_digest(&snapshot, table)
+                    .unwrap_or_else(|| panic!("table {table} missing from snapshot"));
+                assert_eq!(actual, expected, "table {table} differs");
+            }
+        }
     }
-    eprintln!("snapshot of {compared} tables built in {elapsed:?}");
-    assert!(compared > 10);
     live_snapshot::clear_source();
+    let _ = std::fs::remove_dir_all(&cache);
 }

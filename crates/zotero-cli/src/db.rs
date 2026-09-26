@@ -288,13 +288,30 @@ pub fn connect_readonly(sqlite_path: &Path) -> anyhow::Result<Connection> {
     // accept — that would trade this bug for a different one.
     let posix_path = sqlite_path.to_string_lossy().replace('\\', "/");
 
-    match open_and_probe(&format!("file:{posix_path}?mode=ro")) {
+    // This process already found the database locked and checked a live copy against the
+    // running Zotero: probing the lock again would only repeat the wait.
+    if crate::live_snapshot::is_validated(sqlite_path) {
+        if let Ok(Some(conn)) = crate::live_snapshot::connect(sqlite_path) {
+            return Ok(conn);
+        }
+    }
+
+    // A WAL reader is only ever blocked by an exclusive locking mode (a running Zotero 10 holds
+    // it for its whole lifetime) or a brief recovery, so waiting a full second only delays the
+    // refusal or the live fallback. Rollback-journal databases keep the longer wait for
+    // Zotero's short write locks.
+    let busy_timeout = if wal_sidecar_path(sqlite_path).exists() {
+        Duration::from_millis(100)
+    } else {
+        Duration::from_secs(1)
+    };
+    match open_and_probe(&format!("file:{posix_path}?mode=ro"), busy_timeout) {
         Ok(conn) => Ok(conn),
         Err(err) if is_sqlite_busy(&err) => {
             if wal_sidecar_path(sqlite_path).exists() {
                 // A running Zotero can still answer through its own connection, which sees
                 // every committed WAL frame; only when it cannot do we refuse.
-                if let Ok(Some(conn)) = crate::live_snapshot::connect() {
+                if let Ok(Some(conn)) = crate::live_snapshot::connect(sqlite_path) {
                     return Ok(conn);
                 }
                 // Tagged, not just worded: callers that have a safe live read path (see
@@ -312,7 +329,10 @@ pub fn connect_readonly(sqlite_path: &Path) -> anyhow::Result<Connection> {
                     ))),
                 )
             } else {
-                open_and_probe(&format!("file:{posix_path}?mode=ro&immutable=1"))
+                open_and_probe(
+                    &format!("file:{posix_path}?mode=ro&immutable=1"),
+                    Duration::from_secs(1),
+                )
             }
         }
         Err(err) => Err(err),
@@ -323,12 +343,12 @@ pub fn connect_readonly(sqlite_path: &Path) -> anyhow::Result<Connection> {
 /// held by another process (Zotero) surfaces here, not on the caller's
 /// first real query — see `connect_readonly`'s doc comment for why the
 /// probe is necessary (the failure occurs at prepare time, not open time).
-fn open_and_probe(uri: &str) -> anyhow::Result<Connection> {
+fn open_and_probe(uri: &str, busy_timeout: Duration) -> anyhow::Result<Connection> {
     let conn = Connection::open_with_flags(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )?;
-    conn.busy_timeout(Duration::from_secs_f64(1.0))?;
+    conn.busy_timeout(busy_timeout)?;
     conn.query_row("SELECT 1", [], |_| Ok(()))?;
     Ok(conn)
 }
@@ -1826,12 +1846,15 @@ mod tests {
         holder
             .execute(&format!("VACUUM INTO '{}'", mirror.to_string_lossy()), [])
             .expect("mirror the lock holder's view");
-        crate::live_snapshot::register_source(Box::new(
-            crate::live_snapshot::tests::FixtureSource {
-                path: mirror.clone(),
-                page_rows: 1,
-            },
-        ));
+        crate::live_snapshot::register_source(
+            Box::new(crate::live_snapshot::tests::FixtureSource::new(
+                mirror.clone(),
+            )),
+            std::env::temp_dir().join(format!(
+                "zotero-cli-wal-locked-live-cache-{}",
+                std::process::id()
+            )),
+        );
 
         let conn =
             connect_readonly(&path).expect("locked WAL database must read via live snapshot");

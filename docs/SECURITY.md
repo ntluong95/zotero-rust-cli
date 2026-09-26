@@ -111,11 +111,19 @@ own 401 rejection.
   bypass flag for that refusal.
 - Reads route around that state only through an already-running,
   ownership-verified Bridge: `item find` and `library list` run Zotero's own
-  search, and other reads load a read-only, in-memory copy of the catalog tables
-  that Zotero reads through its own connection (every committed WAL frame
-  included). The copy lives only in memory for the duration of one command, is
-  never written to disk, and rejects writes (`PRAGMA query_only`). Reads never
-  autolaunch Zotero to do this.
+  search, and other reads use a read-only copy of the database that Zotero writes
+  with `VACUUM INTO` through its own connection (every committed WAL frame
+  included), the same mechanism Zotero's own `vacuum()` uses. The copy is opened
+  read-only with `PRAGMA query_only` and never autolaunches Zotero.
+- **That copy is kept on disk** so later commands can reuse it:
+  `<state dir>/live-snapshot/<hash of the database path>/snapshot-<key>.sqlite`
+  (state dir: `CLI_ANYTHING_ZOTERO_STATE_DIR`, default
+  `~/.config/cli-anything-zotero`). It is a full copy of `zotero.sqlite`, so it
+  holds the same data as the library itself; on Unix the directory is `0700` and
+  the file `0600`. Only the latest copy per data directory is kept. It is reused
+  only while Zotero reports the same change key (its connection, commit counter,
+  and SQLite `total_changes()`), so any write makes the next read copy again. Delete
+  the `live-snapshot` directory at any time; it is rebuilt on demand.
 - **Deletes are recoverable by default.** `item delete --confirm` and
   `collection delete --confirm` move to Zotero's trash. Permanent erasure needs
   `--permanent --yes-erase`, is refused otherwise without contacting Zotero, and

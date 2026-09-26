@@ -129,9 +129,10 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         &paths::current_env_map(),
     )
     .port;
-    live_snapshot::register_source(Box::new(live_snapshot::BridgeSnapshotSource::new(
-        snapshot_port,
-    )));
+    live_snapshot::register_source(
+        Box::new(live_snapshot::BridgeSnapshotSource::new(snapshot_port)),
+        session::session_state_dir().join("live-snapshot"),
+    );
     let session = session::load_session_state();
 
     match command {

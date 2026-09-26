@@ -725,70 +725,40 @@ fn library_list_reads_live_when_sqlite_is_locked() {
 
 // ── Live snapshot fallback for catalog reads ───────────────────────────────
 
-/// The scripted Bridge answers for one captured catalog: capture metadata, one page per copied
-/// table, then release. Rows are read before serving any page, as Zotero's transaction does.
-fn snapshot_responses(sqlite_path: &Path) -> Vec<ScriptedResponse> {
-    let conn = rusqlite::Connection::open(sqlite_path).unwrap();
-    let mut schema = Vec::new();
-    let mut stmt = conn
-        .prepare(
-            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL \
-             AND type IN ('table','index') AND name NOT LIKE 'sqlite_%'",
+/// Seeds the CLI's snapshot cache with a copy of `sqlite_path` under `key`, as an earlier
+/// invocation's `VACUUM INTO` would have left it, and returns that key.
+fn seed_snapshot_cache(data_dir: &Path, sqlite_path: &Path) -> &'static str {
+    let key = "fixture-1-0";
+    let dir = zotero_cli::live_snapshot::cache_dir(
+        &data_dir.join("cli-state").join("live-snapshot"),
+        sqlite_path,
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+    rusqlite::Connection::open(sqlite_path)
+        .unwrap()
+        .execute(
+            "VACUUM INTO ?1",
+            [dir.join(format!("snapshot-{key}.sqlite")).to_string_lossy()],
         )
         .unwrap();
-    let wanted = zotero_cli::live_snapshot::SNAPSHOT_TABLES;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
+    key
+}
+
+/// The JSON params of every Bridge eval request, decoded from the rendered template prelude.
+fn bridge_params(requests: &[common::CapturedRequest]) -> Vec<Value> {
+    requests
+        .iter()
+        .filter(|request| request.path == "/cli-bridge/eval")
+        .filter_map(|request| {
+            let code = std::str::from_utf8(&request.body).unwrap();
+            let encoded = code
+                .strip_prefix("const P = JSON.parse(")?
+                .split_once(");\n")?
+                .0;
+            let serialized: String = serde_json::from_str(encoded).unwrap();
+            Some(serde_json::from_str(&serialized).unwrap())
         })
-        .unwrap();
-    for row in rows {
-        let (kind, name, table, sql) = row.unwrap();
-        if wanted.contains(&table.as_str()) {
-            schema.push((kind, name, table, sql));
-        }
-    }
-    let mut responses = vec![bridge_json_string(json!({
-        "token": "fixture-capture",
-        "schema": schema
-            .iter()
-            .map(|(kind, name, table, sql)| {
-                json!({"type": kind, "name": name, "table": table, "sql": sql})
-            })
-            .collect::<Vec<_>>(),
-    }))];
-    for (kind, _, table, _) in &schema {
-        if kind != "table" {
-            continue;
-        }
-        let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
-        let n = stmt.column_count();
-        let rows: Vec<Value> = stmt
-            .query_map([], |r| {
-                let mut values = Vec::new();
-                for i in 0..n {
-                    values.push(match r.get::<_, rusqlite::types::Value>(i)? {
-                        rusqlite::types::Value::Null => Value::Null,
-                        rusqlite::types::Value::Integer(v) => json!(v),
-                        rusqlite::types::Value::Real(v) => json!(v),
-                        rusqlite::types::Value::Text(v) => json!(v),
-                        rusqlite::types::Value::Blob(v) => json!({"$b": v}),
-                    });
-                }
-                Ok(Value::Array(values))
-            })
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        responses.push(bridge_json_string(json!({"rows": rows, "next": null})));
-    }
-    responses.push(bridge_json_string(json!({"released": true})));
-    responses
+        .collect()
 }
 
 #[test]
@@ -811,37 +781,29 @@ fn catalog_reads_use_a_live_snapshot_while_sqlite_is_locked() {
         drop(offline_server);
         assert_eq!(offline_code, 0, "{args:?} offline: {offline_value}");
 
-        let mut script = vec![
+        // A warm cache: Zotero's change key is unchanged since an earlier invocation copied the
+        // database, so the whole read costs one Bridge round trip and no new copy.
+        let key = seed_snapshot_cache(dir.path(), &sqlite_path);
+        let script = vec![
             connector_ping_ok(),
             local_api_probe_unavailable(),
             bridge_ownership_ok(),
+            bridge_json_string(json!({"key": key, "reused": true})),
         ];
-        script.extend(snapshot_responses(&sqlite_path));
         let _lock = LockedWalDb::hold(&sqlite_path);
         let server = ScriptedServer::start(script);
         let (code, value) = run_cli(dir.path(), server.port, &[], args);
         let requests = server.finish();
 
         assert_eq!(code, 0, "{args:?} must succeed while locked: {value}");
-        let params: Vec<Value> = requests
-            .iter()
-            .filter(|request| request.path == "/cli-bridge/eval")
-            .filter_map(|request| {
-                let code = std::str::from_utf8(&request.body).unwrap();
-                let encoded = code
-                    .strip_prefix("const P = JSON.parse(")?
-                    .split_once(");\n")?
-                    .0;
-                let serialized: String = serde_json::from_str(encoded).unwrap();
-                Some(serde_json::from_str(&serialized).unwrap())
-            })
-            .collect();
-        assert_eq!(params.first().unwrap()["op"], "capture");
-        assert_eq!(params.last().unwrap()["op"], "release");
-        assert_eq!(params.last().unwrap()["token"], "fixture-capture");
-        assert!(params[1..params.len() - 1]
-            .iter()
-            .all(|p| { p["op"] == "rows" && p["token"] == "fixture-capture" && p["offset"] == 0 }));
+        let params = bridge_params(&requests);
+        assert_eq!(
+            params.len(),
+            1,
+            "{args:?}: one Bridge request per read: {params:?}"
+        );
+        assert_eq!(params[0]["op"], "snapshot");
+        assert_eq!(params[0]["have"], json!([key]));
         if args[0] != "session" {
             assert_eq!(
                 value, offline_value,
@@ -923,3 +885,4 @@ fn all_libraries_honors_fields_scope_through_the_local_api_per_library() {
         "libraryID must never be used as a groupID: {paths:?}"
     );
 }
+
