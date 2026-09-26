@@ -21,6 +21,51 @@ use serde_json::json;
 
 const SERVER_ID: &str = "TEST-SERVER-1";
 
+fn select_library(dir: &std::path::Path, library_id: i64) {
+    let state_dir = dir.join("cli-state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(
+        state_dir.join("session.json"),
+        json!({"current_library": library_id}).to_string(),
+    )
+    .unwrap();
+}
+
+fn group_resolution(key: &str, object: &str) -> ScriptedResponse {
+    let mut resolved = json!({
+        "found": true,
+        "key": key,
+        "libraryID": 2,
+        "libraryType": "group",
+        "groupID": 4597652,
+    });
+    match object {
+        "item" => {
+            resolved["itemType"] = json!("document");
+            resolved["itemID"] = json!(21);
+        }
+        "collection" => {
+            resolved["name"] = json!("Group Collection");
+            resolved["collectionID"] = json!(31);
+        }
+        "library" => {}
+        _ => panic!("unexpected object"),
+    }
+    ScriptedResponse::json(200, json!(resolved.to_string()))
+}
+
+fn group_object_response(key: &str, name: &str, version: i64) -> ScriptedResponse {
+    ScriptedResponse::json(
+        200,
+        json!({
+            "key": key,
+            "version": version,
+            "library": {"id": 4597652, "type": "group"},
+            "data": {"name": name},
+        }),
+    )
+}
+
 fn local_api_probe_available() -> ScriptedResponse {
     ScriptedResponse::json_with_headers(
         200,
@@ -554,6 +599,162 @@ fn collection_create_preserves_the_servers_affected_key() {
     assert_eq!(code, 0, "payload: {payload}");
     assert_eq!(payload["key"], "NEWCOL01");
     assert_no_forbidden_keys(&payload, &["backend", "server_id", "version"], "$");
+}
+
+#[test]
+fn selected_group_item_key_resolves_in_group_before_local_api_write() {
+    let dir = TestDir::new("selected-group-item");
+    build_fixture_sqlite(dir.path()); // Also contains ITEM0001 in My Library.
+    select_library(dir.path(), 2);
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        bridge_ownership_ok(),
+        group_resolution("ITEM0001", "item"),
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "ITEM0001", "version": 5,
+                "library": {"id": 4597652, "type": "group"},
+                "data": {"itemType": "document", "title": "Old Title", "collections": [], "tags": []},
+            }),
+        ),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".into(), "6".into())],
+            body: Vec::new(),
+        },
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "ITEM0001", "version": 6,
+                "library": {"id": 4597652, "type": "group"},
+                "data": {"itemType": "document", "title": "New Title", "collections": [], "tags": []},
+            }),
+        ),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["item", "update", "ITEM0001", "--field", "title=New Title"],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(requests.len(), 7);
+    assert_eq!(requests[3].method, "POST"); // Bridge resolution precedes any item GET.
+    assert_eq!(requests[5].path, "/api/groups/4597652/items/ITEM0001");
+    assert_eq!(requests[5].method, "PATCH");
+}
+
+#[test]
+fn selected_group_collection_key_resolves_in_group_before_local_api_write() {
+    let dir = TestDir::new("selected-group-collection");
+    build_fixture_sqlite(dir.path()); // Also contains COLLE001 in My Library.
+    select_library(dir.path(), 2);
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        bridge_ownership_ok(),
+        group_resolution("COLLE001", "collection"),
+        group_object_response("COLLE001", "Group Collection", 1),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".into(), "2".into())],
+            body: Vec::new(),
+        },
+        group_object_response("COLLE001", "Renamed Collection", 2),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &[
+            "collection",
+            "rename",
+            "COLLE001",
+            "--name",
+            "Renamed Collection",
+        ],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(requests.len(), 7);
+    assert_eq!(requests[5].path, "/api/groups/4597652/collections/COLLE001");
+    assert_eq!(requests[5].method, "PATCH");
+}
+
+#[test]
+fn selected_group_collection_create_uses_group_id_scope() {
+    let dir = TestDir::new("selected-group-create");
+    build_fixture_sqlite(dir.path());
+    select_library(dir.path(), 2);
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        bridge_ownership_ok(),
+        group_resolution("", "library"),
+        ScriptedResponse::json(200, json!([])),
+        ScriptedResponse::json(
+            201,
+            json!({
+                "successful": {"0": {"key": "NEWCOL01", "version": 1}}
+            }),
+        ),
+        group_object_response("NEWCOL01", "New Group Collection", 1),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["collection", "create", "New Group Collection"],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(requests.len(), 7);
+    assert_eq!(
+        requests[4].path,
+        "/api/groups/4597652/collections?format=json"
+    );
+    assert_eq!(requests[5].path, "/api/groups/4597652/collections");
+    assert_eq!(requests[5].method, "POST");
+}
+
+#[test]
+fn selected_personal_library_create_keeps_user_scope() {
+    let dir = TestDir::new("selected-personal-create");
+    build_fixture_sqlite(dir.path());
+    select_library(dir.path(), 1);
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        bridge_ownership_ok(),
+        ScriptedResponse::json(
+            200,
+            json!(json!({
+                "found": true,
+                "libraryID": 1,
+                "libraryType": "user",
+                "groupID": null,
+            })
+            .to_string()),
+        ),
+        ScriptedResponse::json(200, json!([])),
+        ScriptedResponse::json(
+            201,
+            json!({"successful": {"0": {"key": "NEWCOL01", "version": 1}}}),
+        ),
+        local_api_resolve_collection("NEWCOL01", "New Personal Collection"),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["collection", "create", "New Personal Collection"],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(requests[5].path, "/api/users/0/collections");
 }
 
 // ── O. bare `zotero-cli` -> help, exit 0 ──

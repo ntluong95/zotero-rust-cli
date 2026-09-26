@@ -676,7 +676,7 @@ pub enum CollectionCommands {
         #[arg(long = "yes-erase")]
         yes_erase: bool,
     },
-    /// Restore a collection from Zotero's trash. Local API when available, JS Bridge fallback.
+    /// Restore a collection and its subcollections from Zotero's trash (CLI Bridge required).
     Restore {
         collection_key: String,
         /// Also restore the items directly in this collection (JS Bridge only).

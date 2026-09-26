@@ -11,6 +11,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+harness/current/
 
 # OS
 .DS_Store

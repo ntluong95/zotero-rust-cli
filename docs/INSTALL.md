@@ -220,7 +220,9 @@ server. The Bridge is needed for privileged operations Zotero exposes only to
 in-app JavaScript: `item merge --confirm`, `item attach`, `item search-fulltext`,
 `item search-annotations`, `item annotations`, `item find-pdf`,
 `collection stats`, `sync`, `import pmid`, `js`, and as the write fallback on
-Zotero ≤9 where no Local API exists.
+Zotero ≤9 where no Local API exists. `collection restore` also needs the Bridge:
+Zotero's Local API does not list trashed child collections, so it cannot restore
+the full collection hierarchy.
 
 ### The compatible XPI is bundled
 

@@ -195,14 +195,13 @@ fn is_numeric_ref(value: &str) -> bool {
     value.trim().parse::<i64>().is_ok()
 }
 
-/// The session's `current_library` as a numeric id, when it is set to one. A non-numeric session
-/// library (a name or key) is left for the SQLite path to resolve -- the live resolver simply
-/// searches every open library in that case rather than guessing.
-fn session_library_id(session: &SessionState) -> Option<i64> {
+/// A selected library is a local numeric libraryID. Reject corrupt session values before a
+/// live lookup; treating them as absent could address a personal object with the same key.
+fn selected_session_library_id(session: &SessionState) -> anyhow::Result<Option<i64>> {
     match &session.current_library {
-        Some(Value::Number(n)) => n.as_i64(),
-        Some(Value::String(s)) => s.trim().parse::<i64>().ok(),
-        _ => None,
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.is_empty() => Ok(None),
+        _ => Ok(Some(crate::session::session_library_id(session, 0)?)),
     }
 }
 
@@ -282,7 +281,7 @@ pub fn resolve_item(
     let Some(resolved) = resolved else {
         return Err(DomainError::new("Item reference required or set it in session first").into());
     };
-    let scope_library = session_library_id(session);
+    let scope_library = selected_session_library_id(session)?;
 
     let try_bridge = || match bridge_resolve(bridge, T_RESOLVE_ITEM, &resolved, scope_library) {
         Ok(Some(found)) => Some(Ok(TargetItem {
@@ -301,7 +300,16 @@ pub fn resolve_item(
         ))))),
         Err(_) => None,
     };
-    let try_local_api = || local_api_resolve_item(runtime, &resolved);
+    // The Local API lookup below only addresses My Library. A selected library must be
+    // resolved through the Bridge (or the scoped SQLite fallback), even when the write itself
+    // uses the Local API. Keys can occur in both a personal and a group library.
+    let try_local_api = || {
+        if scope_library.is_some() {
+            Ok(None)
+        } else {
+            local_api_resolve_item(runtime, &resolved)
+        }
+    };
 
     match prefer {
         Prefer::Bridge => {
@@ -313,11 +321,17 @@ pub fn resolve_item(
             }
         }
         Prefer::LocalApi => {
-            if let Some(target) = try_local_api()? {
-                return Ok(target);
-            }
-            if let Some(result) = try_bridge() {
-                return result;
+            if scope_library.is_some() {
+                if let Some(result) = try_bridge() {
+                    return result;
+                }
+            } else {
+                if let Some(target) = try_local_api()? {
+                    return Ok(target);
+                }
+                if let Some(result) = try_bridge() {
+                    return result;
+                }
             }
         }
     }
@@ -359,7 +373,7 @@ pub fn resolve_collection(
             DomainError::new("Collection reference required or set it in session first").into(),
         );
     };
-    let scope_library = session_library_id(session);
+    let scope_library = selected_session_library_id(session)?;
 
     let try_bridge = || match bridge_resolve(bridge, T_RESOLVE_COLLECTION, &resolved, scope_library)
     {
@@ -376,7 +390,13 @@ pub fn resolve_collection(
         ))))),
         Err(_) => None,
     };
-    let try_local_api = || local_api_resolve_collection(runtime, &resolved);
+    let try_local_api = || {
+        if scope_library.is_some() {
+            Ok(None)
+        } else {
+            local_api_resolve_collection(runtime, &resolved)
+        }
+    };
 
     match prefer {
         Prefer::Bridge => {
@@ -388,11 +408,17 @@ pub fn resolve_collection(
             }
         }
         Prefer::LocalApi => {
-            if let Some(target) = try_local_api()? {
-                return Ok(target);
-            }
-            if let Some(result) = try_bridge() {
-                return result;
+            if scope_library.is_some() {
+                if let Some(result) = try_bridge() {
+                    return result;
+                }
+            } else {
+                if let Some(target) = try_local_api()? {
+                    return Ok(target);
+                }
+                if let Some(result) = try_bridge() {
+                    return result;
+                }
             }
         }
     }
@@ -451,16 +477,16 @@ pub fn resolve_default_library(
     session: &SessionState,
     prefer: Prefer,
 ) -> anyhow::Result<TargetLibrary> {
-    let scope_library = session_library_id(session);
+    let scope_library = selected_session_library_id(session)?;
 
-    // A Local-API-routed create needs no lookup at all: the personal-library scope is fixed
+    // An unscoped Local-API-routed create needs no lookup: the personal-library scope is fixed
     // (`/api/users/0`), and `library.id` is reported as `0` by every Local API response, so
     // reporting it the same way here keeps a resolved library comparable with a resolved
     // collection. Probing the Bridge for a fact the caller will not use would be a wasted round
     // trip on every `collection create`.
-    if prefer == Prefer::LocalApi && runtime.local_api_available {
+    if prefer == Prefer::LocalApi && runtime.local_api_available && scope_library.is_none() {
         return Ok(TargetLibrary {
-            library_id: scope_library.unwrap_or(0),
+            library_id: 0,
             library_type: "user".to_string(),
             group_id: None,
         });
@@ -486,19 +512,8 @@ pub fn resolve_default_library(
         }
     }
 
-    // The Local API exposes no library enumeration, so there is no middle source here: a session
-    // library that is already a plain id needs no lookup at all to be usable as a user-library
-    // scope, and anything else falls through to SQLite.
-    if let Some(library_id) = scope_library {
-        if runtime.local_api_available {
-            return Ok(TargetLibrary {
-                library_id,
-                library_type: "user".to_string(),
-                group_id: None,
-            });
-        }
-    }
-
+    // The Local API cannot map a local libraryID to its type or groupID. Never infer that a
+    // selected library is personal: the SQLite fallback below supplies the real metadata.
     let library_id = catalog::default_library(runtime, session)?;
     let library =
         crate::db::resolve_library(&runtime.environment.sqlite_path, &library_id.to_string())?

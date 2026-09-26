@@ -107,6 +107,23 @@ fn test_render_collection_delete() {
 }
 
 #[test]
+fn collection_trash_and_restore_template_keeps_the_cascade_in_one_transaction() {
+    for deleted in [true, false] {
+        let js = render_collection_set_deleted(1, "COL456", deleted, true).unwrap();
+        assert!(js.contains("Zotero.DB.executeTransaction(async function ()"));
+        assert!(js.contains("col.getChildItems(false, true)"));
+        assert!(js.contains("await items[i].save();"));
+        assert!(js.contains("await col.save();"));
+        assert!(!js.contains("saveTx()"));
+    }
+
+    let restore = render_collection_set_deleted(1, "COL456", false, false).unwrap();
+    assert!(restore.contains("col.getDescendents(false, 'collection', true)"));
+    assert!(restore.contains("child.deleted = false;"));
+    assert!(restore.contains("await child.save();"));
+}
+
+#[test]
 fn test_render_collection_remove_item() {
     let js = render_collection_remove_item(1, "ITEM123", "COL456").expect("render succeeds");
     assert!(js.starts_with("const P = JSON.parse("));

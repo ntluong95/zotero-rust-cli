@@ -57,48 +57,88 @@ pub const SNAPSHOT_TABLES: &[&str] = &[
 
 /// Response-size budget per Bridge page. The Bridge client reads bodies with ureq's default
 /// 10 MB limit, and the page is JSON-encoded twice on the way back, so stay well under it.
-const PAGE_BYTE_BUDGET: usize = 3_000_000;
+const PAGE_BYTE_BUDGET: usize = 1_000_000;
+/// Upper bound on serialized rows retained temporarily inside Zotero. Actual JS heap use is
+/// higher; refuse large catalogs instead of risking an incomplete or unbounded capture.
+const CAPTURE_BYTE_BUDGET: usize = 256_000_000;
 
 /// Read-only by construction: `SELECT` against `sqlite_master` and a caller-supplied table name
 /// that Rust only ever takes from [`SNAPSHOT_TABLES`].
 const T_SNAPSHOT: &str = r#"
-if (P.op === 'schema') {
-  var marks = P.tables.map(function () { return '?'; }).join(',');
-  var rows = await Zotero.DB.queryAsync(
-    "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL "
-    + "AND type IN ('table', 'index') AND substr(name, 1, 7) != 'sqlite_' AND tbl_name IN (" + marks + ")",
-    P.tables
-  );
-  return JSON.stringify((rows || []).map(function (r) {
-    return {type: r.type, name: r.name, table: r.tbl_name, sql: r.sql};
-  }));
+var cache = globalThis.__zoteroCliCatalogCaptures ||
+  (globalThis.__zoteroCliCatalogCaptures = new Map());
+var now = Date.now();
+for (var entry of cache) {
+  if (now - entry[1].created > 300000) { cache.delete(entry[0]); }
 }
+if (P.op === 'release') { cache.delete(P.token); return JSON.stringify({released: true}); }
+if (P.op === 'capture') {
+  var marks = P.tables.map(function () { return '?'; }).join(',');
+  var captured = {created: now, tables: Object.create(null), schema: []};
+  var total = 0;
+  // Zotero's DB connection runs the callback in one SQLite transaction. All table reads see
+  // the same point in time, even if the library changes while pages are transferred later.
+  await Zotero.DB.executeTransaction(async function () {
+    var schema = await Zotero.DB.queryAsync(
+      "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL " +
+      "AND type IN ('table', 'index') AND substr(name, 1, 7) != 'sqlite_' " +
+      "AND tbl_name IN (" + marks + ")", P.tables);
+    captured.schema = (schema || []).map(function (r) {
+      return {type: r.type, name: r.name, table: r.tbl_name, sql: r.sql};
+    });
+    for (var table of P.tables) {
+      if (!captured.schema.some(function (s) { return s.type === 'table' && s.table === table; })) {
+        continue;
+      }
+      var rows = [];
+      await Zotero.DB.queryAsync('SELECT * FROM "' + table + '"', [], {
+        onRow: function (row) {
+          var values = [];
+          for (var i = 0; i < row.numEntries; i++) {
+            var v = row.getResultByIndex(i);
+            if (row.getTypeOfIndex(i) === 4) { v = {'$b': Array.prototype.slice.call(v)}; }
+            values.push(v);
+          }
+          var size = JSON.stringify(values).length;
+          if (size > P.maxPageBytes) {
+            throw new Error('live snapshot: one catalog row exceeds page byte budget');
+          }
+          total += size;
+          if (total > P.maxCaptureBytes) {
+            throw new Error('live snapshot: catalog exceeds capture byte budget');
+          }
+          rows.push(values);
+        }
+      });
+      captured.tables[table] = rows;
+    }
+  });
+  var token = Zotero.Utilities.randomString(24);
+  cache.set(token, captured);
+  setTimeout(function () { cache.delete(token); }, 300000);
+  return JSON.stringify({token: token, schema: captured.schema});
+}
+var captured = cache.get(P.token);
+if (!captured) { throw new Error('live snapshot: capture expired'); }
+var sourceRows = captured.tables[P.table];
+if (!sourceRows) { throw new Error('live snapshot: table absent from capture'); }
 var out = [];
 var bytes = 0;
-var seen = 0;
-var next = null;
-await Zotero.DB.queryAsync('SELECT * FROM "' + P.table + '" LIMIT -1 OFFSET ?', [P.offset], {
-  onRow: function (row, cancel) {
-    if (bytes >= P.maxBytes) { next = P.offset + seen; cancel(); return; }
-    var values = [];
-    for (var i = 0; i < row.numEntries; i++) {
-      var v = row.getResultByIndex(i);
-      if (row.getTypeOfIndex(i) === 4) { v = {'$b': Array.prototype.slice.call(v)}; }
-      values.push(v);
-    }
-    bytes += JSON.stringify(values).length;
-    out.push(values);
-    seen++;
-  }
-});
-return JSON.stringify({rows: out, next: next});
+var offset = P.offset;
+while (offset < sourceRows.length) {
+  var size = JSON.stringify(sourceRows[offset]).length;
+  if (bytes + size > P.maxBytes && out.length) { break; }
+  out.push(sourceRows[offset]);
+  bytes += size;
+  offset++;
+}
+return JSON.stringify({rows: out, next: offset < sourceRows.length ? offset : null});
 "#;
 
 /// Where snapshot data comes from. The production source is the owned Bridge; tests supply a
 /// fake that answers the same two requests from a fixture database.
 pub trait SnapshotSource {
-    /// Answers `{"op": "schema", "tables": [...]}` with `[{type, name, table, sql}]`, and
-    /// `{"op": "rows", "table", "offset", "maxBytes"}` with `{rows: [[...]], next: offset|null}`.
+    /// Answers capture with `{token, schema}`, then tokenized rows with `{rows, next}`.
     /// `None` means the source cannot answer at all.
     fn request(&self, request: &Value) -> Option<Value>;
 }
@@ -120,7 +160,12 @@ impl SnapshotSource for BridgeSnapshotSource {
         let code = crate::bridge::templates::render(T_SNAPSHOT, request).ok()?;
         let resp = crate::bridge::JSBridgeClient::new(self.port).execute_js(&code, 60);
         if !resp.ok {
-            return None;
+            // Preserve the caller's original locked-database refusal when the Bridge is absent.
+            // A capture rejected inside Zotero must retain its explicit reason.
+            let error = resp.error?;
+            return error
+                .contains("live snapshot:")
+                .then(|| json!({"error": error}));
         }
         match resp.data? {
             Value::String(text) => serde_json::from_str(&text).ok(),
@@ -202,11 +247,33 @@ pub fn connect() -> anyhow::Result<Option<Connection>> {
 }
 
 fn build(source: &dyn SnapshotSource) -> anyhow::Result<Option<Built>> {
-    let Some(schema) = source.request(&json!({"op": "schema", "tables": SNAPSHOT_TABLES})) else {
+    let Some(capture) = source.request(&json!({
+        "op": "capture", "tables": SNAPSHOT_TABLES,
+        "maxPageBytes": PAGE_BYTE_BUDGET, "maxCaptureBytes": CAPTURE_BYTE_BUDGET,
+    })) else {
         return Ok(None);
     };
-    let Some(entries) = schema.as_array() else {
-        anyhow::bail!("live snapshot: unexpected schema response: {schema}");
+    if let Some(error) = capture.get("error").and_then(Value::as_str) {
+        anyhow::bail!("{error}");
+    }
+    let token = capture
+        .get("token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("live snapshot: missing capture token"))?;
+    let result = build_captured(source, &capture, token);
+    // A failed import must not strand a large copy inside Zotero. Interrupted processes are
+    // covered by the Bridge cache's five-minute expiry.
+    let _ = source.request(&json!({"op": "release", "token": token}));
+    result.map(Some)
+}
+
+fn build_captured(
+    source: &dyn SnapshotSource,
+    capture: &Value,
+    token: &str,
+) -> anyhow::Result<Built> {
+    let Some(entries) = capture.get("schema").and_then(Value::as_array) else {
+        anyhow::bail!("live snapshot: unexpected schema response: {capture}");
     };
 
     let uri = format!(
@@ -259,6 +326,7 @@ fn build(source: &dyn SnapshotSource) -> anyhow::Result<Option<Built>> {
             let page = source
                 .request(&json!({
                     "op": "rows",
+                    "token": token,
                     "table": table,
                     "offset": offset,
                     "maxBytes": PAGE_BYTE_BUDGET,
@@ -289,10 +357,10 @@ fn build(source: &dyn SnapshotSource) -> anyhow::Result<Option<Built>> {
     }
     tx.commit()?;
 
-    Ok(Some(Built {
+    Ok(Built {
         uri,
         _keeper: keeper,
-    }))
+    })
 }
 
 fn to_sql_value(value: &Value) -> rusqlite::types::Value {
@@ -331,8 +399,16 @@ pub(crate) mod tests {
 
     impl SnapshotSource for FixtureSource {
         fn request(&self, request: &Value) -> Option<Value> {
-            let conn = Connection::open(&self.path).ok()?;
-            if request["op"] == "schema" {
+            let captured_path = self.path.with_extension("captured.sqlite");
+            if request["op"] == "release" {
+                let _ = std::fs::remove_file(captured_path);
+                return Some(json!({"released": true}));
+            }
+            if request["op"] == "capture" {
+                std::fs::copy(&self.path, &captured_path).ok()?;
+            }
+            let conn = Connection::open(&captured_path).ok()?;
+            if request["op"] == "capture" {
                 let wanted: Vec<String> = request["tables"]
                     .as_array()?
                     .iter()
@@ -355,7 +431,7 @@ pub(crate) mod tests {
                     .filter_map(Result::ok)
                     .filter(|e| wanted.iter().any(|w| e["table"] == w.as_str()))
                     .collect::<Vec<_>>();
-                return Some(Value::Array(rows));
+                return Some(json!({"token": "fixture", "schema": rows}));
             }
             let table = request["table"].as_str()?;
             let offset = request["offset"].as_i64()?;
@@ -392,6 +468,27 @@ pub(crate) mod tests {
     impl SnapshotSource for Unavailable {
         fn request(&self, _request: &Value) -> Option<Value> {
             None
+        }
+    }
+
+    struct MutatingSource {
+        fixture: FixtureSource,
+        changed: std::cell::Cell<bool>,
+    }
+
+    impl SnapshotSource for MutatingSource {
+        fn request(&self, request: &Value) -> Option<Value> {
+            let response = self.fixture.request(request);
+            if request["op"] == "rows" && request["table"] == "tags" && !self.changed.replace(true)
+            {
+                // Insert ahead of the next OFFSET and delete a later row after the first page.
+                // Independent live queries would return a skipped or mixed catalog.
+                let conn = Connection::open(&self.fixture.path).ok()?;
+                conn.execute("DELETE FROM tags WHERE tagID = 3", []).ok()?;
+                conn.execute("INSERT INTO tags VALUES (0, 'new')", [])
+                    .ok()?;
+            }
+            response
         }
     }
 
@@ -448,6 +545,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn source_mutation_between_pages_does_not_change_captured_catalog() {
+        let path = fixture("mutation");
+        register_source(Box::new(MutatingSource {
+            fixture: FixtureSource {
+                path: path.clone(),
+                page_rows: 1,
+            },
+            changed: std::cell::Cell::new(false),
+        }));
+        let conn = connect().unwrap().expect("snapshot built");
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM tags ORDER BY tagID")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(names, ["alpha", "beta", "gamma"]);
+        clear_source();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn snapshot_is_built_once_per_registration() {
         let path = fixture("once");
         register_source(Box::new(FixtureSource {
@@ -478,17 +598,8 @@ pub(crate) mod tests {
     #[test]
     fn snapshot_template_is_read_only() {
         for verb in [
-            "saveTx",
-            "eraseTx",
-            "merge",
-            "trash",
-            "setField",
-            "INSERT",
-            "UPDATE",
-            "DELETE",
-            "DROP",
-            "ALTER",
-            "executeTransaction",
+            "saveTx", "eraseTx", "merge", "trash", "setField", "INSERT", "UPDATE", "DELETE",
+            "DROP", "ALTER",
         ] {
             assert!(
                 !T_SNAPSHOT.contains(verb),

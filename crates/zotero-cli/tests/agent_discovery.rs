@@ -725,8 +725,8 @@ fn library_list_reads_live_when_sqlite_is_locked() {
 
 // ── Live snapshot fallback for catalog reads ───────────────────────────────
 
-/// The scripted Bridge answers for one full live snapshot of `sqlite_path`, in the exact order
-/// `live_snapshot::build` requests them: the schema, then one page per copied table.
+/// The scripted Bridge answers for one captured catalog: capture metadata, one page per copied
+/// table, then release. Rows are read before serving any page, as Zotero's transaction does.
 fn snapshot_responses(sqlite_path: &Path) -> Vec<ScriptedResponse> {
     let conn = rusqlite::Connection::open(sqlite_path).unwrap();
     let mut schema = Vec::new();
@@ -753,14 +753,15 @@ fn snapshot_responses(sqlite_path: &Path) -> Vec<ScriptedResponse> {
             schema.push((kind, name, table, sql));
         }
     }
-    let mut responses = vec![bridge_json_string(Value::Array(
-        schema
+    let mut responses = vec![bridge_json_string(json!({
+        "token": "fixture-capture",
+        "schema": schema
             .iter()
             .map(|(kind, name, table, sql)| {
                 json!({"type": kind, "name": name, "table": table, "sql": sql})
             })
-            .collect(),
-    ))];
+            .collect::<Vec<_>>(),
+    }))];
     for (kind, _, table, _) in &schema {
         if kind != "table" {
             continue;
@@ -786,6 +787,7 @@ fn snapshot_responses(sqlite_path: &Path) -> Vec<ScriptedResponse> {
             .collect();
         responses.push(bridge_json_string(json!({"rows": rows, "next": null})));
     }
+    responses.push(bridge_json_string(json!({"released": true})));
     responses
 }
 
@@ -818,9 +820,28 @@ fn catalog_reads_use_a_live_snapshot_while_sqlite_is_locked() {
         let _lock = LockedWalDb::hold(&sqlite_path);
         let server = ScriptedServer::start(script);
         let (code, value) = run_cli(dir.path(), server.port, &[], args);
-        server.finish();
+        let requests = server.finish();
 
         assert_eq!(code, 0, "{args:?} must succeed while locked: {value}");
+        let params: Vec<Value> = requests
+            .iter()
+            .filter(|request| request.path == "/cli-bridge/eval")
+            .filter_map(|request| {
+                let code = std::str::from_utf8(&request.body).unwrap();
+                let encoded = code
+                    .strip_prefix("const P = JSON.parse(")?
+                    .split_once(");\n")?
+                    .0;
+                let serialized: String = serde_json::from_str(encoded).unwrap();
+                Some(serde_json::from_str(&serialized).unwrap())
+            })
+            .collect();
+        assert_eq!(params.first().unwrap()["op"], "capture");
+        assert_eq!(params.last().unwrap()["op"], "release");
+        assert_eq!(params.last().unwrap()["token"], "fixture-capture");
+        assert!(params[1..params.len() - 1]
+            .iter()
+            .all(|p| { p["op"] == "rows" && p["token"] == "fixture-capture" && p["offset"] == 0 }));
         if args[0] != "session" {
             assert_eq!(
                 value, offline_value,

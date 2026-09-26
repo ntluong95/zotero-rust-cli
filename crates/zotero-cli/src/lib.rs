@@ -2740,9 +2740,15 @@ fn collection_set_deleted_command(
     let prefer = target::Prefer::for_runtime(runtime);
     let collection =
         target::resolve_collection(runtime, &client, Some(collection_key), session, prefer)?;
-    // Cascading to the contained items has no single Local API primitive, so that variant always
-    // uses the Bridge, mirroring `collection delete --delete-items`.
-    let now_trashed = if runtime.local_api_writes_available && !include_items {
+    if !deleted && !client.bridge_endpoint_active() {
+        anyhow::bail!(
+            "collection restore requires the CLI Bridge to restore trashed descendant collections; install or enable the Bridge before retrying"
+        );
+    }
+    // The Local API cannot enumerate trashed descendant collections. Restore through the Bridge
+    // so the parent and every descendant are restored together, including when it has no items.
+    // Deletion without items can still use the Local API: Zotero cascades collection trashing.
+    let now_trashed = if runtime.local_api_writes_available && !include_items && deleted {
         let scope = collection.local_api_scope()?;
         let path = format!("{scope}/collections/{}", collection.key);
         let current = match write_router::verify_present(runtime, &path) {
