@@ -71,20 +71,19 @@ pub fn default_library(runtime: &RuntimeContext, session: &SessionState) -> anyh
     }
 }
 
-/// `local_api_scope()` (`catalog.py:41-49`).
+/// `local_api_scope()` (`catalog.py:41-49`), addressing a group by its Zotero `groupID` (see
+/// `target::library_scope`), which upstream got wrong by sending the local `libraryID`.
 pub fn local_api_scope(runtime: &RuntimeContext, library_id: i64) -> anyhow::Result<String> {
     let library = db::resolve_library(&runtime.environment.sqlite_path, &library_id.to_string())?;
     let Some(library) = library else {
         return Err(DomainError::new(format!("Library not found: {library_id}")).into());
     };
-    match library.kind.as_str() {
-        "user" => Ok("/api/users/0".to_string()),
-        "group" => Ok(format!("/api/groups/{}", library.library_id)),
-        other => Err(DomainError::new(format!(
-            "Unsupported library type for Zotero Local API: {other}"
-        ))
-        .into()),
-    }
+    let group_id = if library.kind == "group" {
+        db::group_id_for_library(&runtime.environment.sqlite_path, library.library_id)?
+    } else {
+        None
+    };
+    crate::target::library_scope(&library.kind, group_id)
 }
 
 /// `list_collections()` (`catalog.py:56-57`).

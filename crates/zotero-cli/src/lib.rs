@@ -19,6 +19,7 @@ pub mod import_attachments;
 pub mod import_core;
 pub mod import_normalization;
 pub mod lifecycle;
+pub mod live_snapshot;
 pub mod metrics;
 pub mod notes;
 pub mod output;
@@ -118,6 +119,20 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         let mut spawner = lifecycle::real_spawner();
         lifecycle::ensure_bridge(&environment, &build_runtime, &mut spawner)
     };
+    // When a running Zotero holds the WAL lock, SQLite reads fall back to a live snapshot read
+    // through the owned Bridge (see `live_snapshot`). Registration is lazy: nothing is probed
+    // unless `db::connect_readonly` has actually been refused.
+    let snapshot_port = paths::build_environment(
+        cli.data_dir.as_deref(),
+        cli.profile_dir.as_deref(),
+        cli.executable.as_deref(),
+        &paths::current_env_map(),
+    )
+    .port;
+    live_snapshot::register_source(
+        Box::new(live_snapshot::BridgeSnapshotSource::new(snapshot_port)),
+        session::session_state_dir().join("live-snapshot"),
+    );
     let session = session::load_session_state();
 
     match command {
@@ -547,9 +562,29 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             let runtime = live_runtime(lifecycle::Backend::Write)?;
             item_tag_command(&runtime, &session, json_mode, &item_key, &add, &remove)
         }
-        Commands::Item(ItemCommands::Delete { item_key, confirm }) => {
+        Commands::Item(ItemCommands::Delete {
+            item_key,
+            confirm,
+            permanent,
+            yes_erase,
+        }) => {
+            let mode = delete_mode(confirm, permanent, yes_erase)?;
             let runtime = live_runtime(lifecycle::Backend::Write)?;
-            item_delete_command(&runtime, &session, json_mode, &item_key, confirm)
+            match mode {
+                DeleteMode::Erase => item_delete_command(&runtime, &session, json_mode, &item_key),
+                DeleteMode::Trash => {
+                    item_set_deleted_command(&runtime, &session, json_mode, &item_key, true)
+                }
+            }
+        }
+        Commands::Item(ItemCommands::Restore { item_key, confirm }) => {
+            if !confirm {
+                return Err(
+                    error::DomainError::new("Refusing to restore without --confirm").into(),
+                );
+            }
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
+            item_set_deleted_command(&runtime, &session, json_mode, &item_key, false)
         }
         Commands::Item(ItemCommands::Attach { item_key, pdf_path }) => {
             let runtime = live_runtime(lifecycle::Backend::Bridge)?;
@@ -635,15 +670,46 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             collection_key,
             delete_items,
             confirm,
+            permanent,
+            yes_erase,
         }) => {
+            let mode = delete_mode(confirm, permanent, yes_erase)?;
             let runtime = live_runtime(lifecycle::Backend::Write)?;
-            collection_delete_command(
+            match mode {
+                DeleteMode::Erase => collection_delete_command(
+                    &runtime,
+                    &session,
+                    json_mode,
+                    &collection_key,
+                    delete_items,
+                ),
+                DeleteMode::Trash => collection_set_deleted_command(
+                    &runtime,
+                    &session,
+                    json_mode,
+                    &collection_key,
+                    true,
+                    delete_items,
+                ),
+            }
+        }
+        Commands::Collection(CollectionCommands::Restore {
+            collection_key,
+            confirm,
+        }) => {
+            if !confirm {
+                return Err(
+                    error::DomainError::new("Refusing to restore without --confirm").into(),
+                );
+            }
+            let runtime = live_runtime(lifecycle::Backend::Write)?;
+            collection_set_deleted_command(
                 &runtime,
                 &session,
                 json_mode,
                 &collection_key,
-                delete_items,
-                confirm,
+                false,
+                false,
             )
         }
         Commands::Collection(CollectionCommands::RemoveItem {
@@ -735,7 +801,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         }
         // `item_export()` (`zotero_cli.py:1249-1256`).
         Commands::Item(ItemCommands::Export { item_ref, fmt }) => {
-            let runtime = build_runtime();
+            // Rendering needs the Local API: launch Zotero if it is closed (honoring
+            // ZOTERO_CLI_NO_AUTOLAUNCH), as every other live-backend command does.
+            let runtime = live_runtime(lifecycle::Backend::LocalApi)?;
             let payload =
                 rendering::export_item(&runtime, item_ref.as_deref(), &fmt.to_string(), &session)?;
             if json_mode {
@@ -752,7 +820,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             locale,
             linkwrap,
         }) => {
-            let runtime = build_runtime();
+            // Rendering needs the Local API: launch Zotero if it is closed (honoring
+            // ZOTERO_CLI_NO_AUTOLAUNCH), as every other live-backend command does.
+            let runtime = live_runtime(lifecycle::Backend::LocalApi)?;
             let payload = rendering::citation_item(
                 &runtime,
                 item_ref.as_deref(),
@@ -778,7 +848,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             locale,
             linkwrap,
         }) => {
-            let runtime = build_runtime();
+            // Rendering needs the Local API: launch Zotero if it is closed (honoring
+            // ZOTERO_CLI_NO_AUTOLAUNCH), as every other live-backend command does.
+            let runtime = live_runtime(lifecycle::Backend::LocalApi)?;
             let payload = rendering::bibliography_item(
                 &runtime,
                 item_ref.as_deref(),
@@ -824,7 +896,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         Commands::Item(ItemCommands::Duplicates { by, limit }) => match by {
             cli::DuplicatesBy::Zotero => {
                 let bridge = live_bridge()?;
-                let (payload, exit_code) = hygiene::find_duplicates_zotero(&bridge, limit);
+                let library_id = session::session_library_id(&session, 1)?;
+                let (payload, exit_code) =
+                    hygiene::find_duplicates_zotero(&bridge, library_id.max(0) as u32, limit);
                 output::emit(json_mode, &payload);
                 Ok(exit_code)
             }
@@ -881,7 +955,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
             fmt,
             output,
         }) => {
-            let runtime = build_runtime();
+            // Rendering needs the Local API: launch Zotero if it is closed (honoring
+            // ZOTERO_CLI_NO_AUTOLAUNCH), as every other live-backend command does.
+            let runtime = live_runtime(lifecycle::Backend::LocalApi)?;
             export_bib_command(
                 &runtime,
                 &session,
@@ -1443,7 +1519,13 @@ fn bridge_live_read(
 ) -> anyhow::Result<Value> {
     let params = serde_json::json!({ "libraryID": library_id, "key": key });
     let code = bridge::templates::render(template, &params)?;
-    client.execute_raw_js(&code, 10)
+    let val = client.execute_raw_js(&code, 10)?;
+    if let Value::String(s) = &val {
+        if let Ok(parsed) = serde_json::from_str(s) {
+            return Ok(parsed);
+        }
+    }
+    Ok(val)
 }
 
 /// Whether a `bridge_live_read` response reports the object absent (`{"found": false}`) -- the
@@ -1892,16 +1974,137 @@ fn item_tag_command(
     render_bridge_item_after_write(&client, json_mode, library_id, &item.key, &body)
 }
 
+/// Which delete a `delete` invocation asked for. `--confirm` alone only ever trashes; a permanent
+/// erase needs the separate `--permanent --yes-erase` pair, so the flag people type by habit can
+/// never destroy data. Never prompts: the CLI is non-interactive by contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeleteMode {
+    Trash,
+    Erase,
+}
+
+fn delete_mode(confirm: bool, permanent: bool, yes_erase: bool) -> anyhow::Result<DeleteMode> {
+    if permanent {
+        if yes_erase {
+            return Ok(DeleteMode::Erase);
+        }
+        return Err(error::DomainError::new(
+            "Refusing to erase permanently without --yes-erase. `--confirm` moves to the trash \
+             (recoverable); a permanent erase needs both --permanent and --yes-erase.",
+        )
+        .into());
+    }
+    if confirm {
+        return Ok(DeleteMode::Trash);
+    }
+    Err(error::DomainError::new("Refusing to delete without --confirm").into())
+}
+
+/// Whether a Zotero `deleted` value (Web API `1`, `Item#toJSON()` `true`) means "in the trash".
+fn is_trashed(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_i64().unwrap_or(0) != 0,
+        _ => false,
+    }
+}
+
+/// `item delete --confirm` (trash) and `item restore --confirm`: flips Zotero's `deleted` flag and
+/// verifies the new state by reading it back from the same live backend.
+fn item_set_deleted_command(
+    runtime: &runtime::RuntimeContext,
+    session: &session::SessionState,
+    json_mode: bool,
+    item_key: &str,
+    deleted: bool,
+) -> anyhow::Result<i32> {
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let item = target::resolve_item(runtime, &client, Some(item_key), session, prefer)?;
+    let now_trashed = if runtime.local_api_writes_available {
+        let scope = item.local_api_scope()?;
+        let path = format!("{scope}/items/{}", item.key);
+        let current = match write_router::verify_present(runtime, &path) {
+            write_router::PresenceCheck::Present(summary) => summary,
+            other => return presence_check_error(&path, other),
+        };
+        let outcome = write_router::patch_item(
+            runtime,
+            &path,
+            &item.key,
+            &serde_json::json!({ "deleted": i64::from(deleted) }),
+            current.version,
+        )?;
+        if let Some((code, payload)) = write_outcome_failure(&outcome) {
+            output::emit(json_mode, &payload);
+            return Ok(code);
+        }
+        match write_router::verify_present(runtime, &path) {
+            write_router::PresenceCheck::Present(summary) => {
+                is_trashed(summary.data.get("deleted"))
+            }
+            other => return presence_check_error(&path, other),
+        }
+    } else {
+        let library_id = library_id_u32(item.library_id)?;
+        let outcome = client.item_set_deleted(library_id, &item.key, deleted)?;
+        if let Some((code, payload)) = write_outcome_failure(&outcome) {
+            output::emit(json_mode, &payload);
+            return Ok(code);
+        }
+        let raw = bridge_live_read(&client, LIVE_ITEM_READBACK_JS, library_id, &item.key)?;
+        is_trashed(raw.get("data").and_then(|d| d.get("deleted")))
+    };
+    emit_set_deleted_result(json_mode, "item", &item.key, deleted, now_trashed)
+}
+
+/// Shared result for trash/restore: `applied` only when the read-back state matches the request.
+fn emit_set_deleted_result(
+    json_mode: bool,
+    kind: &str,
+    key: &str,
+    requested_trashed: bool,
+    now_trashed: bool,
+) -> anyhow::Result<i32> {
+    if now_trashed != requested_trashed {
+        output::emit(
+            json_mode,
+            &serde_json::json!({
+                "outcome": "conflict",
+                "detail": format!(
+                    "the {kind} write was accepted but the live read-back shows {key} {}",
+                    if now_trashed { "still in the trash" } else { "not in the trash" }
+                ),
+                "needs_human_action": false,
+            }),
+        );
+        return Ok(1);
+    }
+    let payload = if requested_trashed {
+        serde_json::json!({
+            "outcome": "applied",
+            "action": format!("{kind}_trash"),
+            "deleted_key": key,
+            "recoverable": true,
+        })
+    } else {
+        serde_json::json!({
+            "outcome": "applied",
+            "action": format!("{kind}_restore"),
+            "restored_key": key,
+        })
+    };
+    output::emit(json_mode, &payload);
+    Ok(0)
+}
+
+/// `item delete --permanent --yes-erase`: the unrecoverable erase.
 fn item_delete_command(
     runtime: &runtime::RuntimeContext,
     session: &session::SessionState,
     json_mode: bool,
     item_key: &str,
-    confirm: bool,
 ) -> anyhow::Result<i32> {
-    if !confirm {
-        return Err(error::DomainError::new("Refusing to delete without --confirm").into());
-    }
     let client = runtime.bridge_client();
     let prefer = target::Prefer::for_runtime(runtime);
     let item = target::resolve_item(runtime, &client, Some(item_key), session, prefer)?;
@@ -1920,7 +2123,12 @@ fn item_delete_command(
         }
         output::emit(
             json_mode,
-            &serde_json::json!({ "outcome": "applied", "deleted_key": item.key }),
+            &serde_json::json!({
+                "outcome": "applied",
+                "action": "item_erase",
+                "deleted_key": item.key,
+                "recoverable": false,
+            }),
         );
         return Ok(0);
     }
@@ -1950,7 +2158,12 @@ fn item_delete_command(
     }
     output::emit(
         json_mode,
-        &serde_json::json!({ "outcome": "applied", "deleted_key": item.key }),
+        &serde_json::json!({
+            "outcome": "applied",
+            "action": "item_erase",
+            "deleted_key": item.key,
+            "recoverable": false,
+        }),
     );
     Ok(0)
 }
@@ -2520,17 +2733,84 @@ fn collection_rename_command(
     render_bridge_collection_after_write(&client, json_mode, library_id, &collection.key, &body)
 }
 
+/// `collection delete --confirm` (trash) and `collection restore --confirm`.
+fn collection_set_deleted_command(
+    runtime: &runtime::RuntimeContext,
+    session: &session::SessionState,
+    json_mode: bool,
+    collection_key: &str,
+    deleted: bool,
+    include_items: bool,
+) -> anyhow::Result<i32> {
+    let client = runtime.bridge_client();
+    let prefer = target::Prefer::for_runtime(runtime);
+    let collection =
+        target::resolve_collection(runtime, &client, Some(collection_key), session, prefer)?;
+    if !deleted && !client.bridge_endpoint_active() {
+        anyhow::bail!(
+            "collection restore requires the CLI Bridge to restore trashed descendant collections; install or enable the Bridge before retrying"
+        );
+    }
+    // The Local API cannot enumerate trashed descendant collections. Restore through the Bridge
+    // so the parent and every descendant are restored together, including when it has no items.
+    // Deletion without items can still use the Local API: Zotero cascades collection trashing.
+    let now_trashed = if runtime.local_api_writes_available && !include_items && deleted {
+        let scope = collection.local_api_scope()?;
+        let path = format!("{scope}/collections/{}", collection.key);
+        let current = match write_router::verify_present(runtime, &path) {
+            write_router::PresenceCheck::Present(summary) => summary,
+            other => return presence_check_error(&path, other),
+        };
+        let outcome = write_router::patch_item(
+            runtime,
+            &path,
+            &collection.key,
+            &serde_json::json!({ "deleted": i64::from(deleted) }),
+            current.version,
+        )?;
+        if let Some((code, payload)) = write_outcome_failure(&outcome) {
+            output::emit(json_mode, &payload);
+            return Ok(code);
+        }
+        match write_router::verify_present(runtime, &path) {
+            write_router::PresenceCheck::Present(summary) => {
+                is_trashed(summary.data.get("deleted"))
+            }
+            other => return presence_check_error(&path, other),
+        }
+    } else {
+        let library_id = library_id_u32(collection.library_id)?;
+        let outcome =
+            client.collection_set_deleted(library_id, &collection.key, deleted, include_items)?;
+        if let Some((code, payload)) = write_outcome_failure(&outcome) {
+            output::emit(json_mode, &payload);
+            return Ok(code);
+        }
+        let raw = bridge_live_read(
+            &client,
+            LIVE_COLLECTION_READBACK_JS,
+            library_id,
+            &collection.key,
+        )?;
+        is_trashed(raw.get("data").and_then(|d| d.get("deleted")))
+    };
+    emit_set_deleted_result(
+        json_mode,
+        "collection",
+        &collection.key,
+        deleted,
+        now_trashed,
+    )
+}
+
+/// `collection delete --permanent --yes-erase`: the unrecoverable erase.
 fn collection_delete_command(
     runtime: &runtime::RuntimeContext,
     session: &session::SessionState,
     json_mode: bool,
     collection_key: &str,
     delete_items: bool,
-    confirm: bool,
 ) -> anyhow::Result<i32> {
-    if !confirm {
-        return Err(error::DomainError::new("Refusing to delete without --confirm").into());
-    }
     let client = runtime.bridge_client();
     let prefer = target::Prefer::for_runtime(runtime);
     let collection =
@@ -2552,7 +2832,12 @@ fn collection_delete_command(
         }
         output::emit(
             json_mode,
-            &serde_json::json!({ "outcome": "applied", "deleted_key": collection.key }),
+            &serde_json::json!({
+                "outcome": "applied",
+                "action": "collection_erase",
+                "deleted_key": collection.key,
+                "recoverable": false,
+            }),
         );
         return Ok(0);
     }
@@ -2587,7 +2872,12 @@ fn collection_delete_command(
     }
     output::emit(
         json_mode,
-        &serde_json::json!({ "outcome": "applied", "deleted_key": collection.key }),
+        &serde_json::json!({
+            "outcome": "applied",
+            "action": "collection_erase",
+            "deleted_key": collection.key,
+            "recoverable": false,
+        }),
     );
     Ok(0)
 }

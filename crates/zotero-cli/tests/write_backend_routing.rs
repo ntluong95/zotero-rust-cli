@@ -21,6 +21,51 @@ use serde_json::json;
 
 const SERVER_ID: &str = "TEST-SERVER-1";
 
+fn select_library(dir: &std::path::Path, library_id: i64) {
+    let state_dir = dir.join("cli-state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(
+        state_dir.join("session.json"),
+        json!({"current_library": library_id}).to_string(),
+    )
+    .unwrap();
+}
+
+fn group_resolution(key: &str, object: &str) -> ScriptedResponse {
+    let mut resolved = json!({
+        "found": true,
+        "key": key,
+        "libraryID": 2,
+        "libraryType": "group",
+        "groupID": 4597652,
+    });
+    match object {
+        "item" => {
+            resolved["itemType"] = json!("document");
+            resolved["itemID"] = json!(21);
+        }
+        "collection" => {
+            resolved["name"] = json!("Group Collection");
+            resolved["collectionID"] = json!(31);
+        }
+        "library" => {}
+        _ => panic!("unexpected object"),
+    }
+    ScriptedResponse::json(200, json!(resolved.to_string()))
+}
+
+fn group_object_response(key: &str, name: &str, version: i64) -> ScriptedResponse {
+    ScriptedResponse::json(
+        200,
+        json!({
+            "key": key,
+            "version": version,
+            "library": {"id": 4597652, "type": "group"},
+            "data": {"name": name},
+        }),
+    )
+}
+
 fn local_api_probe_available() -> ScriptedResponse {
     ScriptedResponse::json_with_headers(
         200,
@@ -549,11 +594,178 @@ fn collection_create_preserves_the_servers_affected_key() {
         &["collection", "create", "Brand New Collection"],
     );
 
-    server.finish();
+    let requests = server.finish();
 
     assert_eq!(code, 0, "payload: {payload}");
     assert_eq!(payload["key"], "NEWCOL01");
+    // Zotero's Local API rejects a bare object with HTTP 400 "Uploaded data must be a JSON
+    // array": creation always posts the Web API's array-of-objects shape.
+    let create = requests
+        .iter()
+        .find(|request| request.method == "POST")
+        .expect("a create request");
+    assert_eq!(
+        create.body_json(),
+        json!([{"name": "Brand New Collection"}]),
+        "the create body must be a one-element JSON array"
+    );
     assert_no_forbidden_keys(&payload, &["backend", "server_id", "version"], "$");
+}
+
+#[test]
+fn selected_group_item_key_resolves_in_group_before_local_api_write() {
+    let dir = TestDir::new("selected-group-item");
+    build_fixture_sqlite(dir.path()); // Also contains ITEM0001 in My Library.
+    select_library(dir.path(), 2);
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        bridge_ownership_ok(),
+        group_resolution("ITEM0001", "item"),
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "ITEM0001", "version": 5,
+                "library": {"id": 4597652, "type": "group"},
+                "data": {"itemType": "document", "title": "Old Title", "collections": [], "tags": []},
+            }),
+        ),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".into(), "6".into())],
+            body: Vec::new(),
+        },
+        ScriptedResponse::json(
+            200,
+            json!({
+                "key": "ITEM0001", "version": 6,
+                "library": {"id": 4597652, "type": "group"},
+                "data": {"itemType": "document", "title": "New Title", "collections": [], "tags": []},
+            }),
+        ),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["item", "update", "ITEM0001", "--field", "title=New Title"],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(requests.len(), 7);
+    assert_eq!(requests[3].method, "POST"); // Bridge resolution precedes any item GET.
+    assert_eq!(requests[5].path, "/api/groups/4597652/items/ITEM0001");
+    assert_eq!(requests[5].method, "PATCH");
+}
+
+#[test]
+fn selected_group_collection_key_resolves_in_group_before_local_api_write() {
+    let dir = TestDir::new("selected-group-collection");
+    build_fixture_sqlite(dir.path()); // Also contains COLLE001 in My Library.
+    select_library(dir.path(), 2);
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        bridge_ownership_ok(),
+        group_resolution("COLLE001", "collection"),
+        group_object_response("COLLE001", "Group Collection", 1),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".into(), "2".into())],
+            body: Vec::new(),
+        },
+        group_object_response("COLLE001", "Renamed Collection", 2),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &[
+            "collection",
+            "rename",
+            "COLLE001",
+            "--name",
+            "Renamed Collection",
+        ],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(requests.len(), 7);
+    assert_eq!(requests[5].path, "/api/groups/4597652/collections/COLLE001");
+    assert_eq!(requests[5].method, "PATCH");
+}
+
+#[test]
+fn selected_group_collection_create_uses_group_id_scope() {
+    let dir = TestDir::new("selected-group-create");
+    build_fixture_sqlite(dir.path());
+    select_library(dir.path(), 2);
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        bridge_ownership_ok(),
+        group_resolution("", "library"),
+        ScriptedResponse::json(200, json!([])),
+        ScriptedResponse::json(
+            201,
+            json!({
+                "successful": {"0": {"key": "NEWCOL01", "version": 1}}
+            }),
+        ),
+        group_object_response("NEWCOL01", "New Group Collection", 1),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["collection", "create", "New Group Collection"],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(requests.len(), 7);
+    assert_eq!(
+        requests[4].path,
+        "/api/groups/4597652/collections?format=json"
+    );
+    assert_eq!(requests[5].path, "/api/groups/4597652/collections");
+    assert_eq!(requests[5].method, "POST");
+}
+
+#[test]
+fn selected_personal_library_create_keeps_user_scope() {
+    let dir = TestDir::new("selected-personal-create");
+    build_fixture_sqlite(dir.path());
+    select_library(dir.path(), 1);
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        bridge_ownership_ok(),
+        ScriptedResponse::json(
+            200,
+            json!(json!({
+                "found": true,
+                "libraryID": 1,
+                "libraryType": "user",
+                "groupID": null,
+            })
+            .to_string()),
+        ),
+        ScriptedResponse::json(200, json!([])),
+        ScriptedResponse::json(
+            201,
+            json!({"successful": {"0": {"key": "NEWCOL01", "version": 1}}}),
+        ),
+        local_api_resolve_collection("NEWCOL01", "New Personal Collection"),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["collection", "create", "New Personal Collection"],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(requests[5].path, "/api/users/0/collections");
 }
 
 // ── O. bare `zotero-cli` -> help, exit 0 ──
@@ -972,11 +1184,10 @@ fn item_merge_succeeds_when_survivor_resolves_live_and_merged_away_key_does_not(
         bridge_resolve_item("ITEM0001", 1),
         bridge_resolve_item("ITEM0002", 2),
         ScriptedResponse::bridge_string(200, "OK: merged 1 items into Test Item One"),
-        ScriptedResponse::json(
-            200,
+        ScriptedResponse::bridge_json(
             json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": {"itemType": "document", "title": "Test Item One"}}),
         ),
-        ScriptedResponse::json(200, json!({"found": false})),
+        ScriptedResponse::bridge_json(json!({"found": false})),
     ]);
 
     let (code, payload) = run_cli(
@@ -1010,14 +1221,12 @@ fn item_merge_reports_conflict_when_a_merged_away_key_still_resolves_live() {
         bridge_resolve_item("ITEM0001", 1),
         bridge_resolve_item("ITEM0002", 2),
         ScriptedResponse::bridge_string(200, "OK: merged 1 items into Test Item One"),
-        ScriptedResponse::json(
-            200,
+        ScriptedResponse::bridge_json(
             json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": {"itemType": "document", "title": "Test Item One"}}),
         ),
         // The Bridge reported success, but a live re-read still finds the merged-away item --
         // this must never be silently reported as `applied`.
-        ScriptedResponse::json(
-            200,
+        ScriptedResponse::bridge_json(
             json!({"found": true, "key": "ITEM0002", "libraryID": 1, "data": {"itemType": "document", "title": "Test Item Two"}}),
         ),
     ]);
@@ -1049,4 +1258,310 @@ fn item_duplicates_is_now_a_recognized_subcommand() {
         Some(0),
         "item duplicates is now a supported command in the analysis-hygiene slice"
     );
+}
+
+// ── Trash-by-default delete ─────────────────────────────────────────────────
+
+fn body_text(request: &common::CapturedRequest) -> String {
+    String::from_utf8_lossy(&request.body).into_owned()
+}
+
+#[test]
+fn delete_refusals_never_reach_zotero() {
+    let dir = TestDir::new("delete-refusals");
+    build_fixture_sqlite(dir.path());
+    for args in [
+        vec!["item", "delete", "ITEM0001"],
+        vec!["item", "delete", "ITEM0001", "--permanent"],
+        // `--confirm` never authorizes an erase, not even alongside --permanent.
+        vec!["item", "delete", "ITEM0001", "--permanent", "--confirm"],
+        vec!["item", "restore", "ITEM0001"],
+        vec![
+            "collection",
+            "delete",
+            "COLL0001",
+            "--permanent",
+            "--confirm",
+        ],
+    ] {
+        let server = ScriptedServer::start(vec![]);
+        let (code, payload) = run_cli(dir.path(), server.port, &[], &args);
+        let requests = server.finish();
+        assert_eq!(code, 1, "{args:?} must be refused: {payload}");
+        assert!(
+            requests.is_empty(),
+            "{args:?}: a refused delete must issue no request at all"
+        );
+    }
+}
+
+#[test]
+fn item_delete_confirm_trashes_through_the_local_api_and_never_deletes() {
+    let dir = TestDir::new("delete-trash-local");
+    build_fixture_sqlite(dir.path());
+    let trashed = ScriptedResponse::json(
+        200,
+        json!({
+            "key": "ITEM0001",
+            "version": 6,
+            "library": {"id": 0},
+            "data": {"itemType": "document", "title": "Test Item One", "deleted": 1},
+        }),
+    );
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_available(),
+        local_api_resolve_item(),
+        item_get_response(5, vec![]),
+        ScriptedResponse::Http {
+            status: 204,
+            headers: vec![("Last-Modified-Version".to_string(), "6".to_string())],
+            body: Vec::new(),
+        },
+        trashed,
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[("ZOTERO_LOCAL_API_KEY", "env-supplied-key")],
+        &["item", "delete", "ITEM0001", "--confirm"],
+    );
+    let requests = server.finish();
+
+    assert_eq!(code, 0, "payload: {payload}");
+    assert_eq!(payload["action"], "item_trash");
+    assert_eq!(payload["recoverable"], true);
+    assert_eq!(requests[4].method, "PATCH");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body_text(&requests[4])).unwrap(),
+        json!({"deleted": 1})
+    );
+    assert!(
+        requests.iter().all(|r| r.method != "DELETE"),
+        "--confirm must never send a DELETE (Zotero's DELETE erases permanently)"
+    );
+}
+
+#[test]
+fn item_delete_and_restore_through_the_bridge_flip_the_deleted_flag() {
+    for (args, readback_deleted, action) in [
+        (
+            vec!["item", "delete", "ITEM0001", "--confirm"],
+            json!(true),
+            "item_trash",
+        ),
+        (
+            vec!["item", "restore", "ITEM0001", "--confirm"],
+            json!(null),
+            "item_restore",
+        ),
+    ] {
+        let dir = TestDir::new("delete-trash-bridge");
+        build_fixture_sqlite(dir.path());
+        let mut data = json!({"itemType": "document", "title": "Test Item One"});
+        if !readback_deleted.is_null() {
+            data["deleted"] = readback_deleted;
+        }
+        let server = ScriptedServer::start(vec![
+            connector_ping_ok(),
+            local_api_probe_unavailable(),
+            bridge_ownership_ok(),
+            bridge_resolve_item("ITEM0001", 1),
+            ScriptedResponse::bridge_string(200, "OK: done ITEM0001"),
+            ScriptedResponse::bridge_json(
+                json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": data}),
+            ),
+        ]);
+        let (code, payload) = run_cli(dir.path(), server.port, &[], &args);
+        let requests = server.finish();
+
+        assert_eq!(code, 0, "{args:?}: {payload}");
+        assert_eq!(payload["action"], action);
+        let write = body_text(&requests[4]);
+        assert!(write.contains("item.deleted = "), "{write}");
+        assert!(!write.contains("eraseTx"), "trash/restore must never erase");
+    }
+}
+
+#[test]
+fn trash_that_does_not_stick_is_reported_as_a_conflict() {
+    let dir = TestDir::new("delete-trash-conflict");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        bridge_resolve_item("ITEM0001", 1),
+        ScriptedResponse::bridge_string(200, "OK: trashed ITEM0001"),
+        ScriptedResponse::bridge_json(
+            json!({"found": true, "key": "ITEM0001", "libraryID": 1, "data": {"itemType": "document"}}),
+        ),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "delete", "ITEM0001", "--confirm"],
+    );
+    server.finish();
+    assert_eq!(code, 1, "{payload}");
+    assert_eq!(payload["outcome"], "conflict");
+}
+
+#[test]
+fn permanent_yes_erase_is_the_only_path_to_an_erase() {
+    let dir = TestDir::new("delete-erase-bridge");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        bridge_resolve_item("ITEM0001", 1),
+        ScriptedResponse::bridge_string(200, "DELETED: Test Item One"),
+        ScriptedResponse::bridge_json(json!({"found": false})),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &["item", "delete", "ITEM0001", "--permanent", "--yes-erase"],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "{payload}");
+    assert_eq!(payload["action"], "item_erase");
+    assert_eq!(payload["recoverable"], false);
+    assert!(body_text(&requests[4]).contains("eraseTx"));
+}
+
+fn collection_readback(deleted: Option<bool>) -> ScriptedResponse {
+    let mut data = json!({"key": "COLL0001", "name": "Test Collection"});
+    if let Some(deleted) = deleted {
+        data["deleted"] = json!(deleted);
+    }
+    ScriptedResponse::bridge_json(
+        json!({"found": true, "key": "COLL0001", "libraryID": 1, "data": data}),
+    )
+}
+
+#[test]
+fn collection_trash_and_restore_through_the_bridge_match_zotero_semantics() {
+    for (args, readback, action) in [
+        (
+            vec!["collection", "delete", "COLL0001", "--confirm"],
+            Some(true),
+            "collection_trash",
+        ),
+        (
+            vec![
+                "collection",
+                "delete",
+                "COLL0001",
+                "--delete-items",
+                "--confirm",
+            ],
+            Some(true),
+            "collection_trash",
+        ),
+        (
+            vec!["collection", "restore", "COLL0001", "--confirm"],
+            None,
+            "collection_restore",
+        ),
+    ] {
+        let dir = TestDir::new("collection-trash-bridge");
+        build_fixture_sqlite(dir.path());
+        let server = ScriptedServer::start(vec![
+            connector_ping_ok(),
+            local_api_probe_unavailable(),
+            bridge_ownership_ok(),
+            bridge_resolve_collection("COLL0001", "Test Collection", 1),
+            ScriptedResponse::bridge_string(200, "OK: done COLL0001"),
+            // The real Bridge returns the readback template's JSON.stringify() as a string.
+            collection_readback(readback),
+        ]);
+        let (code, payload) = run_cli(dir.path(), server.port, &[], &args);
+        let requests = server.finish();
+
+        assert_eq!(code, 0, "{args:?}: {payload}");
+        assert_eq!(payload["action"], action, "{args:?}");
+        let write = requests
+            .iter()
+            .map(body_text)
+            .find(|body| {
+                body.contains("Zotero.Collections.getByLibraryAndKey(P.libraryID, P.collectionKey)")
+            })
+            .expect("the trash/restore template was sent");
+        assert!(!write.contains("eraseTx"), "trash/restore must never erase");
+        // Zotero's own trash path cascades to subcollections and, with deleteItems, to every
+        // item in the subtree; restore brings back subcollections but never items.
+        assert!(write.contains("await col.save({ deleteItems: !!P.includeItems })"));
+        assert!(write.contains("getDescendents(false, 'collection', true)"));
+        let params = write.contains(r#"\"includeItems\":true"#);
+        assert_eq!(
+            params,
+            args.contains(&"--delete-items"),
+            "{args:?}: {write}"
+        );
+    }
+}
+
+#[test]
+fn collection_restore_no_longer_accepts_with_items() {
+    let dir = TestDir::new("collection-restore-with-items");
+    build_fixture_sqlite(dir.path());
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_zotero-cli"))
+        .args([
+            "collection",
+            "restore",
+            "COLL0001",
+            "--with-items",
+            "--confirm",
+        ])
+        .env("ZOTERO_CLI_NO_AUTOLAUNCH", "1")
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "clap must reject the removed flag"
+    );
+}
+
+#[test]
+fn permanent_collection_erase_with_delete_items_erases_the_items_too() {
+    let dir = TestDir::new("collection-erase-items");
+    build_fixture_sqlite(dir.path());
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        local_api_probe_unavailable(),
+        bridge_ownership_ok(),
+        bridge_resolve_collection("COLL0001", "Test Collection", 1),
+        ScriptedResponse::bridge_string(200, "DELETED: collection Test Collection"),
+        ScriptedResponse::bridge_json(json!({"found": false})),
+    ]);
+    let (code, payload) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &[
+            "collection",
+            "delete",
+            "COLL0001",
+            "--delete-items",
+            "--permanent",
+            "--yes-erase",
+        ],
+    );
+    let requests = server.finish();
+    assert_eq!(code, 0, "{payload}");
+    assert_eq!(payload["action"], "collection_erase");
+    let erase = requests
+        .iter()
+        .map(body_text)
+        .find(|body| body.contains("eraseTx"))
+        .expect("the erase template was sent");
+    // Zotero's erase only trashes the items; the CLI promises to erase them.
+    assert!(erase.contains("await col.eraseTx({ deleteItems: !!P.deleteItems })"));
+    assert!(erase.contains("await Zotero.Items.erase(itemIDs)"));
+    assert!(erase.contains(r#"\"deleteItems\":true"#), "{erase}");
 }

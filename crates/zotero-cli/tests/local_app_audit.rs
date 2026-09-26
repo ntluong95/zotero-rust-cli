@@ -172,7 +172,7 @@ fn app_version_human_mode_offline() {
 fn app_doctor_healthy_fixture_all_checks_pass() {
     let dir = TestDir::new("app-doctor-healthy");
     build_fixture_sqlite(dir.path());
-    let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
     let executable = create_fake_zotero_install(dir.path());
 
     let server = ScriptedServer::start(vec![
@@ -231,7 +231,7 @@ fn next_steps(value: &serde_json::Value) -> Vec<String> {
 fn app_doctor_degraded_when_connector_unavailable() {
     let dir = TestDir::new("app-doctor-connector-down");
     build_fixture_sqlite(dir.path());
-    let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
     let executable = create_fake_zotero_install(dir.path());
 
     let server = ScriptedServer::start(vec![
@@ -305,11 +305,18 @@ fn app_doctor_degraded_when_plugin_update_available() {
     assert_eq!(value["checks"]["plugin"]["ok"], false);
     assert_eq!(value["checks"]["plugin"]["update_available"], true);
     assert_eq!(value["checks"]["plugin"]["installed_version"], "1.0.0");
-    assert_eq!(value["checks"]["plugin"]["bundled_version"], "1.2.1");
-    assert!(value["next_steps"].as_array().unwrap().iter().any(|s| s
-        .as_str()
+    assert_eq!(
+        value["checks"]["plugin"]["bundled_version"],
+        common::BUNDLED_PLUGIN_VERSION
+    );
+    assert!(value["next_steps"]
+        .as_array()
         .unwrap()
-        .contains("Upgrade CLI Bridge 1.0.0 → 1.2.1")));
+        .iter()
+        .any(|s| s.as_str().unwrap().contains(&format!(
+            "Upgrade CLI Bridge 1.0.0 → {}",
+            common::BUNDLED_PLUGIN_VERSION
+        ))));
 }
 
 #[test]
@@ -331,7 +338,7 @@ fn app_ping_human_mode_success() {
 fn app_doctor_degraded_when_local_api_unavailable() {
     let dir = TestDir::new("app-doctor-local-api-down");
     build_fixture_sqlite(dir.path());
-    let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
     let executable = create_fake_zotero_install(dir.path());
 
     let server = ScriptedServer::start(vec![
@@ -384,7 +391,7 @@ fn app_doctor_degraded_when_local_api_unavailable() {
 fn app_doctor_degraded_when_bridge_eval_fails() {
     let dir = TestDir::new("app-doctor-bridge-eval-fail");
     build_fixture_sqlite(dir.path());
-    let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
     let executable = create_fake_zotero_install(dir.path());
 
     let server = ScriptedServer::start(vec![

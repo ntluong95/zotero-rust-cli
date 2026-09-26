@@ -629,11 +629,10 @@ fn confirm_flag_still_executes_the_existing_bridge_merge_mutation_path() {
         bridge_resolve_item_ok("KEEP0001", 1),
         bridge_resolve_item_ok("OTHR0001", 2),
         ScriptedResponse::bridge_string(200, "OK: merged 1 items into Keep Item"),
-        ScriptedResponse::json(
-            200,
+        ScriptedResponse::bridge_json(
             json!({"found": true, "key": "KEEP0001", "libraryID": 1, "data": {"itemType": "document", "title": "Keep Item"}}),
         ),
-        ScriptedResponse::json(200, json!({"found": false})),
+        ScriptedResponse::bridge_json(json!({"found": false})),
     ]);
 
     let (code, payload) = run_cli(
@@ -668,11 +667,10 @@ fn when_both_flags_given_confirm_last_wins_and_mutates() {
         bridge_resolve_item_ok("KEEP0001", 1),
         bridge_resolve_item_ok("OTHR0001", 2),
         ScriptedResponse::bridge_string(200, "OK: merged 1 items into Keep Item"),
-        ScriptedResponse::json(
-            200,
+        ScriptedResponse::bridge_json(
             json!({"found": true, "key": "KEEP0001", "libraryID": 1, "data": {"itemType": "document", "title": "Keep Item"}}),
         ),
-        ScriptedResponse::json(200, json!({"found": false})),
+        ScriptedResponse::bridge_json(json!({"found": false})),
     ]);
 
     let (code, payload) = run_cli(

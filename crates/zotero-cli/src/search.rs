@@ -178,7 +178,9 @@ pub fn list_libraries(
     // SQLite first, for the same reason `find_items` does it in that order: an offline run must
     // issue exactly the requests it always did, with no speculative Bridge probe added to a
     // command that is byte-compared against canonical.
-    let refusal = match db::fetch_libraries(&runtime.environment.sqlite_path) {
+    let refusal = match crate::live_snapshot::without_snapshot(|| {
+        db::fetch_libraries(&runtime.environment.sqlite_path)
+    }) {
         Ok(libraries) => return Ok((libraries, SearchSource::Sqlite)),
         Err(err) if db::is_database_locked(&err) => err,
         Err(err) => return Err(err),
@@ -410,7 +412,9 @@ pub fn find_items(
     }
 
     // Attempt 1: the offline path. Canonical for `CurrentLibrary`, byte for byte.
-    let offline = match &request.libraries {
+    // `item find` has its own single-query live path below, so the SQLite attempt must see the
+    // plain refusal rather than trigger a full live snapshot.
+    let offline = crate::live_snapshot::without_snapshot(|| match &request.libraries {
         SearchScopeRequest::CurrentLibrary => catalog::find_items(
             runtime,
             request.query,
@@ -423,7 +427,7 @@ pub fn find_items(
         SearchScopeRequest::AllLibraries { include_feeds } => {
             sqlite_all_libraries(runtime, &request, *include_feeds)
         }
-    };
+    });
     let refusal = match offline {
         Ok(items) => return Ok((items, SearchSource::Sqlite)),
         // Only the "Zotero holds the database" refusal is retryable live. Every other failure
@@ -461,6 +465,63 @@ fn sqlite_all_libraries(
         libraries.iter().map(|l| (l.library_id, l.kind.as_str())),
         include_feeds,
     );
+    // `--scope fields|everything` must mean the same thing across libraries as it does in one:
+    // the single-library path asks the Local API's quick search (`qmode`), while the SQLite
+    // fallback only matches titles -- so a DOI searched with `--all-libraries --scope fields`
+    // used to find nothing unless Zotero happened to hold its lock. Search each library the
+    // same way the single-library path does; any failure keeps the title search below.
+    //
+    // Feeds have no Local API endpoint, so `--include-feeds` searches them by title (the best
+    // either path has for a feed) instead of failing the whole cross-library search back to
+    // titles for every library.
+    if !request.exact_title && request.scope != "titleCreatorYear" && runtime.local_api_available {
+        let mut items = Vec::new();
+        let mut feed_ids = Vec::new();
+        let mut complete = true;
+        for library_id in &library_ids {
+            let is_feed = libraries
+                .iter()
+                .any(|l| l.library_id == *library_id && l.kind == FEED_LIBRARY_TYPE);
+            if is_feed {
+                feed_ids.push(*library_id);
+                continue;
+            }
+            let scoped = SessionState {
+                current_library: Some(Value::from(*library_id)),
+                ..Default::default()
+            };
+            match catalog::find_items(
+                runtime,
+                request.query,
+                None,
+                request.limit,
+                false,
+                request.scope,
+                &scoped,
+            ) {
+                Ok(found) => items.extend(found),
+                Err(_) => {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        if complete && !feed_ids.is_empty() {
+            items.extend(db::find_items_by_title(
+                &runtime.environment.sqlite_path,
+                request.query,
+                &SearchLibraries::Some(feed_ids),
+                None,
+                request.limit,
+                request.exact_title,
+            )?);
+        }
+        if complete {
+            order_like_sqlite(&mut items, request.query);
+            items.truncate(request.limit.max(0) as usize);
+            return Ok(items);
+        }
+    }
     db::find_items_by_title(
         &runtime.environment.sqlite_path,
         request.query,

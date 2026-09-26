@@ -207,7 +207,7 @@ done. Real bugs found and fixed:
 | 3 | `add doi` | `add, session` | `add, session` | `<DOI> --collection --tag... --if-exists --translator/--no-translator --fetch-pdf/--no-fetch-pdf --pdf-sources` | **Semantic** | Integrated | Zotero translator output non-deterministic |
 | 4 | `add file` | `add, session` | `add, session` | `<PATH> --collection --tag... --if-exists` | **Semantic** | Integrated | Zotero translator output non-deterministic |
 | 5 | `add url` | `add, session` | `add, session` | `<URL> --collection --tag... --if-exists --fetch-pdf/--no-fetch-pdf --pdf-sources` | **Semantic** | Integrated | Zotero translator output non-deterministic |
-| 6 | `app check-update` | `(cli only)` | `cli` | `—` | **Changed** | Changed | Fork must not poll upstream's version file; package managers handle updates. |
+| 6 | `app check-update` | `(cli only)` | `cli` | `—` | **Dropped** | Dropped | Not implemented: a fork must not poll upstream's version file; package managers handle updates. (Corrected 2026-09-26: earlier revisions described a no-poll stub that was never shipped.) |
 | 7 | `app doctor` | `doctor` | `doctor` | `—` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
 | 8 | `app enable-local-api` | `imports` | `imports` | `--launch --wait-timeout` | **Semantic** | Excluded | Rust-native `app authorize-local-api` performs the real `POST /api/local/authorize` handshake, which blocks on a human consent dialog inside the live Zotero app (`write_router::authorize_interactive`, `crates/zotero-cli/src/lib.rs:2555`) — automated harness fixtures cannot drive that dialog, so this command is excluded from full golden-fixture certification even though its routing/credential logic is unit-tested (`write_router_integration.rs`, `write_backend_routing.rs`). |
 | 9 | `app install-plugin` | `zotero_paths` | `paths` | `—` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
@@ -220,7 +220,7 @@ done. Real bugs found and fixed:
 | 16 | `audit path` | `audit` | `audit` | `—` | **Exact** | Integrated | Deterministic from SQLite / local state |
 | 17 | `audit tail` | `audit` | `audit` | `--limit` | **Exact** | Integrated | Deterministic from SQLite / local state |
 | 18 | `collection create` | `experimental, session` | `bridge` | `<NAME> --parent --experimental` | **Semantic** | Integrated | Bridge already the default upstream; v1 drops only the `--experimental` SQLite flag. |
-| 19 | `collection delete` | `(cli only)` | `cli` | `<COLLECTION_KEY> --delete-items --confirm` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
+| 19 | `collection delete` | `(cli only)` | `cli` | `<COLLECTION_KEY> --delete-items --confirm --permanent --yes-erase` | **Changed** | Changed | Trash by default since 2026-09-26 (approved break #4); upstream erases. |
 | 20 | `collection fetch-pdfs` | `pdf_fetch, session` | `pdf_fetch, session` | `<COLLECTION_KEY> --sources --limit --zotero-timeout --download-timeout --jsonl-progress --resume --reset-resume` | **Semantic** | Integrated | Network-dependent; compare status enums |
 | 21 | `collection find` | `catalog` | `catalog` | `<QUERY> --limit` | **Exact** | Integrated | Deterministic from SQLite / local state |
 | 22 | `collection find-pdfs` | `(cli only)` | `cli` | `<COLLECTION_KEY> --timeout-per-item --limit` | **Semantic** | Integrated | Network-dependent; compare status enums |
@@ -258,7 +258,7 @@ done. Real bugs found and fixed:
 | 54 | `item children` | `catalog` | `catalog` | `<REF>` | **Exact** | Integrated | Deterministic from SQLite / local state |
 | 55 | `item citation` | `rendering` | `rendering` | `<REF> --style --locale --linkwrap` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
 | 56 | `item context` | `analysis` | `analysis` | `<REF> --include-notes --include-bibtex --include-csljson --include-links` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
-| 57 | `item delete` | `(cli only)` | `cli` | `<ITEM_KEY> --confirm` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
+| 57 | `item delete` | `(cli only)` | `cli` | `<ITEM_KEY> --confirm --permanent --yes-erase` | **Changed** | Changed | Trash by default since 2026-09-26 (approved break #4); upstream erases. |
 | 58 | `item duplicates` | `hygiene, session` | `hygiene, session` | `--by --limit` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
 | 59 | `item export` | `rendering` | `rendering` | `<REF> --format` | **Semantic** | Integrated | Bridge- or HTTP-mediated |
 | 60 | `item fetch-pdf` | `pdf_fetch, session` | `pdf_fetch, session` | `<ITEM_KEY> --sources --force --zotero-timeout --download-timeout` | **Semantic** | Integrated | Network-dependent; compare status enums |
@@ -303,12 +303,15 @@ done. Real bugs found and fixed:
 
 | Class | Count | Share | v1 status |
 |---|---|---|---|
-| Semantic | 53 | 55% | Ported |
+| Semantic | 51 | 53% | Ported |
 | Exact | 33 | 34% | Ported |
 | Deferred | 7 | 7% | Not in v1 — Phase 12 |
-| Changed | 2 | 2% | Ported (behaviour changed) |
-| Dropped | 1 | 1% | Not ported |
-| **Total** | **96** | 100% | **88 ported in v1** |
+| Changed | 3 | 3% | Ported (behaviour changed) |
+| Dropped | 2 | 2% | Not ported |
+| **Total** | **96** | 100% | **87 ported** |
+
+Updated 2026-09-26: `app check-update` moved Changed → Dropped (it was never implemented), and
+`item delete` / `collection delete` moved Semantic → Changed (trash by default).
 
 `library list` moved Exact → Semantic in the pre-v1 agent-discovery package: implementing a
 human-readable library name necessarily adds a field upstream does not emit, so byte-identity and
@@ -328,15 +331,18 @@ it makes is an additive flag, an additive JSON field, or a fix to Rust-side guid
 
 | Phase 10 Class | Count |
 |---|---|
-| Integrated | 86 |
+| Integrated | 84 |
 | Missing | 0 |
-| Changed | 1 |
+| Changed | 2 |
 | Excluded | 1 |
-| Dropped | 1 |
+| Dropped | 2 |
 | Deferred | 7 |
 | **Total** | **96** |
 
-Mechanical check: 86 + 0 + 1 + 1 + 1 + 7 = **96** (matches the 96-row table), and **Missing = 0** —
+Updated 2026-09-26: `Changed` is now `item delete` and `collection delete` (trash by default,
+approved break #4); `app check-update` is `Dropped`, since no command was ever shipped for it.
+
+Mechanical check: 84 + 0 + 2 + 1 + 2 + 7 = **96** (matches the 96-row table), and **Missing = 0** —
 every command has some disposition (Integrated/Changed/Excluded/Dropped/Deferred); none are simply
 absent or forgotten.
 
@@ -394,7 +400,8 @@ Primary test surfaces backing the `Integrated` rows, by functional area (see
 |---|---|---|---|---|
 | 1 | Bare invocation (`zotero-cli`, no subcommand) | Enters REPL, **blocks on stdin** | Prints help, exits 0 | A blocking stdin read is the worst failure mode for a non-interactive agent. |
 | 2 | `item move-to-collection` | `--experimental` mandatory; direct SQLite write; Zotero must be **closed** | Bridge composition (`add_to_collection` + `remove_from_collection`); Zotero **running**; no flag | Verified: no bridge path exists upstream. Reimplementation is new work and strictly more usable. |
-| 3 | `app check-update` | Polls upstream's version file over the network | No network poll; always reports current | A fork must not poll upstream's own version-check endpoint on the user's behalf; package managers (Homebrew, Scoop, direct release downloads) already own update notification for this distribution. |
+| 3 | `app check-update` | Polls upstream's version file over the network | Command not provided | A fork must not poll upstream's own version-check endpoint on the user's behalf; package managers (Homebrew, Scoop, direct release downloads) already own update notification for this distribution. |
+| 4 | `item delete` / `collection delete` | `--confirm` erases permanently (`eraseTx`) | `--confirm` moves to the trash; `--permanent --yes-erase` erases; `item/collection restore` untrash | Matches the Zotero UI and upstream PR #10; the habitual flag can no longer destroy data. |
 
 ## Environment variable status (17-variable inventory)
 

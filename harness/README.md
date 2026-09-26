@@ -16,7 +16,7 @@ Phase 1 harness for comparing the Python reference CLI against the Rust port.
 - `fixtures/build_fixture.py` builds deterministic Zotero profile/data fixtures from the upstream test helpers.
 - `capture.py` runs an implementation against fixture-safe commands and stores normalized stdout, stderr, exit code, and HTTP calls.
 - `normalize.py` strips machine-specific paths and volatile values from captures.
-- `compare.py` compares two capture directories and reports `Exact`, `Semantic`, `Skipped`, `Mismatch`, or `Missing`.
+- `compare.py` compares two capture directories and reports `Exact`, `Semantic`, `Changed`, `Skipped`, `Mismatch`, or `Missing`. `Changed` rows (classified in the *current* `commands.tsv`) are documented, intentional divergences -- each row's notes name the Rust test that owns the behavior -- and only fail if the output crashes or is not JSON.
 - `golden/python/` stores the Python baseline.
 
 The `group-library` fixture uses the upstream helper's built-in user and group libraries. The

@@ -17,6 +17,34 @@ Every claim below is tagged with how it was established:
 These tags describe **what is known**. They are separate from, and unaffected by, the merge-gate
 status below, which describes **what blocks integrating this branch**.
 
+## Update 2026-09-26
+
+Live-verified against a real Zotero 10.0.4 (macOS) unless noted:
+
+- **Saved searches on Zotero 10.** Zotero commit `5ade25f5` dropped
+  `savedSearchConditions.required`, which broke `search list/get` on every Zotero 10 library
+  (LIVE VERIFIED on 10.0.3). The column is now probed and emitted as `null` when absent;
+  SYNTHETIC coverage for both schemas in `db.rs`, LIVE VERIFIED on a library with no saved
+  searches.
+- **Layer B read routing is implemented.** When SQLite refuses with `DatabaseLocked` and an owned
+  Bridge answers, `db::connect_readonly` opens a read-only copy of the database that Zotero wrote
+  with `VACUUM INTO` through its own connection (`live_snapshot.rs`), so every SQLite-backed
+  read works while Zotero runs, with byte-identical output. The copy is cached on disk and
+  reused while Zotero's change key (connection token, `Zotero.DB._commitCount`, SQLite
+  `total_changes()`) is unchanged, and a process that has seen the lock once skips the lock
+  probe for the rest of the command. LIVE VERIFIED on 10.0.4 with a 25 MB library: a warm read
+  (`collection list`, `tag list`, `item get`, `item children`, `search list`, `item export`)
+  takes 0.13-0.15 s per command, and the first read after a change about 0.8 s including the
+  copy. Before, each command re-copied the catalog through paged JSON (~3 s) and waited a full
+  1 s SQLite busy timeout per database open. `item find` and `library list` keep their
+  single-query Bridge path.
+- **Group libraries over the Local API** are addressed by Zotero `groupID`
+  (`/api/groups/:groupID`), not the local `libraryID` (LIVE VERIFIED: v1.0.0 404ed on
+  `/api/groups/7/...`; fixed).
+- **XPI cap** is `strict_max_version: 10.*` (plugin 1.2.2). `app doctor` reports `app_disabled`
+  when Zotero marks the XPI incompatible, and `upstream_plugin_conflict` when the Python CLI's
+  Bridge is active.
+
 ## Status at v1.0.0 (2026-08-31)
 
 The Layer A fix (the critical WAL/`immutable=1` bug), capability detection, HTTP hardening, and the

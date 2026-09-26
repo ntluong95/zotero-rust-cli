@@ -66,7 +66,7 @@ zotero-cli --json item context A5XSZH5H --include-notes
 | Citations & export | `item citation/bibliography/export`, `export bib`, `style list` |
 | Ingest | `add doi/arxiv/file/bibtex/url`, `import file/json/doi/pmid` |
 | Semantic search | `item build-index`, `item semantic-search`, `item similar` |
-| Writes | `item update/tag/delete/attach/add-to-collection/move-to-collection/merge`, `collection create/rename/delete/remove-item`, `note add`, `sync` |
+| Writes | `item update/tag/delete/restore/attach/add-to-collection/move-to-collection/merge`, `collection create/rename/delete/restore/remove-item`, `note add`, `sync` |
 | Hygiene | `item duplicates`, `item merge` (preview by default) |
 | DOCX (static) | `docx inspect-citations`, `docx inspect-placeholders`, `docx validate-placeholders`, `docx render-citations` |
 | Session | `session use-library/use-collection/use-item/clear-*/status/history/use-selected` |
@@ -89,10 +89,12 @@ The CLI picks a backend per command based on what is actually available:
 - **Zotero running** → the live backend (Local API, Connector, or the CLI Bridge),
   where the command supports it.
 
-When Zotero 10+ holds its database in WAL mode and the CLI cannot get a
-*consistent* read, it **refuses loudly** rather than returning a silently stale
-or partial answer. `item find` and `library list` will instead use an
-already-running, fork-owned CLI Bridge to run Zotero's own read. The CLI never
+When a running Zotero 10+ holds its WAL-mode database lock, reads go through an
+already-running, fork-owned CLI Bridge instead: `item find` and `library list`
+run Zotero's own search, and every other SQLite-backed read runs against a
+private, read-only copy of the catalog that Zotero reads through its own
+connection (so nothing uncheckpointed is missed). Without a Bridge the CLI
+**refuses loudly** rather than returning a stale or partial answer. The CLI never
 writes to `zotero.sqlite` directly and never skips uncheckpointed WAL data.
 
 Details and the underlying evidence: [`docs/ZOTERO-COMPATIBILITY.md`](docs/ZOTERO-COMPATIBILITY.md).
@@ -125,6 +127,12 @@ select the staged `.xpi` → restart Zotero. Full walkthrough in
   `zotero-cli app authorize-local-api`. The CLI never approves on your behalf.
 - Destructive operations preview first where supported. `item merge` without
   `--confirm` is a zero-mutation dry run; `--confirm` performs the merge.
+- Deletes are recoverable. `item delete --confirm` and `collection delete --confirm`
+  move to Zotero's trash (undo with `item restore` / `collection restore`).
+  `collection restore` needs the CLI Bridge so nested collections are restored too;
+  as in Zotero, it does not restore items trashed with the collection.
+  Permanent erasure needs `--permanent --yes-erase`; `--confirm` never erases.
+  This differs from the Python CLI, whose `--confirm` erased permanently.
 - `zotero-cli js` is an expert/debugging escape hatch, **not** a write fallback.
   If a typed write fails while `app doctor` reports the environment ready, that
   is a bug worth reporting — not a reason to mutate through raw JS.

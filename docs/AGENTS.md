@@ -127,7 +127,19 @@ zotero-cli --json item merge KEEPKEY MERGEKEY          # preview — mutates not
 zotero-cli --json item merge KEEPKEY MERGEKEY --confirm # performs the merge
 ```
 
-`item delete` and `collection delete` likewise take `--confirm`.
+`item delete` and `collection delete` take `--confirm`, which moves the object to
+Zotero's **trash** — recoverable with `item restore --confirm` /
+`collection restore --confirm`. Both follow Zotero exactly: trashing a collection
+trashes its subcollections (and, with `--delete-items`, every item in the subtree);
+restoring it restores its subcollections but never its items — restore those with
+`item restore`. A permanent erase needs `--permanent --yes-erase`;
+never pass those unless the user explicitly asked for an unrecoverable erase.
+
+```bash
+zotero-cli --json item delete KEY --confirm            # trash (recoverable)
+zotero-cli --json item restore KEY --confirm           # undo
+zotero-cli --json item delete KEY --permanent --yes-erase  # erase — only on explicit request
+```
 
 **Local API writes need one-time human consent.** If a write reports
 `authorization_failed` / `needs_human_action`, tell the user to run:
@@ -153,12 +165,12 @@ instruction.
 |---|---|
 | Closed | Safe read-only SQLite where the command supports it. Most reads work. |
 | Running | Live backend (Local API / Connector / CLI Bridge) where the command supports it. |
+| Running, WAL lock held, Bridge healthy | Reads work: `item find`/`library list` use Zotero's own search; every other read uses a private read-only copy of the catalog read through Zotero's own connection. |
 | Running, WAL lock held, no Bridge | The CLI **refuses** the read rather than returning stale or partial data. |
 
 That refusal is a safety property, not a bug. Do not work around it, do not
-suggest the user work around it, and do not substitute a stale snapshot. `item
-find` and `library list` already route around it correctly by using an
-already-running, fork-owned CLI Bridge.
+suggest the user work around it, and do not substitute a stale snapshot. With
+the Bridge installed the CLI already routes around it correctly.
 
 The CLI never writes to `zotero.sqlite` directly, never silently skips
 uncheckpointed WAL data, and never requires an immutable stale snapshot.

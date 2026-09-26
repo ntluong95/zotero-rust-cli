@@ -185,6 +185,29 @@ pub fn log_payload(payload: &Value) -> Option<Value> {
 }
 
 /// `_maybe_audit()` (`zotero_cli.py:263-290`).
+/// Whether `action` is a write or privileged operation that belongs in the audit log. Trash,
+/// restore, and permanent erase are included: they are the destructive operations an audit
+/// trail exists for.
+fn is_audited_action(action: &str) -> bool {
+    action.starts_with("add_")
+        || action.starts_with("import_")
+        || action.starts_with("item_attach")
+        || action.starts_with("item_find_pdf")
+        || action.starts_with("item_fetch_pdf")
+        || action.starts_with("item_merge")
+        || action.starts_with("collection_fetch")
+        || action.starts_with("docx_")
+        || matches!(
+            action,
+            "item_trash"
+                | "item_restore"
+                | "item_erase"
+                | "collection_trash"
+                | "collection_restore"
+                | "collection_erase"
+        )
+}
+
 pub fn maybe_audit(payload: &Value) {
     let Some(obj) = payload.as_object() else {
         return;
@@ -195,24 +218,7 @@ pub fn maybe_audit(payload: &Value) {
     if action.is_empty() {
         return;
     }
-    let writeish = action.starts_with("add_")
-        || action.starts_with("import_")
-        || action.starts_with("item_attach")
-        || action.starts_with("item_find_pdf")
-        || action.starts_with("item_fetch_pdf")
-        || action.starts_with("item_merge")
-        || action.starts_with("collection_fetch")
-        || action.starts_with("docx_cite")
-        || action.starts_with("docx_")
-        || matches!(
-            action,
-            "item_merge"
-                | "item_attach"
-                | "item_fetch_pdf"
-                | "item_find_pdf"
-                | "collection_fetch_pdfs"
-                | "docx_cite"
-        );
+    let writeish = is_audited_action(action);
     if !writeish {
         return;
     }
@@ -258,4 +264,28 @@ pub fn tail(limit: usize) -> Vec<Value> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod audited_action_tests {
+    use super::is_audited_action;
+
+    #[test]
+    fn deletes_restores_and_erases_are_audited() {
+        for action in [
+            "item_trash",
+            "item_restore",
+            "item_erase",
+            "collection_trash",
+            "collection_restore",
+            "collection_erase",
+            "item_merge",
+            "import_json",
+        ] {
+            assert!(is_audited_action(action), "{action} must be audited");
+        }
+        for action in ["item_duplicates", "audit_path", "item_find"] {
+            assert!(!is_audited_action(action), "{action} is a read");
+        }
+    }
 }

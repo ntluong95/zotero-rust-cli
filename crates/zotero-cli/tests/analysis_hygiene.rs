@@ -500,8 +500,15 @@ fn test_duplicates_zotero_mode_success_and_error() {
         ScriptedResponse::json(
             200,
             json!({
+                "libraryID": 1,
+                "scanned": 40,
                 "count": 2,
-                "items": [{"key": "K1", "title": "T1", "date": "2024", "setID": 10}]
+                "items": [
+                    {"key": "K1", "title": "T1", "date": "2024", "setID": 1},
+                    {"key": "K2", "title": "T1", "date": "2024", "setID": 1}
+                ],
+                "group_count": 1,
+                "groups": [{"setID": 1, "count": 2, "items": []}]
             }),
         ),
     ]);
@@ -514,7 +521,25 @@ fn test_duplicates_zotero_mode_success_and_error() {
     assert_eq!(code, 0);
     assert_eq!(output["count"], 2);
     assert_eq!(output["items"][0]["key"], "K1");
+    assert_eq!(output["group_count"], 1);
+    assert_eq!(output["scanned"], 40);
     server.finish();
+
+    // 1b. A response missing the scan fields (the old silently-empty shape) must fail loudly,
+    // never be reported as a clean library.
+    let server_legacy = ScriptedServer::start(vec![
+        bridge_ownership_ok(),
+        ScriptedResponse::json(200, json!({"count": 0, "items": []})),
+    ]);
+    let (code_legacy, output_legacy) = run_cli(
+        dir.path(),
+        server_legacy.port,
+        &[],
+        &["item", "duplicates", "--by", "zotero"],
+    );
+    assert_eq!(code_legacy, 1, "{output_legacy}");
+    assert_eq!(output_legacy["code"], "ZOTERO_DUP_FAILED");
+    server_legacy.finish();
 
     // 2. Caught JS error with count == 0 -> ZOTERO_DUP_FAILED envelope and exit 1
     let server2 = ScriptedServer::start(vec![

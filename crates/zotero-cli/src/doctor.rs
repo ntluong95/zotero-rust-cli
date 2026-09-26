@@ -17,6 +17,12 @@ pub fn run_doctor(
     let staged_xpi = crate::plugin::staged_xpi_path(staging_dir);
     let installed = paths::plugin_installed(profile_dir);
     let installed_version = paths::installed_plugin_version(profile_dir);
+    let own_addon = paths::addon_state(profile_dir, crate::plugin::ADDON_ID);
+    let app_disabled = own_addon.is_some_and(|a| a.app_disabled);
+    // The Python CLI's Bridge registers the same `/cli-bridge/eval` key and, on shutdown, deletes
+    // it regardless of owner -- so an active copy alongside this one is a real conflict.
+    let upstream_active =
+        paths::addon_state(profile_dir, crate::plugin::UPSTREAM_ADDON_ID).is_some_and(|a| a.active);
     let bundled_version = paths::bundled_plugin_version();
     let update_available = installed_version.is_some()
         && bundled_version.is_some()
@@ -67,9 +73,15 @@ pub fn run_doctor(
     //                                 dialog has not been completed yet
     //   installed_zotero_closed    -- XPI present, but nothing answers Zotero's HTTP port
     //   installed_not_loaded       -- Zotero is up, but /cli-bridge/eval does not answer
+    //   app_disabled               -- Zotero marked the installed XPI incompatible (appDisabled)
+    //   upstream_plugin_conflict   -- the Python CLI's Bridge is active and owns the endpoint
     //   ownership_invalid          -- the endpoint answered but failed the fork+id handshake
     //   healthy                    -- owned endpoint answered and an eval round-tripped
-    let bridge_state = if !installed {
+    let bridge_state = if installed && app_disabled {
+        // Checked first: Zotero rejected the plugin as incompatible, so neither a running
+        // Zotero nor a restart will ever load it.
+        "app_disabled"
+    } else if !installed {
         if staged_xpi.is_some() {
             "staged_not_installed"
         } else {
@@ -80,7 +92,9 @@ pub fn run_doctor(
     } else if !active {
         // Not ours: either the fork/id handshake failed (something else serves that path) or
         // nothing answered at all. The single probe above already distinguishes the two.
-        if probe == crate::bridge::BridgeProbe::Foreign {
+        if upstream_active {
+            "upstream_plugin_conflict"
+        } else if probe == crate::bridge::BridgeProbe::Foreign {
             "ownership_invalid"
         } else {
             "installed_not_loaded"
@@ -113,12 +127,15 @@ pub fn run_doctor(
             "configured": runtime.environment.local_api_enabled_configured,
         },
         "plugin": {
-            "ok": installed && !update_available,
+            "ok": installed && !update_available && !app_disabled,
             "xpi_installed": installed,
             "xpi_path": xpi_path.as_ref().map(|p| p.to_string_lossy()),
             "installed_version": installed_version,
             "bundled_version": bundled_version,
             "update_available": update_available,
+            // Same field name as upstream's doctor: Zotero marked the plugin incompatible.
+            "app_disabled": app_disabled,
+            "upstream_plugin_active": upstream_active,
         },
         "bridge": {
             "ok": active && js_ok,
@@ -196,7 +213,19 @@ pub fn run_doctor(
         ),
     }
 
-    if !installed {
+    let upstream_step =
+        "The Python CLI's 'CLI Bridge for Zotero' plugin (cli-bridge@cli-anything.dev) \
+                         is also active and conflicts with this CLI's Bridge. In Zotero: Tools → \
+                         Plugins → disable or remove it, then restart Zotero.";
+    if installed && app_disabled {
+        next_steps.push(format!(
+            "Zotero {} disabled the CLI Bridge as incompatible with this Zotero version; \
+             restarting will not help. Upgrade zotero-cli, run: zotero-cli app install-plugin, \
+             then install the staged file from Tools → Plugins → gear icon → Install Add-on From \
+             File… and restart Zotero.",
+            zotero_version_opt.as_deref().unwrap_or("")
+        ));
+    } else if !installed {
         next_steps.push(match staged_xpi.as_ref() {
             // Staged but not installed: name the exact file, because the Zotero dialog asks for
             // a path and hunting for it is the step people get stuck on.
@@ -225,6 +254,7 @@ pub fn run_doctor(
                     "CLI Bridge is installed but Zotero is not running. Start Zotero, or run: \
                      zotero-cli app launch."
                 }
+                "upstream_plugin_conflict" => upstream_step,
                 "ownership_invalid" => {
                     "Something is serving /cli-bridge/eval but it is not this CLI's Bridge \
                      plugin. Reinstall it: zotero-cli app install-plugin, then restart Zotero."
@@ -238,6 +268,12 @@ pub fn run_doctor(
             "Bridge endpoint is up but eval failed; reinstall plugin and restart Zotero."
                 .to_string(),
         );
+    }
+
+    // Healthy right now, but the upstream plugin deletes the shared endpoint key whenever it is
+    // disabled or updated, so warn before that happens rather than after.
+    if active && upstream_active {
+        next_steps.push(upstream_step.to_string());
     }
 
     let ready = checks["package"]["ok"] == true

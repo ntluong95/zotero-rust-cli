@@ -63,10 +63,10 @@ The authoritative accounting for v1.0.0:
 
 | Disposition | Count | Meaning |
 |---|---|---|
-| Integrated | 86 | Ported and certified in v1 |
-| Changed | 1 | Deliberate behaviour change (`app check-update`) |
+| Integrated | 84 | Ported and certified |
+| Changed | 2 | Deliberate behaviour change (`item delete`, `collection delete`: trash by default) |
 | Excluded | 1 | Implemented, but not certifiable against golden fixtures (`app enable-local-api` → `app authorize-local-api`) |
-| Dropped | 1 | Not ported (`repl`) |
+| Dropped | 2 | Not ported (`repl`, `app check-update`) |
 | Deferred | 7 | Post-v1 (the dynamic DOCX/zoterify chain) |
 | Missing | 0 | Nothing is unaccounted for |
 | **Total** | **96** | |
@@ -109,7 +109,7 @@ These are deliberate, and none of them is a defect:
    `item move-to-collection` in particular now works with Zotero **running**
    (Python required it closed) and takes no `--experimental` flag.
 4. **Seven DOCX commands are not ported yet** — see §6.
-5. **`app check-update` no longer polls upstream.** A fork must not poll the
+5. **`app check-update` does not exist.** A fork must not poll the
    upstream project's own version endpoint on your behalf. Use your package
    manager, or the
    [releases page](https://github.com/ntluong95/zotero-rust-cli/releases).
@@ -124,6 +124,18 @@ These are deliberate, and none of them is a defect:
 9. **Cleaner failures.** A missing `zotero.sqlite`, or a numeric ref that
    overflows a 64-bit integer, returns a structured `{"error": ...}` with exit 1
    instead of Python's raw traceback. Both still exit 1.
+10. **Deletes go to the trash.** Python's `item delete --confirm` and
+    `collection delete --confirm` erased permanently. Here they move to Zotero's
+    trash; `item restore` / `collection restore` undo it. Scripts that need the
+    old unrecoverable erase must pass `--permanent --yes-erase`.
+11. **Remove the Python CLI's Bridge plugin.** Its `cli-bridge@cli-anything.dev`
+    add-on registers the same `/cli-bridge/eval` endpoint and deletes it on
+    shutdown. In Zotero: Tools → Plugins → remove "CLI Bridge for Zotero" (the
+    Python one), keep "CLI Bridge for Zotero (Rust)". `app doctor` reports
+    `upstream_plugin_conflict` while both are active.
+12. **Group libraries work over the Local API.** Python addressed groups as
+    `/api/groups/<libraryID>`; the Local API expects the Zotero `groupID`, so
+    group-library rendering and Local API writes 404ed. Fixed here.
 
 A small number of further nuances (HTML entity decoding in legacy note content;
 transport error prose in `app status` when nothing is listening at all) are

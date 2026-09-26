@@ -378,10 +378,24 @@ pub enum ItemCommands {
         #[arg(long = "remove")]
         remove: Vec<String>,
     },
-    /// Delete an item. Local API when available, JS Bridge fallback.
+    /// Move an item to Zotero's trash (recoverable with `item restore`). Local API when
+    /// available, JS Bridge fallback. Permanent erasure needs `--permanent --yes-erase`.
     Delete {
         item_key: String,
-        /// Required to actually perform the deletion (safety confirmation).
+        /// Required to move the item to the trash. Never authorizes a permanent erase.
+        #[arg(long)]
+        confirm: bool,
+        /// Erase permanently instead of trashing. Refused unless --yes-erase is also given.
+        #[arg(long)]
+        permanent: bool,
+        /// Confirms a permanent, unrecoverable erase (only meaningful with --permanent).
+        #[arg(long = "yes-erase")]
+        yes_erase: bool,
+    },
+    /// Restore an item from Zotero's trash. Local API when available, JS Bridge fallback.
+    Restore {
+        item_key: String,
+        /// Required to actually restore the item.
         #[arg(long)]
         confirm: bool,
     },
@@ -644,14 +658,30 @@ pub enum CollectionCommands {
         #[arg(long)]
         parent: Option<String>,
     },
-    /// Delete a collection. Local API when available, JS Bridge fallback.
+    /// Move a collection to Zotero's trash (recoverable with `collection restore`). Local API
+    /// when available, JS Bridge fallback. Permanent erasure needs `--permanent --yes-erase`.
     Delete {
         collection_key: String,
-        /// Also delete the items contained in this collection (JS Bridge only --
-        /// no Local API primitive for cascading item deletion exists in this build).
+        /// Also trash (or, with --permanent --yes-erase, erase) every item in this collection and
+        /// its subcollections, as Zotero's "Delete Collection and Items" does (JS Bridge only).
         #[arg(long = "delete-items")]
         delete_items: bool,
-        /// Required to actually perform the deletion (safety confirmation).
+        /// Required to move the collection to the trash. Never authorizes a permanent erase.
+        #[arg(long)]
+        confirm: bool,
+        /// Erase permanently instead of trashing. Refused unless --yes-erase is also given.
+        #[arg(long)]
+        permanent: bool,
+        /// Confirms a permanent, unrecoverable erase (only meaningful with --permanent).
+        #[arg(long = "yes-erase")]
+        yes_erase: bool,
+    },
+    /// Restore a collection and its trashed subcollections from Zotero's trash, as Zotero's
+    /// "Restore to Library" does (CLI Bridge required). Items trashed with it stay in the trash;
+    /// restore them with `item restore`.
+    Restore {
+        collection_key: String,
+        /// Required to actually restore the collection.
         #[arg(long)]
         confirm: bool,
     },

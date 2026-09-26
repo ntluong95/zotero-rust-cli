@@ -107,6 +107,26 @@ fn test_render_collection_delete() {
 }
 
 #[test]
+fn collection_trash_and_restore_template_follows_zotero() {
+    for deleted in [true, false] {
+        let js = render_collection_set_deleted(1, "COL456", deleted, true).unwrap();
+        assert!(js.contains("Zotero.DB.executeTransaction(async function ()"));
+        assert!(!js.contains("saveTx()"));
+        assert!(!js.contains("eraseTx"));
+    }
+    let trash = render_collection_set_deleted(1, "COL456", true, true).unwrap();
+    // Zotero's own Collection#trash() cascades to descendant collections and, with
+    // deleteItems, to every item in the subtree -- not only the direct children.
+    assert!(trash.contains("await col.save({ deleteItems: !!P.includeItems });"));
+    assert!(!trash.contains("getChildItems"));
+
+    let restore = render_collection_set_deleted(1, "COL456", false, false).unwrap();
+    // ZoteroPane#restoreSelectedItems: trashed descendant collections come back, items never.
+    assert!(restore.contains("col.getDescendents(false, 'collection', true)"));
+    assert!(restore.contains("children[i].deleted = false;"));
+}
+
+#[test]
 fn test_render_collection_remove_item() {
     let js = render_collection_remove_item(1, "ITEM123", "COL456").expect("render succeeds");
     assert!(js.starts_with("const P = JSON.parse("));
@@ -118,6 +138,31 @@ fn test_render_find_duplicates() {
     let js = render_find_duplicates(1, 50).expect("render succeeds");
     assert!(js.starts_with("const P = JSON.parse("));
     assert!(js.contains("new Zotero.Duplicates"));
+}
+
+/// An empty duplicate list is a legitimately clean library (`findAll()` only returns paired
+/// items), so the template must refuse -- not report clean -- when the Zotero internals it relies
+/// on are missing or were not populated by the scan.
+#[test]
+fn find_duplicates_fails_loudly_when_zotero_internals_change() {
+    for guard in [
+        "typeof dup._findDuplicates !== 'function'",
+        "typeof dup.getSetItemsByItemID !== 'function'",
+        "!(dup._sets instanceof Zotero.DisjointSetForest)",
+    ] {
+        assert!(T_FIND_DUPLICATES.contains(guard), "missing guard `{guard}`");
+    }
+    let guard = T_FIND_DUPLICATES
+        .find("instanceof Zotero.DisjointSetForest")
+        .unwrap();
+    let scan = T_FIND_DUPLICATES
+        .find("await dup._findDuplicates()")
+        .unwrap();
+    let read = T_FIND_DUPLICATES.find("dup._sets.findAll(true)").unwrap();
+    assert!(
+        scan < guard && guard < read,
+        "the populated-sets check must sit between scan and read"
+    );
 }
 
 #[test]

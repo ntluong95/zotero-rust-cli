@@ -52,29 +52,42 @@ static WS_RE: std::sync::LazyLock<regex::Regex> =
 static NON_WORD_WS_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"[^\w\s]").unwrap());
 
-/// Normalizes a DOI string (`hygiene.py:13-17`):
-/// - lowercase
-/// - strip URL prefix (`https?://(dx\.)?doi\.org/`)
-/// - strip leading `doi:`
-/// - strip trailing whitespace, `.`, `)`, `,`, `;`
+/// Normalizes a DOI string for duplicate matching.
+///
+/// Shape-directed: the DOI is the `10.<registrant>/<suffix>` span wherever it appears, so every
+/// wrapper found in imported libraries folds to the same key -- `https://doi.org/`,
+/// `dx.doi.org`, `doi.acm.org`, a `doi:` prefix, and doubled prefixes such as
+/// `https://doi.org/https://doi.org/10.x/y`. Lowercased, with trailing `.`, `)`, `,`, `;` and
+/// whitespace stripped. A value with no DOI-shaped span keeps the legacy prefix-stripping rule
+/// (`hygiene.py:13-17`), so non-DOI strings still compare as before.
 pub fn norm_doi(value: &str) -> String {
-    let mut text = value.trim().to_lowercase();
-    if let Some(rest) = text.strip_prefix("https://doi.org/") {
-        text = rest.to_string();
-    } else if let Some(rest) = text.strip_prefix("http://doi.org/") {
-        text = rest.to_string();
-    } else if let Some(rest) = text.strip_prefix("https://dx.doi.org/") {
-        text = rest.to_string();
-    } else if let Some(rest) = text.strip_prefix("http://dx.doi.org/") {
-        text = rest.to_string();
+    let text = value.trim().to_lowercase();
+    if let Some(found) = DOI_SHAPE_RE.find(&text) {
+        return found
+            .as_str()
+            .trim_end_matches([' ', '.', ')', ',', ';'])
+            .to_string();
     }
-
+    let mut text = text;
+    for prefix in [
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://dx.doi.org/",
+        "http://dx.doi.org/",
+    ] {
+        if let Some(rest) = text.strip_prefix(prefix) {
+            text = rest.to_string();
+            break;
+        }
+    }
     if let Some(rest) = text.strip_prefix("doi:") {
         text = rest.trim_start().to_string();
     }
-
     text.trim_end_matches([' ', '.', ')', ',', ';']).to_string()
 }
+
+static DOI_SHAPE_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"10\.\d{4,9}/\S+").unwrap());
 
 /// Normalizes a title string (`hygiene.py:20-24`):
 /// - lowercase
@@ -210,10 +223,29 @@ pub fn find_duplicates(
 
 /// Execute Zotero native duplicate detection via the JS Bridge (`zotero_cli.py:1474-1490`).
 ///
-/// Uses hardcoded `library_id = 1` and returns Zotero native success schema or converts
-/// caught errors to `ZOTERO_DUP_FAILED`.
-pub fn find_duplicates_zotero(bridge: &bridge::JSBridgeClient, limit: usize) -> (Value, i32) {
-    let code = match bridge::templates::render_find_duplicates(1, limit) {
+/// Scans `library_id` (the session library, like `--by doi|title`) and keeps the legacy `count`
+/// / `items[]` fields alongside the additive `groups`, `group_count`, and `scanned`. A caught
+/// error, or a response without the expected shape, is `ZOTERO_DUP_FAILED` -- never an empty
+/// success, which is indistinguishable from a clean library.
+pub fn find_duplicates_zotero(
+    bridge: &bridge::JSBridgeClient,
+    library_id: u32,
+    limit: usize,
+) -> (Value, i32) {
+    let failed = |message: &str| {
+        (
+            serde_json::json!({
+                "action": "item_duplicates",
+                "ok": false,
+                "status": "error",
+                "code": "ZOTERO_DUP_FAILED",
+                "by": "zotero",
+                "error": message,
+            }),
+            1,
+        )
+    };
+    let code = match bridge::templates::render_find_duplicates(library_id, limit) {
         Ok(c) => c,
         Err(err) => {
             return (
@@ -230,33 +262,25 @@ pub fn find_duplicates_zotero(bridge: &bridge::JSBridgeClient, limit: usize) -> 
         }
     };
 
-    let resp = bridge.execute_js(&code, 15);
-    if resp.ok {
-        if let Some(data) = &resp.data {
-            if let Some(err_val) = data.get("error") {
-                let count = data.get("count").and_then(|c| c.as_i64()).unwrap_or(0);
-                if count == 0 {
-                    let err_str = err_val.as_str().unwrap_or("Zotero duplicate search failed");
-                    return (
-                        serde_json::json!({
-                            "action": "item_duplicates",
-                            "ok": false,
-                            "status": "error",
-                            "code": "ZOTERO_DUP_FAILED",
-                            "by": "zotero",
-                            "error": err_str,
-                        }),
-                        1,
-                    );
-                }
-            }
-            (data.clone(), 0)
-        } else {
-            (serde_json::to_value(&resp).unwrap_or(Value::Null), 0)
-        }
-    } else {
-        (serde_json::to_value(&resp).unwrap_or(Value::Null), 1)
+    let resp = bridge.execute_js(&code, 60);
+    if !resp.ok {
+        return (serde_json::to_value(&resp).unwrap_or(Value::Null), 1);
     }
+    let Some(data) = resp.data else {
+        return failed("Zotero duplicate search returned no data");
+    };
+    if let Some(err_val) = data.get("error") {
+        return failed(err_val.as_str().unwrap_or("Zotero duplicate search failed"));
+    }
+    if data.get("count").and_then(Value::as_i64).is_none()
+        || data.get("scanned").and_then(Value::as_i64).is_none()
+        || !data.get("groups").is_some_and(Value::is_array)
+    {
+        return failed(&format!(
+            "Zotero duplicate search returned an unexpected response: {data}"
+        ));
+    }
+    (data, 0)
 }
 
 /// Zero-mutation dry-run preview for `item merge` (default; `--dry-run`), mirroring
@@ -608,4 +632,32 @@ fn summarize_item_for_merge_preview(sqlite_path: &Path, item: &db::Item) -> anyh
         "nTags": tags.len(),
         "nCollections": collections.len(),
     }))
+}
+
+#[cfg(test)]
+mod norm_doi_tests {
+    use super::norm_doi;
+
+    #[test]
+    fn every_doi_wrapper_folds_to_the_same_key() {
+        let expected = "10.1016/s2542-5196(24)00273-0";
+        for raw in [
+            "10.1016/S2542-5196(24)00273-0",
+            "doi:10.1016/S2542-5196(24)00273-0",
+            "DOI: 10.1016/S2542-5196(24)00273-0",
+            "https://doi.org/10.1016/S2542-5196(24)00273-0",
+            "http://dx.doi.org/10.1016/S2542-5196(24)00273-0",
+            "https://doi.acm.org/10.1016/S2542-5196(24)00273-0",
+            "https://doi.org/https://doi.org/10.1016/S2542-5196(24)00273-0",
+            " 10.1016/S2542-5196(24)00273-0. ",
+        ] {
+            assert_eq!(norm_doi(raw), expected, "input {raw:?}");
+        }
+    }
+
+    #[test]
+    fn non_doi_strings_keep_the_legacy_rule() {
+        assert_eq!(norm_doi(""), "");
+        assert_eq!(norm_doi("doi:not-a-doi."), "not-a-doi");
+    }
 }

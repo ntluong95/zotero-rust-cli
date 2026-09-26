@@ -20,12 +20,24 @@ fn script_path(name: &str) -> PathBuf {
 
 #[test]
 fn install_sh_passes_posix_syntax_check() {
-    let script = script_path("install.sh");
-    let status = Command::new("sh")
+    // Fed through stdin rather than as a path: on Windows, `canonicalize` returns a verbatim
+    // `\\?\D:\...` path that Git Bash's `sh` mangles into a file it cannot find.
+    let content = fs::read(script_path("install.sh")).expect("failed to read scripts/install.sh");
+    let mut child = Command::new("sh")
         .arg("-n")
-        .arg(&script)
-        .status()
+        .stdin(std::process::Stdio::piped())
+        .spawn()
         .expect("failed to run sh -n on scripts/install.sh");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .expect("sh stdin")
+            .write_all(&content)
+            .expect("failed to pipe scripts/install.sh to sh -n");
+    }
+    let status = child.wait().expect("sh -n did not finish");
     assert!(
         status.success(),
         "scripts/install.sh failed sh -n syntax check"

@@ -722,3 +722,213 @@ fn library_list_reads_live_when_sqlite_is_locked() {
         ]
     );
 }
+
+// ── Live snapshot fallback for catalog reads ───────────────────────────────
+
+/// Seeds the CLI's snapshot cache with a copy of `sqlite_path` under `key`, as an earlier
+/// invocation's `VACUUM INTO` would have left it, and returns that key.
+fn seed_snapshot_cache(data_dir: &Path, sqlite_path: &Path) -> &'static str {
+    let key = "fixture-1-0";
+    let dir = zotero_cli::live_snapshot::cache_dir(
+        &data_dir.join("cli-state").join("live-snapshot"),
+        sqlite_path,
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+    rusqlite::Connection::open(sqlite_path)
+        .unwrap()
+        .execute(
+            "VACUUM INTO ?1",
+            [dir.join(format!("snapshot-{key}.sqlite")).to_string_lossy()],
+        )
+        .unwrap();
+    key
+}
+
+/// The JSON params of every Bridge eval request, decoded from the rendered template prelude.
+fn bridge_params(requests: &[common::CapturedRequest]) -> Vec<Value> {
+    requests
+        .iter()
+        .filter(|request| request.path == "/cli-bridge/eval")
+        .filter_map(|request| {
+            let code = std::str::from_utf8(&request.body).unwrap();
+            let encoded = code
+                .strip_prefix("const P = JSON.parse(")?
+                .split_once(");\n")?
+                .0;
+            let serialized: String = serde_json::from_str(encoded).unwrap();
+            Some(serde_json::from_str(&serialized).unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn catalog_reads_use_a_live_snapshot_while_sqlite_is_locked() {
+    // The commands an agent (ASK) needs while Zotero is open, which previously all refused.
+    let cases: &[&[&str]] = &[
+        &["collection", "list"],
+        &["collection", "get", "COLLE001"],
+        &["item", "get", "PERSONAL1"],
+        &["session", "use-library", "1"],
+    ];
+    for args in cases {
+        let dir = TestDir::new("snapshot-live");
+        let sqlite_path = build_multi_library_fixture(dir.path());
+
+        // Offline answer first, for a byte-for-byte comparison.
+        let offline_server =
+            ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_unavailable()]);
+        let (offline_code, offline_value) = run_cli(dir.path(), offline_server.port, &[], args);
+        drop(offline_server);
+        assert_eq!(offline_code, 0, "{args:?} offline: {offline_value}");
+
+        // A warm cache: Zotero's change key is unchanged since an earlier invocation copied the
+        // database, so the whole read costs one Bridge round trip and no new copy.
+        let key = seed_snapshot_cache(dir.path(), &sqlite_path);
+        let script = vec![
+            connector_ping_ok(),
+            local_api_probe_unavailable(),
+            bridge_ownership_ok(),
+            bridge_json_string(json!({"key": key, "reused": true})),
+        ];
+        let _lock = LockedWalDb::hold(&sqlite_path);
+        let server = ScriptedServer::start(script);
+        let (code, value) = run_cli(dir.path(), server.port, &[], args);
+        let requests = server.finish();
+
+        assert_eq!(code, 0, "{args:?} must succeed while locked: {value}");
+        let params = bridge_params(&requests);
+        assert_eq!(
+            params.len(),
+            1,
+            "{args:?}: one Bridge request per read: {params:?}"
+        );
+        assert_eq!(params[0]["op"], "snapshot");
+        assert_eq!(params[0]["have"], json!([key]));
+        if args[0] != "session" {
+            assert_eq!(
+                value, offline_value,
+                "{args:?}: live snapshot must match offline output"
+            );
+        }
+    }
+}
+
+#[test]
+fn catalog_reads_still_refuse_while_locked_when_no_bridge_answers() {
+    let dir = TestDir::new("snapshot-no-bridge");
+    let sqlite_path = build_multi_library_fixture(dir.path());
+    let _lock = LockedWalDb::hold(&sqlite_path);
+    let (code, value) = run_cli(dir.path(), 1, &[], &["collection", "list"]);
+    assert_eq!(code, 1);
+    assert!(
+        value["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exclusive lock"),
+        "the original refusal must be reported verbatim: {value}"
+    );
+}
+
+#[test]
+fn all_libraries_honors_fields_scope_through_the_local_api_per_library() {
+    let dir = TestDir::new("all-libs-fields-scope");
+    build_multi_library_fixture(dir.path());
+    let empty = || ScriptedResponse::json(200, json!([]));
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        ScriptedResponse::json(200, json!({})),
+        // Library 1 (personal): no field hit -> that library falls back to its title search.
+        empty(),
+        // Library 2 is group 100: the Local API must be addressed by groupID.
+        ScriptedResponse::json(200, json!([{"key": "DUPTITLE2"}])),
+        // Library 7 is group 101.
+        empty(),
+    ]);
+    let (code, value) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &[
+            "item",
+            "find",
+            "10.9999/dup",
+            "--all-libraries",
+            "--scope",
+            "fields",
+        ],
+    );
+    let requests = server.finish();
+
+    assert_eq!(code, 0, "stdout={value}");
+    assert_eq!(keys(&value), vec![(2, "DUPTITLE2".to_string())]);
+    let paths: Vec<&str> = requests.iter().map(|r| r.path.as_str()).collect();
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.starts_with("/api/users/0/items/top")),
+        "{paths:?}"
+    );
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.starts_with("/api/groups/100/items/top")),
+        "{paths:?}"
+    );
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.starts_with("/api/groups/101/items/top")),
+        "{paths:?}"
+    );
+    assert!(
+        paths.iter().all(|p| !p.starts_with("/api/groups/2/")),
+        "libraryID must never be used as a groupID: {paths:?}"
+    );
+}
+
+#[test]
+fn include_feeds_keeps_fields_scope_for_libraries_and_title_searches_feeds() {
+    let dir = TestDir::new("all-libs-fields-feeds");
+    build_multi_library_fixture(dir.path());
+    let empty = || ScriptedResponse::json(200, json!([]));
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        ScriptedResponse::json(200, json!({})),
+        empty(),
+        // A field-only hit: DUPTITLE2's title does not contain the query, so it can only be
+        // found if the fields scope survives `--include-feeds`.
+        ScriptedResponse::json(200, json!([{"key": "DUPTITLE2"}])),
+        empty(),
+    ]);
+    let (code, value) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &[
+            "item",
+            "find",
+            "Thousands",
+            "--all-libraries",
+            "--include-feeds",
+            "--scope",
+            "fields",
+        ],
+    );
+    let requests = server.finish();
+
+    assert_eq!(code, 0, "stdout={value}");
+    let found = keys(&value);
+    assert!(
+        found.contains(&(2, "DUPTITLE2".to_string())),
+        "the fields scope must still apply to non-feed libraries: {found:?}"
+    );
+    assert!(
+        found.contains(&(9, "FEEDITEM1".to_string())),
+        "feeds are searched by title: {found:?}"
+    );
+    assert!(
+        requests.iter().all(|r| !r.path.contains("/9/")),
+        "a feed has no Local API endpoint: {:?}",
+        requests.iter().map(|r| &r.path).collect::<Vec<_>>()
+    );
+}

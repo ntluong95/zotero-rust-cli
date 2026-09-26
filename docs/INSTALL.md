@@ -220,7 +220,9 @@ server. The Bridge is needed for privileged operations Zotero exposes only to
 in-app JavaScript: `item merge --confirm`, `item attach`, `item search-fulltext`,
 `item search-annotations`, `item annotations`, `item find-pdf`,
 `collection stats`, `sync`, `import pmid`, `js`, and as the write fallback on
-Zotero ≤9 where no Local API exists.
+Zotero ≤9 where no Local API exists. `collection restore` also needs the Bridge:
+Zotero's Local API does not list trashed child collections, so it cannot restore
+the full collection hierarchy.
 
 ### The compatible XPI is bundled
 
@@ -326,10 +328,12 @@ These never start anything, by design:
 - `app doctor`, `app status`, `app ping`, `app version`, `app plugin-status` —
   diagnostics observe state, they do not change it. With Zotero closed they say so.
 - Every read that works offline from the local database (`item get/list/find`,
-  collection/library/tag reads, `session *`, `docx *`, `audit *`, `export *`).
-  If Zotero already holds a WAL-mode database lock, `item find` and `library list`
-  may use an already-running owned CLI Bridge instead; they still never autolaunch
-  Zotero and never use stale SQLite reads.
+  collection/library/tag reads, `session *`, `docx *`, `audit *`).
+  If Zotero already holds a WAL-mode database lock, these reads use an
+  already-running owned CLI Bridge instead; they still never autolaunch Zotero
+  and never use stale SQLite reads.
+- Rendering (`item citation/bibliography/export`, `export bib`) needs the Local
+  API, so it *does* start Zotero when it is closed, like other live commands.
 - `item merge` without `--confirm` — the default preview stays a zero-mutation,
   offline-capable dry run.
 

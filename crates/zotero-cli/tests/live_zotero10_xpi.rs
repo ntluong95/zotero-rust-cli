@@ -113,7 +113,7 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     let app = &manifest_val["applications"]["zotero"];
     assert_eq!(app["id"].as_str().unwrap(), ADDON_ID);
     assert_eq!(app["strict_min_version"].as_str().unwrap(), "6.999");
-    assert_eq!(app["strict_max_version"].as_str().unwrap(), "10.0.*");
+    assert_eq!(app["strict_max_version"].as_str().unwrap(), "10.*");
     let update_url = app
         .get("update_url")
         .and_then(|v| v.as_str())
@@ -189,7 +189,7 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     println!("Eval ping JSON response: {eval_json:?}");
     assert_eq!(eval_json["fork"].as_str().unwrap(), "zotero-rust-cli");
     assert_eq!(eval_json["id"].as_str().unwrap(), ADDON_ID);
-    assert_eq!(eval_json["version"].as_str().unwrap(), "1.2.1");
+    assert_eq!(eval_json["version"].as_str().unwrap(), "1.2.2");
     assert_eq!(eval_json["ownership"].as_str().unwrap(), "verified");
 
     // 7. Verify /cli-bridge/eval executes privileged JavaScript under Zotero 10
@@ -219,7 +219,7 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     println!("Ownership endpoint response: {own_json:?}");
     assert_eq!(own_json["fork"].as_str().unwrap(), "zotero-rust-cli");
     assert_eq!(own_json["id"].as_str().unwrap(), ADDON_ID);
-    assert_eq!(own_json["version"].as_str().unwrap(), "1.2.1");
+    assert_eq!(own_json["version"].as_str().unwrap(), "1.2.2");
     assert_eq!(own_json["ownership"].as_str().unwrap(), "verified");
 
     // 9. Verify plugin_status reporting
@@ -232,7 +232,7 @@ fn test_live_zotero10_xpi_load_and_ownership() {
     assert_eq!(
         status.ownership_status,
         OwnershipStatus::ActiveOurFork {
-            version: "1.2.1".to_string(),
+            version: "1.2.2".to_string(),
             id: ADDON_ID.to_string(),
         }
     );

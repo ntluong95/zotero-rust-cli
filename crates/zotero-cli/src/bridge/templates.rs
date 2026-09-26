@@ -16,6 +16,8 @@ pub const T_COLLECTION_REMOVE_ITEM: &str = include_str!("js/collection_remove_it
 
 // Slice 7: Confirmed privileged Bridge-only operations
 pub const T_FIND_DUPLICATES: &str = include_str!("js/find_duplicates.js");
+pub const T_ITEM_SET_DELETED: &str = include_str!("js/item_set_deleted.js");
+pub const T_COLLECTION_SET_DELETED: &str = include_str!("js/collection_set_deleted.js");
 pub const T_ITEM_MERGE: &str = include_str!("js/item_merge.js");
 // Read-only preview counterpart to `T_ITEM_MERGE` (`hygiene.py:_preview_js`, `hygiene.py:109-161`):
 // resolves/summarizes items only -- no `saveTx`/`eraseTx`/`merge`/`trash` call anywhere in it.
@@ -197,6 +199,36 @@ pub fn render_collection_remove_item(
         "collectionKey": collection_key,
     });
     render(T_COLLECTION_REMOVE_ITEM, &params)
+}
+
+/// Trash (`deleted = true`) or restore (`false`) an item.
+pub fn render_item_set_deleted(
+    library_id: u32,
+    key: &str,
+    deleted: bool,
+) -> Result<String, serde_json::Error> {
+    render(
+        T_ITEM_SET_DELETED,
+        &json!({ "libraryID": library_id, "key": key, "deleted": deleted }),
+    )
+}
+
+/// Trash or restore a collection, optionally with the items directly in it.
+pub fn render_collection_set_deleted(
+    library_id: u32,
+    collection_key: &str,
+    deleted: bool,
+    include_items: bool,
+) -> Result<String, serde_json::Error> {
+    render(
+        T_COLLECTION_SET_DELETED,
+        &json!({
+            "libraryID": library_id,
+            "collectionKey": collection_key,
+            "deleted": deleted,
+            "includeItems": include_items,
+        }),
+    )
 }
 
 pub fn render_find_duplicates(library_id: u32, limit: usize) -> Result<String, serde_json::Error> {

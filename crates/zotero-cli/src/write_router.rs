@@ -342,12 +342,17 @@ pub fn post_create(
         ));
     };
 
+    let payload = match body {
+        Value::Array(_) => std::borrow::Cow::Borrowed(body),
+        _ => std::borrow::Cow::Owned(Value::Array(vec![body.clone()])),
+    };
+
     let response = match http::local_api_post(
         runtime.environment.port,
         path,
         server_id,
         &credential.key,
-        body,
+        &payload,
         DEFAULT_TIMEOUT,
     ) {
         Ok(response) => response,

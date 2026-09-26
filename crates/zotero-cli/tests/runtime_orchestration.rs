@@ -488,7 +488,7 @@ fn case_c_doctor_bridge_probe_success_is_followed_by_a_working_js_command() {
     reset_probe_cache();
     let dir = TestDir::new("case-c");
     build_fixture_sqlite(dir.path());
-    let profile_dir = create_fake_profile(dir.path(), Some("1.2.1"));
+    let profile_dir = create_fake_profile(dir.path(), Some(common::BUNDLED_PLUGIN_VERSION));
     let profile_env = [("ZOTERO_PROFILE_DIR", profile_dir.to_str().unwrap())];
 
     let doctor_server = ScriptedServer::start(vec![
