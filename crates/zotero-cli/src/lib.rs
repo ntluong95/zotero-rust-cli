@@ -844,7 +844,9 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         Commands::Item(ItemCommands::Duplicates { by, limit }) => match by {
             cli::DuplicatesBy::Zotero => {
                 let bridge = live_bridge()?;
-                let (payload, exit_code) = hygiene::find_duplicates_zotero(&bridge, limit);
+                let library_id = session::session_library_id(&session, 1)?;
+                let (payload, exit_code) =
+                    hygiene::find_duplicates_zotero(&bridge, library_id.max(0) as u32, limit);
                 output::emit(json_mode, &payload);
                 Ok(exit_code)
             }
