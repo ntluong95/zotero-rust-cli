@@ -11,7 +11,7 @@
 | 3 catalog reads | Pass | Every command below exit 0 closed; selected keys match the running run. |
 | 4 rendering | Pass | Four opt-out runs exit 1 with explicit launch-disabled message; four independent normal runs launch Zotero and exit 0. |
 | 5 group bibliography | Pass | Library 7, item `37YYVTBI`, exit 0. |
-| 6 doctor | Pending upgrade | Exit 1/degraded closed and running: installed Bridge 1.2.1, bundled 1.2.2. `app_disabled=false`; running Bridge healthy. |
+| 6 doctor | Pass | Initially degraded (Bridge 1.2.1 installed, 1.2.2 bundled). After releasing v2.0.0 and installing Bridge 1.2.2: `app doctor` exit 0, `READY`, see "Release verification". |
 | 7 | duplicate seed | Pass | Live scan reported 50 duplicate sets across 100 items with `--limit 5` (`group_count=50`, 751 items scanned). |
 | 8 | trash/restore/erase | Pass | Throwaway item `FIVBWBDX`: refused without `--confirm`; moved to trash with `--confirm` (`action: item_trash, recoverable: true`); restored with `item restore --confirm`; refused `--permanent` without `--yes-erase`; erased with `--permanent --yes-erase` (`action: item_erase, recoverable: false`); read-back confirmed `404 Item not found`. |
 | 9 | ASK reads | Pass | Every wrapper command below exit 0. BBT availability changes with Zotero state; port 23120 both times. |
@@ -158,3 +158,22 @@ Cache invalidation after a write, the Local API `PATCH {"deleted": 1}` cascade, 
 Zotero-matching collection trash/restore/erase semantics are LIVE VERIFIED. No test object
 remains. The run also showed trash/restore/erase were missing from the audit log; they are now
 audited.
+
+## Release verification (v2.0.0)
+
+`v2.0.0` was tagged on `c62fa9a` after `main` CI passed on all six targets and published by
+`release.yml` (11 assets). Installed on this Mac with `scripts/install.sh --version v2.0.0`
+(checksum-verified) and Bridge 1.2.2 from Tools → Plugins, then with Zotero 10.0.4 running:
+
+```text
+zotero-cli --version        zotero-cli 2.0.0
+zotero-cli --json app doctor  exit 0, status READY, read_ready/write_ready true,
+                              write_backends bridge + local_api true, connector ok,
+                              plugin 1.2.2 (maxVersion 10.*, app_disabled false,
+                              upstream_plugin_active false), bridge healthy on 23120
+collection list             exit 0, 0.33 s
+```
+
+A doctor run a few seconds after `app launch` first reported `ownership_invalid` while the
+plugin was still registering its endpoint; the same probe returned the verified 1.2.2
+handshake moments later. Tracked separately as a doctor fix.

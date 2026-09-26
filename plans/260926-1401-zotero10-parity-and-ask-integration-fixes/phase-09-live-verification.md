@@ -1,7 +1,7 @@
 ---
 phase: 9
 title: "Live end-to-end verification"
-status: in-progress
+status: complete
 priority: P1
 effort: "3h"
 dependencies: [7, 8]
