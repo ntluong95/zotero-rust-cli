@@ -287,7 +287,9 @@ pub fn ensure_bridge(
         // wrong). Either way the command proceeds and, in the `Foreign` case, reports the same
         // "endpoint not available" it always has -- the memoized probe means its own
         // availability check costs no second request.
-        crate::bridge::BridgeProbe::Owned | crate::bridge::BridgeProbe::Foreign => Ok(client),
+        crate::bridge::BridgeProbe::Owned
+        | crate::bridge::BridgeProbe::Foreign
+        | crate::bridge::BridgeProbe::NotRegistered => Ok(client),
         // Nothing answered: this is the only state in which starting Zotero can help.
         crate::bridge::BridgeProbe::Unreachable => {
             let runtime = ensure_backend(build_runtime(), Backend::Bridge, spawner)?;

@@ -6,6 +6,10 @@ use crate::bridge::client::JSBridgeClient;
 use crate::paths;
 use crate::runtime::RuntimeContext;
 
+/// How long `app doctor` waits for an installed Bridge to register its endpoint after Zotero's
+/// HTTP server is already answering (a fresh launch).
+const BRIDGE_STARTUP_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// `run_doctor()` (`doctor.py:13-133`): aggregate connector / local API / plugin / bridge health.
 pub fn run_doctor(
     runtime: &RuntimeContext,
@@ -29,7 +33,20 @@ pub fn run_doctor(
         && installed_version != bundled_version;
     // One probe, two facts: whether the endpoint is ours, and whether anything answers it at
     // all. Asking twice would double this diagnostic's request count for no new information.
-    let probe = bridge.probe_bridge();
+    //
+    // Right after Zotero starts, its HTTP server answers before plugins have registered their
+    // endpoints, so the path returns Zotero's own 404. Give an installed plugin a short grace
+    // period to register before concluding it is not loaded.
+    let mut probe = bridge.probe_bridge();
+    let grace_deadline = std::time::Instant::now() + BRIDGE_STARTUP_GRACE;
+    while probe == crate::bridge::BridgeProbe::NotRegistered
+        && installed
+        && !app_disabled
+        && std::time::Instant::now() < grace_deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        probe = bridge.probe_bridge_uncached();
+    }
     let active = probe == crate::bridge::BridgeProbe::Owned;
 
     let mut js_ok = false;
@@ -90,8 +107,8 @@ pub fn run_doctor(
     } else if !runtime.zotero_http_responding() {
         "installed_zotero_closed"
     } else if !active {
-        // Not ours: either the fork/id handshake failed (something else serves that path) or
-        // nothing answered at all. The single probe above already distinguishes the two.
+        // Not ours: the fork/id handshake failed (something else serves that path), or the
+        // path is still unregistered after the grace period, or nothing answered at all.
         if upstream_active {
             "upstream_plugin_conflict"
         } else if probe == crate::bridge::BridgeProbe::Foreign {
