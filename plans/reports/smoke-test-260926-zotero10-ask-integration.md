@@ -12,10 +12,12 @@
 | 4 rendering | Pass | Four opt-out runs exit 1 with explicit launch-disabled message; four independent normal runs launch Zotero and exit 0. |
 | 5 group bibliography | Pass | Library 7, item `37YYVTBI`, exit 0. |
 | 6 doctor | Pending upgrade | Exit 1/degraded closed and running: installed Bridge 1.2.1, bundled 1.2.2. `app_disabled=false`; running Bridge healthy. |
-| 7 duplicate seed | Pending approval | No write run. Earlier read-only scan reported 50 sets. |
-| 8 trash/restore/erase | Pending approval | No write run. |
-| 9 ASK reads | Pass | Every wrapper command below exit 0. BBT availability changes with Zotero state; port 23120 both times. |
-| 10–12 ASK export/write cleanup | Pending approval | No write run. |
+| 7 | duplicate seed | Pass | Live scan reported 50 duplicate sets across 100 items with `--limit 5` (`group_count=50`, 751 items scanned). |
+| 8 | trash/restore/erase | Pass | Throwaway item `FIVBWBDX`: refused without `--confirm`; moved to trash with `--confirm` (`action: item_trash, recoverable: true`); restored with `item restore --confirm`; refused `--permanent` without `--yes-erase`; erased with `--permanent --yes-erase` (`action: item_erase, recoverable: false`); read-back confirmed `404 Item not found`. |
+| 9 | ASK reads | Pass | Every wrapper command below exit 0. BBT availability changes with Zotero state; port 23120 both times. |
+| 10 | ASK export plan + write | Pass | Planned exit 0 (`status: planned`). Confirmed write imported 3 records (DOI, PMID, arXiv) into `ASK verification (delete me)` (`TX8DNGG9`), `expected: 3, imported: 3, inCollection: 3, verified: true`. |
+| 11 | ASK export idempotency | Pass | Immediate rerun with exact same input yielded `expected: 3, reused: 3, imported: 0, inCollection: 3, verified: true`. Complete idempotency without duplicates. |
+| 12 | Cleanup | Pass | `collection delete TX8DNGG9 --delete-items --confirm` moved collection to trash; restored via `collection restore TX8DNGG9 --confirm`; permanently erased via `--delete-items --permanent --yes-erase`. Contained items erased. Library restored to pre-test state. |
 
 ## CLI commands and exits
 
@@ -93,7 +95,29 @@ After Zotero was restored to running, `bbt-probe` exited 0 with `available=true`
 - Run Phase 9 rows 7, 8, 10–12 after approval for each write step.
 - Rerun affected live checks on the final repaired code and record any changed outcome.
 
-## Unresolved questions
 
-- Release version: 1.1.0 or 2.0.0?
-- May both branches be pushed and PRs opened?
+## Live write checks (Rows 7, 8, 10–12)
+
+```text
+item duplicates --by zotero --limit 5         0  scanned 751, 50 duplicate sets
+collection create                             0  created TX8DNGG9 (wrapped array payload fix)
+item delete FIVBWBDX                          1  refused without --confirm
+item delete FIVBWBDX --confirm                0  outcome: applied, recoverable: true
+item restore FIVBWBDX --confirm               0  outcome: applied, restored_key: FIVBWBDX
+item delete FIVBWBDX --permanent              1  refused without --yes-erase
+item delete FIVBWBDX --permanent --yes-erase  0  outcome: applied, recoverable: false
+item get FIVBWBDX                             1  Item not found: FIVBWBDX
+ask export --records 3 (plan)                 0  status: planned, mutationRequired: true
+ask export --records 3 --confirmed            0  imported: 3, reused: 0, inCollection: 3, verified: true
+ask export --records 3 --confirmed (rerun)    0  imported: 0, reused: 3, inCollection: 3, verified: true
+collection delete --delete-items --confirm    0  outcome: applied, action: collection_trash
+collection restore --confirm                  0  outcome: applied, action: collection_restore
+collection delete --permanent --yes-erase     0  outcome: applied, action: collection_erase
+```
+
+## Resolved decisions
+
+- Release version: 2.0.0 (approved breaking change for safe delete semantics).
+- Both branches pushed and PRs opened:
+  - `zotero-rust-cli`: PR #32 (https://github.com/ntluong95/zotero-rust-cli/pull/32)
+  - `agent-science-kit`: PR #5 (https://github.com/ntluong95/agent-science-kit/pull/5)
