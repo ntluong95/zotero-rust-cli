@@ -109,9 +109,17 @@ own 401 rejection.
   rather than falling back to `immutable=1`, which would silently drop every
   committed-but-uncheckpointed row with exit code 0 and no error. There is no
   bypass flag for that refusal.
-- `item find` and `library list` route around that state by using an
-  already-running, ownership-verified Bridge to run Zotero's own read. They never
-  autolaunch Zotero to do it.
+- Reads route around that state only through an already-running,
+  ownership-verified Bridge: `item find` and `library list` run Zotero's own
+  search, and other reads load a read-only, in-memory copy of the catalog tables
+  that Zotero reads through its own connection (every committed WAL frame
+  included). The copy lives only in memory for the duration of one command, is
+  never written to disk, and rejects writes (`PRAGMA query_only`). Reads never
+  autolaunch Zotero to do this.
+- **Deletes are recoverable by default.** `item delete --confirm` and
+  `collection delete --confirm` move to Zotero's trash. Permanent erasure needs
+  `--permanent --yes-erase`, is refused otherwise without contacting Zotero, and
+  never prompts.
 
 Full evidence: [`ZOTERO-COMPATIBILITY.md`](ZOTERO-COMPATIBILITY.md).
 

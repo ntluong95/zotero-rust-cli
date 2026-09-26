@@ -6,27 +6,27 @@ id	command	args_json	class	fixture_state	notes
 5	add url	["--json","add","url","{url}","--no-fetch-pdf"]	Semantic	live-only	Zotero translator/network dependent
 6	app check-update	["--json","app","check-update"]	Changed	live-only	GitHub network update check
 7	app doctor	["--json","app","doctor"]	Semantic	local-api-off	Fake runtime health
-8	app enable-local-api	["--json","app","enable-local-api"]	Semantic	local-api-off	Fixture user.js update
+8	app enable-local-api	["--json","app","enable-local-api"]	Changed	local-api-off	Changed: not ported; replaced by `app authorize-local-api` (real consent handshake). Excluded in compatibility-matrix.md row 8.
 9	app install-plugin	["--json","app","install-plugin"]	Semantic	local-api-on	Fixture XPI install
 10	app launch	["--json","app","launch","--wait-timeout","1"]	Semantic	live-only	Process launch
 11	app ping	["--json","app","ping"]	Exact	local-api-on	Fake connector ping
 12	app plugin-status	["--json","app","plugin-status"]	Semantic	local-api-on	Fixture XPI status
 13	app status	["--json","app","status"]	Exact	local-api-off	Fake runtime status
 14	app uninstall-plugin	["--json","app","uninstall-plugin"]	Semantic	local-api-on	Fixture XPI uninstall
-15	app version	["--json","app","version"]	Exact	local-api-on	Fixture application.ini
+15	app version	["--json","app","version"]	Changed	local-api-on	Changed: fork versioning -- package_version reports this CLI's own version, not upstream's.
 16	audit path	["--json","audit","path"]	Exact	local-api-on	Local state only
 17	audit tail	["--json","audit","tail","--limit","5"]	Exact	local-api-on	Local state only
-18	collection create	["--json","collection","create","Fixture Created"]	Semantic	local-api-on	Fake bridge
-19	collection delete	["--json","collection","delete","{collection}","--confirm"]	Semantic	local-api-on	Fake bridge
+18	collection create	["--json","collection","create","Fixture Created"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: write_backend_routing.rs (collection_create_preserves_the_servers_affected_key).
+19	collection delete	["--json","collection","delete","{collection}","--confirm"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: write_backend_routing.rs (delete_refusals_never_reach_zotero); also trash-by-default semantics.
 20	collection fetch-pdfs	["--json","collection","fetch-pdfs","{collection}","--limit","1","--sources","zotero"]	Semantic	live-only	Fake bridge does not model the cascade response shape
 21	collection find	["--json","collection","find","Sample","--limit","5"]	Exact	local-api-on	SQLite fixture
 22	collection find-pdfs	["--json","collection","find-pdfs","{collection}","--limit","1","--timeout-per-item","1"]	Semantic	local-api-on	Fake bridge
 23	collection get	["--json","collection","get","{collection}"]	Exact	local-api-on	SQLite fixture
 24	collection items	["--json","collection","items","{collection}"]	Exact	local-api-on	SQLite fixture
 25	collection list	["--json","collection","list"]	Exact	local-api-on	SQLite fixture
-26	collection remove-item	["--json","collection","remove-item","{collection}","{item}"]	Semantic	local-api-on	Fake bridge
-27	collection rename	["--json","collection","rename","{collection}","--name","Renamed Fixture"]	Semantic	local-api-on	Fake bridge
-28	collection stats	["--json","collection","stats","{collection}"]	Semantic	local-api-on	Fake bridge
+26	collection remove-item	["--json","collection","remove-item","{collection}","{item}"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: write_router_integration.rs, write_backend_routing.rs.
+27	collection rename	["--json","collection","rename","{collection}","--name","Renamed Fixture"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: write_backend_routing.rs (collection_rename_output_schema_is_identical_across_local_api_and_bridge_backends).
+28	collection stats	["--json","collection","stats","{collection}"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: bridge_transport.rs.
 29	collection tree	["--json","collection","tree"]	Exact	local-api-on	SQLite fixture
 30	collection use-selected	["--json","collection","use-selected"]	Semantic	local-api-on	Fake connector selected collection
 31	docx cite	["--json","docx","cite","{docx_placeholders}","--mode","static","--output","{out_docx}","--force"]	Deferred	live-only	Phase 12
@@ -45,17 +45,17 @@ id	command	args_json	class	fixture_state	notes
 44	import file	["--json","import","file","{ris}"]	Semantic	local-api-on	Fake connector import
 45	import json	["--json","import","json","{json}"]	Semantic	local-api-on	Fake connector saveItems
 46	import pmid	["--json","import","pmid","{pmid}"]	Semantic	live-only	Zotero translator/network dependent
-47	item add-to-collection	["--json","item","add-to-collection","{item}","{collection}"]	Semantic	local-api-on	Fake bridge
+47	item add-to-collection	["--json","item","add-to-collection","{item}","{collection}"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: write_backend_routing.rs (add_to_collection_preserves_unrelated_existing_memberships).
 48	item analyze	["--json","item","analyze","{item}","--question","Summarize","--model","fixture-model"]	Semantic	local-api-on	Fake OpenAI-compatible endpoint
-49	item annotations	["--json","item","annotations","{item}"]	Semantic	local-api-on	Fake bridge
-50	item attach	["--json","item","attach","{item}","{pdf}"]	Semantic	local-api-on	Fake bridge
+49	item annotations	["--json","item","annotations","{item}"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: annotations.rs.
+50	item attach	["--json","item","attach","{item}","{pdf}"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: import_attachments.rs, bridge_transport.rs.
 51	item attachments	["--json","item","attachments","{item}"]	Exact	local-api-on	SQLite fixture
 52	item bibliography	["--json","item","bibliography","{item}"]	Semantic	local-api-on	Fake Local API
 53	item build-index	["--json","item","build-index"]	Semantic	live-only	Embedding endpoint
 54	item children	["--json","item","children","{item}"]	Exact	local-api-on	SQLite fixture
 55	item citation	["--json","item","citation","{item}"]	Semantic	local-api-on	Fake Local API
 56	item context	["--json","item","context","{item}"]	Semantic	local-api-on	SQLite plus fake Local API
-57	item delete	["--json","item","delete","{item}","--confirm"]	Semantic	local-api-on	Fake bridge
+57	item delete	["--json","item","delete","{item}","--confirm"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: write_backend_routing.rs (item_delete_confirm_trashes_through_the_local_api_and_never_deletes, permanent_yes_erase_is_the_only_path_to_an_erase); also trash-by-default semantics.
 58	item duplicates	["--json","item","duplicates","--by","doi","--limit","5"]	Semantic	local-api-on	SQLite duplicate detector
 59	item export	["--json","item","export","{item}","--format","bibtex"]	Semantic	local-api-on	Fake Local API
 60	item fetch-pdf	["--json","item","fetch-pdf","REG67890","--sources","zotero","--zotero-timeout","1","--download-timeout","1"]	Semantic	local-api-on	Fake bridge
@@ -66,17 +66,17 @@ id	command	args_json	class	fixture_state	notes
 65	item list	["--json","item","list","--limit","5"]	Exact	local-api-on	SQLite fixture
 66	item merge	["--json","item","merge","{item}","REG67890","--dry-run"]	Semantic	local-api-on	SQLite preview
 67	item metrics	["--json","item","metrics","{item}","--pmid","12345678"]	Semantic	live-only	NIH iCite network
-68	item move-to-collection	["--json","item","move-to-collection","{item}","{collection}","--experimental"]	Changed	local-api-on	Experimental direct SQLite in Python
+68	item move-to-collection	["--json","item","move-to-collection","{item}","{collection}","--experimental"]	Changed	local-api-on	Changed: upstream requires --experimental (direct SQLite write); the fork composes Bridge/Local API add+remove with no flag. Approved break #2; covered by write_backend_routing.rs, selection_collection.rs.
 69	item notes	["--json","item","notes","{item}"]	Exact	local-api-on	SQLite fixture
-70	item search-annotations	["--json","item","search-annotations","Sample","--limit","5"]	Semantic	local-api-on	Fake bridge
-71	item search-fulltext	["--json","item","search-fulltext","Sample","--limit","5"]	Semantic	local-api-on	Fake bridge
+70	item search-annotations	["--json","item","search-annotations","Sample","--limit","5"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: annotations.rs.
+71	item search-fulltext	["--json","item","search-fulltext","Sample","--limit","5"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: fulltext.rs.
 72	item semantic-search	["--json","item","semantic-search","Sample","--top-k","5"]	Semantic	live-only	Embedding endpoint plus vector DB
 73	item similar	["--json","item","similar","{item}","--top-k","5"]	Semantic	live-only	Embedding endpoint plus vector DB
-74	item tag	["--json","item","tag","{item}","--add","fixture-tag"]	Semantic	local-api-on	Fake bridge
-75	item update	["--json","item","update","{item}","--field","title=Updated Fixture"]	Semantic	local-api-on	Fake bridge
-76	js	["--json","js","return Zotero.version"]	Exact	local-api-on	Raw bridge passthrough
+74	item tag	["--json","item","tag","{item}","--add","fixture-tag"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: write_backend_routing.rs, write_router_integration.rs.
+75	item update	["--json","item","update","{item}","--field","title=Updated Fixture"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: write_backend_routing.rs (item_update_output_schema_is_identical_across_local_api_and_bridge_backends).
+76	js	["--json","js","return Zotero.version"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: bridge_transport.rs, bridge_injection.rs.
 77	library list	["--json","library","list"]	Semantic	group-library	Upstream helper includes user and group libraries. Semantic, not Exact: the Rust build adds an additive `name` field (groups.name / feeds.name / "My Library"), which upstream has no equivalent for, so stdout cannot be byte-identical. All eight canonical fields are unchanged in place.
-78	note add	["--json","note","add","{item}","--text","Fixture note"]	Semantic	local-api-on	Fake connector
+78	note add	["--json","note","add","{item}","--text","Fixture note"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: notes.rs, write_backend_routing.rs.
 79	note get	["--json","note","get","NOTEKEY"]	Semantic	local-api-on	SQLite note read
 80	repl	["repl"]	Dropped	live-only	Interactive only
 81	search get	["--json","search","get","{search}"]	Exact	local-api-on	SQLite fixture
@@ -92,7 +92,7 @@ id	command	args_json	class	fixture_state	notes
 91	session use-library	["--json","session","use-library","1"]	Exact	local-api-on	SQLite plus local state
 92	session use-selected	["--json","session","use-selected"]	Exact	local-api-on	Fake connector plus state
 93	style list	["--json","style","list"]	Exact	local-api-on	Fixture CSL style
-94	sync	["--json","sync"]	Semantic	local-api-on	Fake bridge
+94	sync	["--json","sync"]	Changed	local-api-on	Changed: Rust targets the fork-owned Bridge (fork+id ownership handshake) and Local API write contract, which upstream's mock server cannot answer. Covered by Rust tests: write_backend_routing.rs (sync_routes_to_our_owned_bridge_and_never_probes_local_api_at_all).
 95	tag items	["--json","tag","items","{tag}"]	Exact	local-api-on	SQLite fixture
 96	tag list	["--json","tag","list"]	Exact	unicode-cjk	Unicode, quotes, slashes, newline fixture
 97	app status (unreachable)	["--json","app","status"]	Exact	zotero-unreachable	No Zotero HTTP server listening; connector_message/local_api_message normalized to <CONNECTION_REFUSED> (accepted transport-library divergence, see compatibility-matrix.md)

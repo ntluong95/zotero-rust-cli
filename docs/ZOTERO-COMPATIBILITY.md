@@ -17,6 +17,28 @@ Every claim below is tagged with how it was established:
 These tags describe **what is known**. They are separate from, and unaffected by, the merge-gate
 status below, which describes **what blocks integrating this branch**.
 
+## Update 2026-09-26
+
+Live-verified against a real Zotero 10.0.4 (macOS) unless noted:
+
+- **Saved searches on Zotero 10.** Zotero commit `5ade25f5` dropped
+  `savedSearchConditions.required`, which broke `search list/get` on every Zotero 10 library
+  (LIVE VERIFIED on 10.0.3). The column is now probed and emitted as `null` when absent;
+  SYNTHETIC coverage for both schemas in `db.rs`, LIVE VERIFIED on a library with no saved
+  searches.
+- **Layer B read routing is implemented.** When SQLite refuses with `DatabaseLocked` and an owned
+  Bridge answers, `db::connect_readonly` loads a read-only in-memory copy of the catalog tables
+  read through Zotero's own connection (`live_snapshot.rs`), so every SQLite-backed read works
+  while Zotero runs, with byte-identical output. LIVE VERIFIED: all 21 copied tables match a
+  direct read row-for-row (`tests/live_snapshot_zotero.rs`, ~1.3 s on a 26 MB library).
+  `item find` and `library list` keep their single-query Bridge path.
+- **Group libraries over the Local API** are addressed by Zotero `groupID`
+  (`/api/groups/:groupID`), not the local `libraryID` (LIVE VERIFIED: v1.0.0 404ed on
+  `/api/groups/7/...`; fixed).
+- **XPI cap** is `strict_max_version: 10.*` (plugin 1.2.2). `app doctor` reports `app_disabled`
+  when Zotero marks the XPI incompatible, and `upstream_plugin_conflict` when the Python CLI's
+  Bridge is active.
+
 ## Status at v1.0.0 (2026-08-31)
 
 The Layer A fix (the critical WAL/`immutable=1` bug), capability detection, HTTP hardening, and the

@@ -326,10 +326,12 @@ These never start anything, by design:
 - `app doctor`, `app status`, `app ping`, `app version`, `app plugin-status` —
   diagnostics observe state, they do not change it. With Zotero closed they say so.
 - Every read that works offline from the local database (`item get/list/find`,
-  collection/library/tag reads, `session *`, `docx *`, `audit *`, `export *`).
-  If Zotero already holds a WAL-mode database lock, `item find` and `library list`
-  may use an already-running owned CLI Bridge instead; they still never autolaunch
-  Zotero and never use stale SQLite reads.
+  collection/library/tag reads, `session *`, `docx *`, `audit *`).
+  If Zotero already holds a WAL-mode database lock, these reads use an
+  already-running owned CLI Bridge instead; they still never autolaunch Zotero
+  and never use stale SQLite reads.
+- Rendering (`item citation/bibliography/export`, `export bib`) needs the Local
+  API, so it *does* start Zotero when it is closed, like other live commands.
 - `item merge` without `--confirm` — the default preview stays a zero-mutation,
   offline-capable dry run.
 
