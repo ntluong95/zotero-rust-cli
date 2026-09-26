@@ -108,7 +108,9 @@ pub struct SavedSearchCondition {
     pub condition: String,
     pub operator: String,
     pub value: Option<String>,
-    pub required: i64,
+    /// `NULL` on Zotero 10+, which dropped the unused `required` column (Zotero commit
+    /// `5ade25f5`). The key is always emitted so the JSON shape is identical across versions.
+    pub required: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -290,6 +292,11 @@ pub fn connect_readonly(sqlite_path: &Path) -> anyhow::Result<Connection> {
         Ok(conn) => Ok(conn),
         Err(err) if is_sqlite_busy(&err) => {
             if wal_sidecar_path(sqlite_path).exists() {
+                // A running Zotero can still answer through its own connection, which sees
+                // every committed WAL frame; only when it cannot do we refuse.
+                if let Ok(Some(conn)) = crate::live_snapshot::connect() {
+                    return Ok(conn);
+                }
                 // Tagged, not just worded: callers that have a safe live read path (see
                 // `search.rs`) need to recognize *this specific* condition to try it, and
                 // matching on message text would silently stop working the day the wording
@@ -829,6 +836,18 @@ pub fn resolve_attachment_real_path(
     Some(resolved.to_string_lossy().into_owned())
 }
 
+/// Whether `table` has a column named `column`, via `PRAGMA table_info` (schema-only, no row reads).
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> anyhow::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>("name"))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// `fetch_saved_searches()` (`zotero_sqlite.py:577-600`).
 pub fn fetch_saved_searches(
     sqlite_path: &Path,
@@ -855,12 +874,17 @@ pub fn fetch_saved_searches(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let mut cond_stmt = conn.prepare(
-        "SELECT searchConditionID, condition, operator, value, required
+    let required_column = if table_has_column(&conn, "savedSearchConditions", "required")? {
+        "required"
+    } else {
+        "NULL AS required"
+    };
+    let mut cond_stmt = conn.prepare(&format!(
+        "SELECT searchConditionID, condition, operator, value, {required_column}
          FROM savedSearchConditions
          WHERE savedSearchID = ?1
-         ORDER BY searchConditionID",
-    )?;
+         ORDER BY searchConditionID"
+    ))?;
     for search in &mut searches {
         let rows = cond_stmt.query_map([search.saved_search_id], |row| {
             Ok(SavedSearchCondition {
@@ -1767,6 +1791,59 @@ mod tests {
         });
     }
 
+    /// With a live snapshot source registered (the running Zotero answering through the owned
+    /// Bridge), a locked WAL database is read from that consistent live copy instead of refused
+    /// -- and the uncheckpointed row the lock holder just wrote is included, not skipped.
+    #[test]
+    fn connect_readonly_reads_live_snapshot_when_wal_database_is_locked() {
+        let path = temp_sqlite_path("wal-locked-live");
+        let holder = open_wal_db(&path);
+        holder
+            .pragma_update(None, "locking_mode", "EXCLUSIVE")
+            .expect("set exclusive locking mode");
+        holder
+            .execute(
+                "INSERT INTO items VALUES (99, 'uncheckpointed-live-row')",
+                [],
+            )
+            .expect("take the exclusive lock");
+
+        // The fixture source reads the same file through a second path that stands in for
+        // Zotero's own connection: copy the holder's view (including WAL) into a plain file.
+        let mirror = temp_sqlite_path("wal-locked-live-mirror");
+        holder
+            .execute(&format!("VACUUM INTO '{}'", mirror.to_string_lossy()), [])
+            .expect("mirror the lock holder's view");
+        crate::live_snapshot::register_source(Box::new(
+            crate::live_snapshot::tests::FixtureSource {
+                path: mirror.clone(),
+                page_rows: 1,
+            },
+        ));
+
+        let conn =
+            connect_readonly(&path).expect("locked WAL database must read via live snapshot");
+        let titles: Vec<String> = conn
+            .prepare("SELECT val FROM items ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            titles.iter().any(|t| t == "uncheckpointed-live-row"),
+            "{titles:?}"
+        );
+
+        crate::live_snapshot::clear_source();
+        drop(conn);
+        drop(holder);
+        for p in [&path, &mirror] {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = std::fs::remove_file(wal_sidecar_path(&path));
+    }
+
     /// Non-WAL (rollback-journal) databases keep the pre-Zotero-10 behavior
     /// unconditionally: falling back to `immutable=1` when locked is safe
     /// there because there is no `-wal` file for it to miss. This is the
@@ -1981,5 +2058,47 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].children.len(), 1);
         assert_eq!(tree[0].children[0].collection_id, 2);
+    }
+
+    fn seed_saved_search_db(name: &str, with_required: bool) -> std::path::PathBuf {
+        let path = temp_sqlite_path(name);
+        let conn = Connection::open(&path).expect("create scratch sqlite file");
+        let conditions = if with_required {
+            "CREATE TABLE savedSearchConditions (savedSearchID INT, searchConditionID INT, condition TEXT, operator TEXT, value TEXT, required NONE);
+             INSERT INTO savedSearchConditions VALUES (1, 0, 'title', 'contains', 'olive', 1);"
+        } else {
+            "CREATE TABLE savedSearchConditions (savedSearchID INT, searchConditionID INT, condition TEXT, operator TEXT, value TEXT);
+             INSERT INTO savedSearchConditions VALUES (1, 0, 'title', 'contains', 'olive');"
+        };
+        conn.execute_batch(&format!(
+            "CREATE TABLE savedSearches (savedSearchID INTEGER PRIMARY KEY, savedSearchName TEXT, clientDateModified TEXT, libraryID INTEGER, key TEXT, version INTEGER);
+             INSERT INTO savedSearches VALUES (1, 'Olive', '2026-01-01 00:00:00', 1, 'SRCHKEY1', 1);
+             {conditions}"
+        ))
+        .expect("seed saved searches");
+        path
+    }
+
+    #[test]
+    fn saved_searches_read_zotero10_schema_without_required_column() {
+        let path = seed_saved_search_db("saved-search-z10", false);
+        let searches =
+            fetch_saved_searches(&path, None).expect("Zotero 10 schema must be readable");
+        assert_eq!(searches[0].conditions.len(), 1);
+        assert_eq!(searches[0].conditions[0].required, None);
+        let json = serde_json::to_value(&searches[0].conditions[0]).unwrap();
+        assert!(
+            json.get("required").is_some_and(|v| v.is_null()),
+            "key must stay present as null"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn saved_searches_keep_required_on_legacy_schema() {
+        let path = seed_saved_search_db("saved-search-z9", true);
+        let searches = fetch_saved_searches(&path, None).expect("legacy schema must be readable");
+        assert_eq!(searches[0].conditions[0].required, Some(1));
+        let _ = std::fs::remove_file(&path);
     }
 }

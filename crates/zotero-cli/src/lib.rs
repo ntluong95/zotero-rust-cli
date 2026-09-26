@@ -19,6 +19,7 @@ pub mod import_attachments;
 pub mod import_core;
 pub mod import_normalization;
 pub mod lifecycle;
+pub mod live_snapshot;
 pub mod metrics;
 pub mod notes;
 pub mod output;
@@ -118,6 +119,19 @@ fn dispatch_command(command: Commands, cli: &Cli, json_mode: bool) -> anyhow::Re
         let mut spawner = lifecycle::real_spawner();
         lifecycle::ensure_bridge(&environment, &build_runtime, &mut spawner)
     };
+    // When a running Zotero holds the WAL lock, SQLite reads fall back to a live snapshot read
+    // through the owned Bridge (see `live_snapshot`). Registration is lazy: nothing is probed
+    // unless `db::connect_readonly` has actually been refused.
+    let snapshot_port = paths::build_environment(
+        cli.data_dir.as_deref(),
+        cli.profile_dir.as_deref(),
+        cli.executable.as_deref(),
+        &paths::current_env_map(),
+    )
+    .port;
+    live_snapshot::register_source(Box::new(live_snapshot::BridgeSnapshotSource::new(
+        snapshot_port,
+    )));
     let session = session::load_session_state();
 
     match command {

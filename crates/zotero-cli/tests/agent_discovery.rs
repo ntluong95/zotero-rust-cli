@@ -722,3 +722,126 @@ fn library_list_reads_live_when_sqlite_is_locked() {
         ]
     );
 }
+
+// ── Live snapshot fallback for catalog reads ───────────────────────────────
+
+/// The scripted Bridge answers for one full live snapshot of `sqlite_path`, in the exact order
+/// `live_snapshot::build` requests them: the schema, then one page per copied table.
+fn snapshot_responses(sqlite_path: &Path) -> Vec<ScriptedResponse> {
+    let conn = rusqlite::Connection::open(sqlite_path).unwrap();
+    let mut schema = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL \
+             AND type IN ('table','index') AND name NOT LIKE 'sqlite_%'",
+        )
+        .unwrap();
+    let wanted = zotero_cli::live_snapshot::SNAPSHOT_TABLES;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .unwrap();
+    for row in rows {
+        let (kind, name, table, sql) = row.unwrap();
+        if wanted.contains(&table.as_str()) {
+            schema.push((kind, name, table, sql));
+        }
+    }
+    let mut responses = vec![bridge_json_string(Value::Array(
+        schema
+            .iter()
+            .map(|(kind, name, table, sql)| {
+                json!({"type": kind, "name": name, "table": table, "sql": sql})
+            })
+            .collect(),
+    ))];
+    for (kind, _, table, _) in &schema {
+        if kind != "table" {
+            continue;
+        }
+        let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+        let n = stmt.column_count();
+        let rows: Vec<Value> = stmt
+            .query_map([], |r| {
+                let mut values = Vec::new();
+                for i in 0..n {
+                    values.push(match r.get::<_, rusqlite::types::Value>(i)? {
+                        rusqlite::types::Value::Null => Value::Null,
+                        rusqlite::types::Value::Integer(v) => json!(v),
+                        rusqlite::types::Value::Real(v) => json!(v),
+                        rusqlite::types::Value::Text(v) => json!(v),
+                        rusqlite::types::Value::Blob(v) => json!({"$b": v}),
+                    });
+                }
+                Ok(Value::Array(values))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        responses.push(bridge_json_string(json!({"rows": rows, "next": null})));
+    }
+    responses
+}
+
+#[test]
+fn catalog_reads_use_a_live_snapshot_while_sqlite_is_locked() {
+    // The commands an agent (ASK) needs while Zotero is open, which previously all refused.
+    let cases: &[&[&str]] = &[
+        &["collection", "list"],
+        &["collection", "get", "COLLE001"],
+        &["item", "get", "PERSONAL1"],
+        &["session", "use-library", "1"],
+    ];
+    for args in cases {
+        let dir = TestDir::new("snapshot-live");
+        let sqlite_path = build_multi_library_fixture(dir.path());
+
+        // Offline answer first, for a byte-for-byte comparison.
+        let offline_server =
+            ScriptedServer::start(vec![connector_ping_ok(), local_api_probe_unavailable()]);
+        let (offline_code, offline_value) = run_cli(dir.path(), offline_server.port, &[], args);
+        drop(offline_server);
+        assert_eq!(offline_code, 0, "{args:?} offline: {offline_value}");
+
+        let mut script = vec![
+            connector_ping_ok(),
+            local_api_probe_unavailable(),
+            bridge_ownership_ok(),
+        ];
+        script.extend(snapshot_responses(&sqlite_path));
+        let _lock = LockedWalDb::hold(&sqlite_path);
+        let server = ScriptedServer::start(script);
+        let (code, value) = run_cli(dir.path(), server.port, &[], args);
+        server.finish();
+
+        assert_eq!(code, 0, "{args:?} must succeed while locked: {value}");
+        if args[0] != "session" {
+            assert_eq!(
+                value, offline_value,
+                "{args:?}: live snapshot must match offline output"
+            );
+        }
+    }
+}
+
+#[test]
+fn catalog_reads_still_refuse_while_locked_when_no_bridge_answers() {
+    let dir = TestDir::new("snapshot-no-bridge");
+    let sqlite_path = build_multi_library_fixture(dir.path());
+    let _lock = LockedWalDb::hold(&sqlite_path);
+    let (code, value) = run_cli(dir.path(), 1, &[], &["collection", "list"]);
+    assert_eq!(code, 1);
+    assert!(
+        value["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exclusive lock"),
+        "the original refusal must be reported verbatim: {value}"
+    );
+}

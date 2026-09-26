@@ -178,7 +178,9 @@ pub fn list_libraries(
     // SQLite first, for the same reason `find_items` does it in that order: an offline run must
     // issue exactly the requests it always did, with no speculative Bridge probe added to a
     // command that is byte-compared against canonical.
-    let refusal = match db::fetch_libraries(&runtime.environment.sqlite_path) {
+    let refusal = match crate::live_snapshot::without_snapshot(|| {
+        db::fetch_libraries(&runtime.environment.sqlite_path)
+    }) {
         Ok(libraries) => return Ok((libraries, SearchSource::Sqlite)),
         Err(err) if db::is_database_locked(&err) => err,
         Err(err) => return Err(err),
@@ -410,7 +412,9 @@ pub fn find_items(
     }
 
     // Attempt 1: the offline path. Canonical for `CurrentLibrary`, byte for byte.
-    let offline = match &request.libraries {
+    // `item find` has its own single-query live path below, so the SQLite attempt must see the
+    // plain refusal rather than trigger a full live snapshot.
+    let offline = crate::live_snapshot::without_snapshot(|| match &request.libraries {
         SearchScopeRequest::CurrentLibrary => catalog::find_items(
             runtime,
             request.query,
@@ -423,7 +427,7 @@ pub fn find_items(
         SearchScopeRequest::AllLibraries { include_feeds } => {
             sqlite_all_libraries(runtime, &request, *include_feeds)
         }
-    };
+    });
     let refusal = match offline {
         Ok(items) => return Ok((items, SearchSource::Sqlite)),
         // Only the "Zotero holds the database" refusal is retryable live. Every other failure
