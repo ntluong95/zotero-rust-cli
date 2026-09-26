@@ -140,6 +140,31 @@ fn test_render_find_duplicates() {
     assert!(js.contains("new Zotero.Duplicates"));
 }
 
+/// An empty duplicate list is a legitimately clean library (`findAll()` only returns paired
+/// items), so the template must refuse -- not report clean -- when the Zotero internals it relies
+/// on are missing or were not populated by the scan.
+#[test]
+fn find_duplicates_fails_loudly_when_zotero_internals_change() {
+    for guard in [
+        "typeof dup._findDuplicates !== 'function'",
+        "typeof dup.getSetItemsByItemID !== 'function'",
+        "!(dup._sets instanceof Zotero.DisjointSetForest)",
+    ] {
+        assert!(T_FIND_DUPLICATES.contains(guard), "missing guard `{guard}`");
+    }
+    let guard = T_FIND_DUPLICATES
+        .find("instanceof Zotero.DisjointSetForest")
+        .unwrap();
+    let scan = T_FIND_DUPLICATES
+        .find("await dup._findDuplicates()")
+        .unwrap();
+    let read = T_FIND_DUPLICATES.find("dup._sets.findAll(true)").unwrap();
+    assert!(
+        scan < guard && guard < read,
+        "the populated-sets check must sit between scan and read"
+    );
+}
+
 #[test]
 fn test_render_item_merge() {
     let others = vec!["ITEM456".to_string(), "ITEM789".to_string()];
