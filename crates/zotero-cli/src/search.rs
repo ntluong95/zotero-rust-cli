@@ -465,6 +465,41 @@ fn sqlite_all_libraries(
         libraries.iter().map(|l| (l.library_id, l.kind.as_str())),
         include_feeds,
     );
+    // `--scope fields|everything` must mean the same thing across libraries as it does in one:
+    // the single-library path asks the Local API's quick search (`qmode`), while the SQLite
+    // fallback only matches titles -- so a DOI searched with `--all-libraries --scope fields`
+    // used to find nothing unless Zotero happened to hold its lock. Search each library the
+    // same way the single-library path does; any failure keeps the title search below.
+    if !request.exact_title && request.scope != "titleCreatorYear" && runtime.local_api_available {
+        let mut items = Vec::new();
+        let mut complete = true;
+        for library_id in &library_ids {
+            let scoped = SessionState {
+                current_library: Some(Value::from(*library_id)),
+                ..Default::default()
+            };
+            match catalog::find_items(
+                runtime,
+                request.query,
+                None,
+                request.limit,
+                false,
+                request.scope,
+                &scoped,
+            ) {
+                Ok(found) => items.extend(found),
+                Err(_) => {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        if complete {
+            order_like_sqlite(&mut items, request.query);
+            items.truncate(request.limit.max(0) as usize);
+            return Ok(items);
+        }
+    }
     db::find_items_by_title(
         &runtime.environment.sqlite_path,
         request.query,

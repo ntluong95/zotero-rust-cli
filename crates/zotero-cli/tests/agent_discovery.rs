@@ -845,3 +845,60 @@ fn catalog_reads_still_refuse_while_locked_when_no_bridge_answers() {
         "the original refusal must be reported verbatim: {value}"
     );
 }
+
+#[test]
+fn all_libraries_honors_fields_scope_through_the_local_api_per_library() {
+    let dir = TestDir::new("all-libs-fields-scope");
+    build_multi_library_fixture(dir.path());
+    let empty = || ScriptedResponse::json(200, json!([]));
+    let server = ScriptedServer::start(vec![
+        connector_ping_ok(),
+        ScriptedResponse::json(200, json!({})),
+        // Library 1 (personal): no field hit -> that library falls back to its title search.
+        empty(),
+        // Library 2 is group 100: the Local API must be addressed by groupID.
+        ScriptedResponse::json(200, json!([{"key": "DUPTITLE2"}])),
+        // Library 7 is group 101.
+        empty(),
+    ]);
+    let (code, value) = run_cli(
+        dir.path(),
+        server.port,
+        &[],
+        &[
+            "item",
+            "find",
+            "10.9999/dup",
+            "--all-libraries",
+            "--scope",
+            "fields",
+        ],
+    );
+    let requests = server.finish();
+
+    assert_eq!(code, 0, "stdout={value}");
+    assert_eq!(keys(&value), vec![(2, "DUPTITLE2".to_string())]);
+    let paths: Vec<&str> = requests.iter().map(|r| r.path.as_str()).collect();
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.starts_with("/api/users/0/items/top")),
+        "{paths:?}"
+    );
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.starts_with("/api/groups/100/items/top")),
+        "{paths:?}"
+    );
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.starts_with("/api/groups/101/items/top")),
+        "{paths:?}"
+    );
+    assert!(
+        paths.iter().all(|p| !p.starts_with("/api/groups/2/")),
+        "libraryID must never be used as a groupID: {paths:?}"
+    );
+}
